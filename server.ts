@@ -1,5 +1,5 @@
 
-
+import { validateProcCode } from "./parser.ts";
 
 const builder = (()=>{
 
@@ -59,7 +59,7 @@ const builder = (()=>{
   function union <T extends Schema<any>[]>(...schemas: T): Schema<Infer<T[number]>> {
     return (x: any) => {
       for (const schema of schemas) {
-        try {
+        try { 
           return schema(x);
         } catch (e) {
           // ignore
@@ -100,10 +100,12 @@ type PROC_CTX = {
   delete: (key: string) => void,
   has: (key: string) => boolean,
   hash: (proc: PROC) => string,
+  invoke: (proc_hash: string, arg: string) => string,
+  validate: (code: string) => void,
 } & typeof builder
 
 
-function invoke (proc: PROC, ctx: PROC_CTX, arg: string): string {
+function _invoke (proc: PROC, ctx: PROC_CTX, arg: string): string {
   try{
     const func = new Function("ctx", "arg" , proc.code);
     const result = func(ctx, arg);
@@ -118,52 +120,36 @@ const funcs: PROC = {
   $: "proc",
   code: (
     function(c: PROC_CTX, arg: string) {
-
       let ARG = c.union(
         c.struct({register: c.string,}),
         c.struct({invoke: c.string, arg: c.string,}),
         c.struct({inspect: c.string}),
       )
-
       let dat = ARG(JSON.parse(arg));
+      function sub_invoke (proc_hash: string, arg: string): string {
 
+        let ctx : PROC_CTX = {
+          ...c,
+          store (k,v) { c.store(proc_hash+":"+k,v) },
+          load (k) { return c.load(proc_hash+":"+k) },
+          delete (k) { c.delete(proc_hash+":"+k) },
+          has (k) { return c.has(proc_hash+":"+k) },
+          invoke (proc_hash, arg){ return sub_invoke(proc_hash, arg) }
+        }
+        return _invoke({$:"proc", code: c.load(proc_hash)}, ctx, arg);
+      }
       if ("register" in dat){
         let proc: PROC = {
           $: "proc",
           code: c.string(dat.register),
         }
+        c.validate(proc.code);
         let hash = c.hash(proc);
         c.store(hash, proc.code);
         return hash;
       } if ("invoke" in dat){
-
         let hash = c.string(dat.invoke);
-
-        if (!c.has(hash)) throw new Error(`No such proc: ${hash}`);
-
-        let code = c.string(c.load(hash));
-        let proc: PROC = {
-          $: "proc",
-          code,
-        }
-
-        let ctx : PROC_CTX = {
-          ...c,
-          store (k,v) {
-            c.store(hash+":"+k,v);
-          },
-          load (k) {
-            return c.load(hash+":"+k);
-          },
-          delete (k) {
-            c.delete(hash+":"+k);
-          },
-          has (k) {
-            return c.has(hash+":"+k);
-          }
-        }
-
-        return invoke(proc, ctx, dat.arg);
+        return sub_invoke(hash, dat.arg);
       }else{
         return c.load(dat.inspect);
       }
@@ -174,8 +160,6 @@ const funcs: PROC = {
 
 
 const storage = new Map<string, string>();
-
-
 
 Bun.serve({
   port: 4000,
@@ -189,21 +173,15 @@ Bun.serve({
           if (value === undefined) throw new Error(`No such key: ${key}`);
           return value;
         },
-        store (key, value) {
-          storage.set(key, value);
-        },
-        delete (key) {
-          storage.delete(key);
-        },
-        has (key) {
-          return storage.has(key);
-        },
-        hash (proc) {
-          return PROC_HASH(proc);
-        },
+        store: storage.set,
+        delete: storage.delete,
+        has: storage.has,
+        hash (proc) {return PROC_HASH(proc);},
+        validate: validateProcCode,
+        invoke () { throw new Error("Cannot invoke from top-level context") },
         ...builder,
       }
-      return new Response(JSON.stringify(invoke(funcs, ctx, body)), {status: 200});
+      return new Response(JSON.stringify(_invoke(funcs, ctx, body)), {status: 200});
     }else{
       return new Response("Not Found", {status: 404});
     }
