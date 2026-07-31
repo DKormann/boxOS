@@ -5,6 +5,7 @@
 - `POST /challenge` returns a one-use proof-of-work challenge.
 - `POST /proc` accepts `register`, `invoke`, or `inspect` operations.
 - `GET /example` serves a small browser client.
+- `GET /client.js` serves the compiled browser ES module from `client.ts`.
 - `GET /docs` serves unstyled client protocol documentation.
 - `GET /stats` reports current prices, limits, worker usage, storage usage, and proof-of-work parameters.
 - `GET /health` returns server health.

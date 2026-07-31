@@ -1,0 +1,9 @@
+{
+  "name": "boxos",
+  "private": true,
+  "scripts": {
+    "build:client": "bun build client.ts --target browser --outfile client.js",
+    "test": "bun test",
+    "typecheck": "bunx --bun tsc --noEmit"
+  }
+}

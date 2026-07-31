@@ -19,6 +19,7 @@ const MAX_CHALLENGES = 10_000;
 const MAX_REQUEST_BYTES = 1_000_000;
 const EXAMPLE_FILE = Bun.file(new URL("./example.html", import.meta.url));
 const DOCS_FILE = Bun.file(new URL("./docs.html", import.meta.url));
+const CLIENT_FILE = Bun.file(new URL("./client.js", import.meta.url));
 const DATABASE_PATH = Bun.env.BOXOS_DB_PATH ?? "boxos.sqlite";
 type Operation =
   | { type: "store"; key: string; value: string }
@@ -381,6 +382,16 @@ Bun.serve({
     if (url.pathname === "/stats") {
       if (req.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
       return serverStats();
+    }
+    if (url.pathname === "/client.js") {
+      if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+      return new Response(await CLIENT_FILE.text(), {
+        headers: {
+          "content-type": "text/javascript; charset=utf-8",
+          "cache-control": "public, max-age=300",
+          "access-control-allow-origin": "*",
+        },
+      });
     }
     if (url.pathname === "/docs") {
       if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });

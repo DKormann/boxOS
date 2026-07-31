@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { rm } from "fs/promises";
+import { BoxOSClient } from "./client.ts";
 import { procHash } from "./hash.ts";
 
 const port = 41_000 + Math.floor(Math.random() * 10_000);
@@ -129,6 +130,25 @@ describe("boxOS HTTP server", () => {
     expect(body.includes("<style")).toBe(false);
   });
 
+  test("serves the compiled browser client", async () => {
+    const response = await fetch(`${origin}/client.js`, {
+      headers: { origin: "https://client.example" },
+    });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(body).toContain("class BoxOSClient");
+  });
+
+  test("client automatically registers an unknown procedure and retries", async () => {
+    const client = new BoxOSClient(origin);
+    const source = 'return "client: " + arg;';
+    const result = await client.proc(source).invoke("client-test", "works", { fuel: 100 });
+    expect(result).toBe("client: works");
+    expect(await client.inspect(await client.hash(source))).toBe(source);
+  });
+
   test("reports current prices and limits", async () => {
     const response = await fetch(`${origin}/stats`);
     const stats = await response.json() as {
@@ -141,7 +161,7 @@ describe("boxOS HTTP server", () => {
     expect(stats.workers.active).toBe(0);
     expect(stats.workers.limit).toBe(4);
     expect(stats.fuel.nextWorkerCost).toBe(5);
-    expect(stats.storage.usedBytes).toBe(0);
+    expect(stats.storage.usedBytes > 0).toBe(true);
     expect(stats.storage.limitBytes).toBe(32 * 1024 * 1024);
     expect(stats.storage.pressureMultiplier).toBe(1);
     expect(stats.proofOfWork.baseDifficultyBits).toBe(8);

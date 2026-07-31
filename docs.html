@@ -20,9 +20,28 @@
         <li><code>GET /stats</code>: read current limits, prices, and resource usage.</li>
         <li><code>GET /health</code>: returns <code>OK</code>.</li>
         <li><code>GET /example</code>: interactive example client.</li>
+        <li><code>GET /client.js</code>: browser ES module client.</li>
       </ul>
       <p>JSON requests should use <code>content-type: application/json</code>. Procedure responses are JSON objects containing either <code>ok</code> or <code>error</code>.</p>
       <p>The JSON API allows requests from any browser origin with <code>Access-Control-Allow-Origin: *</code>. It does not use cookies or credentialed CORS.</p>
+    </section>
+
+    <section>
+      <h2>Client module</h2>
+      <p>The hosted ES module handles hashing, proof of work, registration, and retries:</p>
+      <pre><code>import { BoxOSClient } from "https://164.90.168.234/client.js";
+
+const box = new BoxOSClient("https://164.90.168.234");
+const counter = box.proc(`
+  let count = +(ctx.load("count") || "0");
+  count += 1;
+  ctx.store("count", "" + count);
+  return count;
+`);
+
+const result = await counter.invoke("my-shard", "", { fuel: 100 });</code></pre>
+      <p><code>proc.invoke</code> computes the procedure hash locally and attempts the invocation first. If the server reports that the procedure is unknown, the client registers the source and retries with a new proof. The server remains the authority for validation.</p>
+      <p>Lower-level methods are also available: <code>hash</code>, <code>register</code>, <code>invokeHash</code>, <code>run</code>, <code>inspect</code>, and <code>stats</code>.</p>
     </section>
 
     <section>

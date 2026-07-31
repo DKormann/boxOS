@@ -41,66 +41,32 @@ return arg + ": " + count;</textarea>
   <h2>Response</h2>
   <pre id="output">Ready.</pre>
 
-  <script>
+  <script type="module">
+    import { BoxOSClient } from "/client.js";
+
+    const client = new BoxOSClient();
     const code = document.querySelector("#code");
     const hash = document.querySelector("#hash");
     const shard = document.querySelector("#shard");
     const arg = document.querySelector("#arg");
     const fuel = document.querySelector("#fuel");
     const output = document.querySelector("#output");
-    const encoder = new TextEncoder();
 
-    function commitment(operation) {
-      if ("register" in operation) return `register\n${operation.register}`;
-      if ("invoke" in operation) return `invoke\n${operation.shard}\n${operation.invoke}\n${operation.arg}`;
-      return `inspect\n${operation.inspect}`;
-    }
-
-    function leadingZeroBits(bytes) {
-      let count = 0;
-      for (const byte of bytes) {
-        if (byte === 0) { count += 8; continue; }
-        for (let bit = 7; bit >= 0 && (byte & (1 << bit)) === 0; bit--) count++;
-        break;
-      }
-      return count;
-    }
-
-    async function proofOfWork(operation, fuel) {
-      const challengeResponse = await fetch("/challenge", { method: "POST" });
-      const challenge = await challengeResponse.json();
-      const difficulty = challenge.baseDifficultyBits + Math.ceil(Math.log2(fuel));
-      for (let nonce = 0; ; nonce++) {
-        const input = JSON.stringify([challenge.challenge, fuel, commitment(operation), nonce]);
-        const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
-        if (leadingZeroBits(new Uint8Array(digest)) >= difficulty) {
-          return { challenge: challenge.challenge, nonce };
-        }
-      }
-    }
-
-    async function call(operation, requestedFuel) {
+    async function show(action) {
       output.textContent = "Computing proof of work…";
       try {
-        const proof = await proofOfWork(operation, requestedFuel);
-        output.textContent = "Running…";
-        const response = await fetch("/proc", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...operation, fuel: requestedFuel, ...proof }),
-        });
-        const result = await response.json();
-        output.textContent = JSON.stringify(result, null, 2);
-        return result;
+        const value = await action();
+        output.textContent = JSON.stringify({ ok: value }, null, 2);
+        return value;
       } catch (error) {
-        output.textContent = String(error);
-        return null;
+        output.textContent = JSON.stringify({ error: String(error) }, null, 2);
+        return undefined;
       }
     }
 
     document.querySelector("#register").addEventListener("click", async () => {
-      const result = await call({ register: code.value }, 1);
-      if (typeof result?.ok === "string") hash.value = result.ok;
+      const value = await show(() => client.register(code.value));
+      if (typeof value === "string") hash.value = value;
     });
 
     document.querySelector("#invoke").addEventListener("click", () => {
@@ -108,7 +74,7 @@ return arg + ": " + count;</textarea>
         output.textContent = "Register a procedure first.";
         return;
       }
-      call({ invoke: hash.value, shard: shard.value, arg: arg.value }, Number(fuel.value));
+      show(() => client.invokeHash(hash.value, shard.value, arg.value, { fuel: Number(fuel.value) }));
     });
   </script>
 </body>
