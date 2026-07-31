@@ -541,7 +541,7 @@ function isIdentifierName(value: string): boolean {
  */
 export function validateProcCode(
   source: string,
-  argumentNames: readonly string[] = ["ctx", "arg"],
+  argumentNames: readonly string[] = ["ctx", "arg", "JSON"],
 ): void {
   if (typeof source !== "string") throw new TypeError("Procedure code must be a string");
   new Parser(source, argumentNames).parse();
@@ -549,7 +549,7 @@ export function validateProcCode(
 
 export function isValidProcCode(
   source: string,
-  argumentNames: readonly string[] = ["ctx", "arg"],
+  argumentNames: readonly string[] = ["ctx", "arg", "JSON"],
 ): boolean {
   try {
     validateProcCode(source, argumentNames);

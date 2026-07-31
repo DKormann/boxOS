@@ -40,9 +40,9 @@ Fuel is wall-clock based and includes worker startup. Storage charges shorten th
 
 ## Procedure capabilities
 
-The validated JavaScript subset supports basic declarations, functions, control flow, literals, operators, calls, fixed property access, and guarded numeric indexing. Only declared names plus `ctx` and `arg` may be referenced.
+The validated JavaScript subset supports basic declarations, functions, control flow, literals, operators, calls, fixed property access, guarded numeric indexing, and throwing expressions. Only declared names plus `ctx`, `arg`, and the frozen `JSON` capability may be referenced.
 
-`arg` is the supplied string. `ctx` provides:
+`arg` is the supplied string. `JSON` provides only `parse` and `stringify`. `ctx` provides:
 
 - storage namespaced by both current shard and procedure hash: `store`, `load`, `delete`, and `has`
 - nested procedure invocation on the current shard with `invoke`

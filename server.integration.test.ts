@@ -206,6 +206,21 @@ describe("boxOS HTTP server", () => {
     expect(invoked.ok).toBe("hello, world");
   });
 
+  test("supports JSON parsing, serialization, and thrown expressions", async () => {
+    const code = `
+      let value = JSON.parse(arg);
+      if (typeof value.count !== "number") throw "count must be a number";
+      value.count += 1;
+      return JSON.stringify(value);
+    `;
+    const registered = await signedRequest({ register: code }, 1);
+    const success = await signedRequest({ invoke: registered.ok, shard: "json", arg: '{"count":1}' }, 100);
+    expect(success.ok).toBe('{"count":2}');
+
+    const failed = await signedRequest({ invoke: registered.ok, shard: "json", arg: '{"count":"one"}' }, 100);
+    expect(failed.error).toContain("count must be a number");
+  });
+
   test("charges procedure registration by stored source size", async () => {
     const code = `return arg; /* ${"x".repeat(2048)} */`;
     const underfunded = await signedRequest({ register: code }, 1);

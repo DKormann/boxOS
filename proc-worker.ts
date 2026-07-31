@@ -47,7 +47,7 @@ function makeBuilder() {
   function record<T>(schema: Schema<T>): Schema<Record<string, T>> {
     return value => {
       if (typeof value !== "object" || value === null) throw new Error(`Expected object, got ${typeof value}`);
-      const result: Record<string, T> = {};
+      const result: Record<string, T> = Object.create(null) as Record<string, T>;
       for (const key in value) result[key] = schema((value as Record<string, unknown>)[key]);
       return result;
     };
@@ -55,7 +55,7 @@ function makeBuilder() {
   function struct<T extends Record<string, Schema<any>>>(schemas: T): Schema<{ [K in keyof T]: Infer<T[K]> }> {
     return value => {
       if (typeof value !== "object" || value === null) throw new Error(`Expected object, got ${typeof value}`);
-      const result: Partial<{ [K in keyof T]: Infer<T[K]> }> = {};
+      const result: Partial<{ [K in keyof T]: Infer<T[K]> }> = Object.create(null) as Partial<{ [K in keyof T]: Infer<T[K]> }>;
       for (const key in schemas) result[key] = schemas[key]!((value as Record<string, unknown>)[key]);
       return result as { [K in keyof T]: Infer<T[K]> };
     };
@@ -77,10 +77,20 @@ function makeBuilder() {
   return { string, number, boolean, record, struct, constant, union };
 }
 
+const PROC_JSON = Object.freeze({
+  parse(value: unknown): unknown {
+    if (typeof value !== "string") throw new TypeError("JSON.parse expects a string");
+    return JSON.parse(value);
+  },
+  stringify(value: unknown): string | undefined {
+    return JSON.stringify(value);
+  },
+});
+
 function execute(code: string, ctx: ProcContext, arg: string): unknown {
-  // Strict mode removes legacy/sloppy behavior from otherwise valid procedure code.
-  const func = new Function("ctx", "arg", `"use strict";\n${code}`);
-  return func(ctx, arg);
+  // JSON is an explicit, frozen capability rather than an ambient worker global.
+  const func = new Function("ctx", "arg", "JSON", `"use strict";\n${code}`);
+  return func(ctx, arg, PROC_JSON);
 }
 
 self.onmessage = (event: MessageEvent<Invocation>) => {

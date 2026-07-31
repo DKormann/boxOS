@@ -123,13 +123,14 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
 
     <section>
       <h2>Procedure runtime</h2>
-      <p>The argument is available as <code>arg</code>. The <code>ctx</code> object provides:</p>
+      <p>The argument is available as <code>arg</code>. A frozen <code>JSON</code> capability provides <code>JSON.parse(string)</code> and <code>JSON.stringify(value)</code>. The <code>ctx</code> object provides:</p>
       <ul>
         <li><code>ctx.store(key, value)</code>, <code>ctx.load(key)</code>, <code>ctx.delete(key)</code>, and <code>ctx.has(key)</code></li>
         <li><code>ctx.invoke(procedureHash, arg)</code>, which runs another procedure on the current shard</li>
         <li><code>ctx.hash(proc)</code> and <code>ctx.validate(code)</code></li>
         <li><code>ctx.string</code>, <code>ctx.number</code>, <code>ctx.boolean</code>, <code>ctx.record</code>, <code>ctx.struct</code>, <code>ctx.constant</code>, and <code>ctx.union</code></li>
       </ul>
+      <p>Procedures may throw any expression, for example <code>throw "invalid input";</code>. The language intentionally does not expose <code>new</code> or the ambient <code>Error</code> constructor.</p>
       <p>Keys and values passed to storage must be strings. Storage is namespaced by both shard and procedure hash, so different procedures on one shard do not share keys. Nested procedure calls remain on the current shard because <code>ctx.invoke</code> has no shard argument. Procedure source and namespaced state are persisted in SQLite across server restarts; challenges and active invocations are not persisted.</p>
     </section>
 
