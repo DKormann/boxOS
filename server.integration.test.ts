@@ -111,6 +111,8 @@ afterAll(async () => {
 
 describe("boxOS HTTP server", () => {
   test("serves the example client", async () => {
+    const rootResponse = await fetch(`${origin}/`);
+    expect(rootResponse.url).toBe(`${origin}/example`);
     const response = await fetch(`${origin}/example`);
     expect(response.status).toBe(200);
     const body = await response.text();

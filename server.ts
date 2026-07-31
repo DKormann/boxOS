@@ -363,6 +363,7 @@ Bun.serve({
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url);
+    if (url.pathname === "/") return Response.redirect(new URL("/example", url), 302);
     if (url.pathname === "/health") return new Response("OK", { status: 200 });
     if (url.pathname === "/stats") {
       if (req.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
