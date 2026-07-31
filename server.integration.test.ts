@@ -206,6 +206,15 @@ describe("boxOS HTTP server", () => {
     expect(invoked.ok).toBe("hello, world");
   });
 
+  test("charges procedure registration by stored source size", async () => {
+    const code = `return arg; /* ${"x".repeat(2048)} */`;
+    const underfunded = await signedRequest({ register: code }, 1);
+    expect(underfunded.error).toContain("Registration storage needs");
+
+    const registered = await signedRequest({ register: code }, 3);
+    expect(registered.ok).toBe(procHash(code));
+  });
+
   test("charges worker creation fuel", async () => {
     const code = "return arg;";
     const registered = await signedRequest({ register: code }, 1);
@@ -240,6 +249,49 @@ describe("boxOS HTTP server", () => {
     const moved = await signedRequest({ invoke: registered.ok, shard: "storage-test", arg: "move" }, 20);
     expect(moved.ok).toBe("moved");
   }, 20_000);
+
+  test("rolls back writes on exceptions, serialization errors, and timeouts", async () => {
+    const code = `
+      if (arg === "read") return ctx.load("value") || "missing";
+      ctx.store("value", "dirty");
+      if (arg === "circular") {
+        let value = {};
+        value.self = value;
+        return value;
+      }
+      if (arg === "timeout") while (true) {}
+      throw "procedure failed";
+    `;
+    const registered = await signedRequest({ register: code }, 1);
+
+    const failed = await signedRequest({ invoke: registered.ok, shard: "rollback", arg: "throw" }, 100);
+    expect(failed.error).toContain("procedure failed");
+    expect((await signedRequest({ invoke: registered.ok, shard: "rollback", arg: "read" }, 100)).ok).toBe("missing");
+
+    const circular = await signedRequest({ invoke: registered.ok, shard: "rollback", arg: "circular" }, 100);
+    expect(circular.error).toContain("cyclic");
+    expect((await signedRequest({ invoke: registered.ok, shard: "rollback", arg: "read" }, 100)).ok).toBe("missing");
+
+    const timedOut = await signedRequest({ invoke: registered.ok, shard: "rollback", arg: "timeout" }, 30);
+    expect(timedOut.error).toContain("Fuel exhausted");
+    expect((await signedRequest({ invoke: registered.ok, shard: "rollback", arg: "read" }, 100)).ok).toBe("missing");
+  });
+
+  test("rolls back the entire call tree when a nested procedure fails", async () => {
+    const calleeCode = `
+      if (arg === "read") return ctx.load("value") || "missing";
+      ctx.store("value", "dirty");
+      throw "nested failure";
+    `;
+    const callee = await signedRequest({ register: calleeCode }, 1);
+    const callerCode = `ctx.invoke("${callee.ok}", arg); return "ignored";`;
+    const caller = await signedRequest({ register: callerCode }, 1);
+
+    const failed = await signedRequest({ invoke: caller.ok, shard: "nested-rollback", arg: "write" }, 100);
+    expect(failed.error).toContain("nested failure");
+    const stored = await signedRequest({ invoke: callee.ok, shard: "nested-rollback", arg: "read" }, 100);
+    expect(stored.ok).toBe("missing");
+  });
 
   test("serializes invocations of the same shard", async () => {
     const code = `

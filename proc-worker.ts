@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { procHash } from "./hash.ts";
 import { validateProcCode } from "./parser.ts";
 import { entryBytes, MAX_STORAGE_BYTES, MAX_STORAGE_OPERATIONS, storageFuelCost } from "./resources.ts";
@@ -9,7 +10,7 @@ type Operation =
 type Invocation = {
   procHash: string;
   arg: string;
-  storage: [string, string][];
+  databasePath: string;
   storageBytes: number;
   storageFuel: number;
   stateRoot: string;
@@ -76,81 +77,103 @@ function makeBuilder() {
   return { string, number, boolean, record, struct, constant, union };
 }
 
-function invoke(code: string, ctx: ProcContext, arg: string): { ok: unknown } | { error: string } {
-  try {
-    // Strict mode removes legacy/sloppy behavior from otherwise valid procedure code.
-    const func = new Function("ctx", "arg", `"use strict";\n${code}`);
-    return { ok: func(ctx, arg) };
-  } catch (error) {
-    return { error: String(error) };
-  }
+function execute(code: string, ctx: ProcContext, arg: string): unknown {
+  // Strict mode removes legacy/sloppy behavior from otherwise valid procedure code.
+  const func = new Function("ctx", "arg", `"use strict";\n${code}`);
+  return func(ctx, arg);
 }
 
 self.onmessage = (event: MessageEvent<Invocation>) => {
   const task = event.data;
-  const storage = new Map(task.storage);
+  const database = new Database(task.databasePath, { readonly: true });
+  const readValueStatement = database.query<{ value: string }>("SELECT value FROM storage WHERE key = ?");
+  const pending = new Map<string, string | undefined>();
   const operations: Operation[] = [];
   const builder = makeBuilder();
   let usedStorageBytes = task.storageBytes;
   let storageFuel = task.storageFuel;
+  let transactionError: string | undefined;
 
   function storageString(value: unknown, name: string): string {
     if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
     return value;
   }
 
-  function invokeProcedure(hash: string, arg: string): { ok: unknown } | { error: string } {
-    const code = storage.get(hash);
-    if (code === undefined) return { error: `Unknown procedure: ${hash}` };
+  function readValue(key: string): string | undefined {
+    if (pending.has(key)) return pending.get(key);
+    return readValueStatement.get(key)?.value;
+  }
 
-    const prefix = `${task.stateRoot}${hash}:`;
-    const ctx: ProcContext = {
-      ...builder,
-      store(key, value) {
-        if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
-        const fullKey = prefix + storageString(key, "Storage key");
-        const storedValue = storageString(value, "Stored value");
-        const previous = storage.get(fullKey);
-        const nextBytes = usedStorageBytes - (previous === undefined ? 0 : entryBytes(fullKey, previous))
-          + entryBytes(fullKey, storedValue);
-        if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
+  function fail(error: unknown): string {
+    const message = String(error);
+    transactionError ??= message;
+    return message;
+  }
 
-        const cost = storageFuelCost(fullKey, storedValue, usedStorageBytes);
-        if (cost > storageFuel) throw new Error(`Storage write needs ${cost} fuel; ${storageFuel} remains`);
-        storageFuel -= cost;
-        self.postMessage({ fuelDelta: cost });
-        usedStorageBytes = nextBytes;
-        storage.set(fullKey, storedValue);
-        operations.push({ type: "store", key: fullKey, value: storedValue });
-      },
-      load(key) { return storage.get(prefix + storageString(key, "Storage key")); },
-      delete(key) {
-        const fullKey = prefix + storageString(key, "Storage key");
-        const previous = storage.get(fullKey);
-        if (previous !== undefined) {
+  function invokeProcedure(hashValue: string, argValue: string): { ok: unknown } | { error: string } {
+    try {
+      const hash = storageString(hashValue, "Procedure hash");
+      const arg = storageString(argValue, "Procedure argument");
+      const code = readValueStatement.get(hash)?.value;
+      if (code === undefined) throw new Error(`Unknown procedure: ${hash}`);
+
+      const prefix = `${task.stateRoot}${hash}:`;
+      const ctx: ProcContext = {
+        ...builder,
+        store(key, value) {
           if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
-          const reward = storageFuelCost(fullKey, previous, usedStorageBytes);
-          const previousFuel = storageFuel;
-          usedStorageBytes -= entryBytes(fullKey, previous);
-          storageFuel += reward;
-          self.postMessage({ fuelDelta: previousFuel - storageFuel });
-          storage.delete(fullKey);
-          operations.push({ type: "delete", key: fullKey });
-        }
-      },
-      has(key) { return storage.has(prefix + storageString(key, "Storage key")); },
-      hash: proc => procHash(proc.code),
-      invoke: invokeProcedure,
-      validate: validateProcCode,
-    };
-    return invoke(code, ctx, arg);
+          const fullKey = prefix + storageString(key, "Storage key");
+          const storedValue = storageString(value, "Stored value");
+          const previous = readValue(fullKey);
+          const nextBytes = usedStorageBytes - (previous === undefined ? 0 : entryBytes(fullKey, previous))
+            + entryBytes(fullKey, storedValue);
+          if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
+
+          const cost = storageFuelCost(fullKey, storedValue, usedStorageBytes);
+          if (cost > storageFuel) throw new Error(`Storage write needs ${cost} fuel; ${storageFuel} remains`);
+          storageFuel -= cost;
+          self.postMessage({ fuelDelta: cost });
+          usedStorageBytes = nextBytes;
+          pending.set(fullKey, storedValue);
+          operations.push({ type: "store", key: fullKey, value: storedValue });
+        },
+        load(key) { return readValue(prefix + storageString(key, "Storage key")); },
+        delete(key) {
+          const fullKey = prefix + storageString(key, "Storage key");
+          const previous = readValue(fullKey);
+          if (previous !== undefined) {
+            if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
+            const reward = storageFuelCost(fullKey, previous, usedStorageBytes);
+            const previousFuel = storageFuel;
+            usedStorageBytes -= entryBytes(fullKey, previous);
+            storageFuel += reward;
+            self.postMessage({ fuelDelta: previousFuel - storageFuel });
+            pending.set(fullKey, undefined);
+            operations.push({ type: "delete", key: fullKey });
+          }
+        },
+        has(key) { return readValue(prefix + storageString(key, "Storage key")) !== undefined; },
+        hash: proc => procHash(proc.code),
+        invoke: invokeProcedure,
+        validate: validateProcCode,
+      };
+      return { ok: execute(code, ctx, arg) };
+    } catch (error) {
+      return { error: fail(error) };
+    }
   }
 
-  const result = invokeProcedure(task.procHash, task.arg);
+  let result: { ok: unknown } | { error: string } = invokeProcedure(task.procHash, task.arg);
+  if (transactionError !== undefined) result = { error: transactionError };
+
+  let resultJson: string;
   try {
-    // Serialize in the worker so arbitrary return values never cross the worker boundary.
-    self.postMessage({ resultJson: JSON.stringify(result), operations });
+    resultJson = JSON.stringify(result);
   } catch (error) {
-    self.postMessage({ resultJson: JSON.stringify({ error: String(error) }), operations });
+    resultJson = JSON.stringify({ error: fail(error) });
   }
+
+  database.close();
+  const commit = transactionError === undefined;
+  self.postMessage({ resultJson, operations: commit ? operations : [], commit });
 };

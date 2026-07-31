@@ -26,7 +26,7 @@ type Operation =
   | { type: "delete"; key: string };
 type WorkerMessage =
   | { fuelDelta: number }
-  | { resultJson: string; operations: Operation[] };
+  | { resultJson: string; operations: Operation[]; commit: boolean };
 
 const storage = new PersistentStorage(DATABASE_PATH);
 const challenges = new Map<string, number>();
@@ -156,6 +156,8 @@ function serverStats(): Response {
     storage: {
       backend: "sqlite",
       persistent: true,
+      workerAccess: "read-only on demand",
+      registrationCostFormula: "pressureMultiplier * ceil((64 + UTF8 source bytes) / 1024)",
       usedBytes: storageBytes,
       limitBytes: MAX_STORAGE_BYTES,
       pressureMultiplier: storagePressureMultiplier(storageBytes),
@@ -219,11 +221,6 @@ async function invokeIsolated(procHash: string, shard: string, arg: string, fuel
 
   const storageBytes = storage.byteLength;
   const stateRoot = `s:${sha256(shard)}:`;
-  const shardStorage: [string, string][] = [];
-  for (const entry of storage.entries()) {
-    const isProcedure = /^[0-9a-f]{64}$/.test(entry[0]);
-    if (isProcedure || entry[0].startsWith(stateRoot)) shardStorage.push(entry);
-  }
 
   lockedShards.add(shard);
   let worker: Worker;
@@ -272,24 +269,33 @@ async function invokeIsolated(procHash: string, shard: string, arg: string, fuel
         finish(fuelError());
         return;
       }
-      if (!message || !("resultJson" in message) || typeof message.resultJson !== "string" || !Array.isArray(message.operations)) {
+      if (!message || !("resultJson" in message) || typeof message.resultJson !== "string"
+        || !Array.isArray(message.operations) || typeof message.commit !== "boolean") {
         finish({ error: "Invalid invocation worker response" });
         return;
       }
 
-      // Timed-out workers never commit partial writes. Completed invocations
-      // commit their operation log atomically after enforcing the global limit.
+      let result: unknown;
+      try {
+        result = JSON.parse(message.resultJson);
+      } catch {
+        finish({ error: "Invocation returned invalid JSON" });
+        return;
+      }
+
+      if (!message.commit) {
+        finish(result);
+        return;
+      }
+
+      // Successful call trees commit atomically. Every error, timeout, worker
+      // failure, or serialization failure discards the complete operation log.
       const storageError = commitOperations(message.operations);
       if (storageError !== undefined) {
         finish({ error: storageError });
         return;
       }
-
-      try {
-        finish(JSON.parse(message.resultJson));
-      } catch {
-        finish({ error: "Invocation returned invalid JSON" });
-      }
+      finish(result);
     };
 
     worker.onerror = event => {
@@ -301,7 +307,7 @@ async function invokeIsolated(procHash: string, shard: string, arg: string, fuel
       worker.postMessage({
         procHash,
         arg,
-        storage: shardStorage,
+        databasePath: DATABASE_PATH,
         storageBytes,
         storageFuel: workerFuel,
         stateRoot,

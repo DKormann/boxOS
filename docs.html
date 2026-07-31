@@ -90,7 +90,7 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
 }
 
 {"ok":"SHA-256 source hash"}</code></pre>
-      <p>The hash is lowercase hexadecimal SHA-256 of the exact UTF-8 procedure source. Registration consumes storage fuel, so larger procedures or a fuller server may require more requested fuel.</p>
+      <p>The hash is lowercase hexadecimal SHA-256 of the exact UTF-8 procedure source. Registration is a storage write and costs the current storage multiplier times one fuel per started KiB of hash and UTF-8 source. Larger procedures or a fuller server therefore require more fuel.</p>
 
       <h3>Invoke</h3>
       <pre><code>POST /proc
@@ -140,7 +140,7 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
         <li>Invocations wait for their exclusive shard lock and an available worker while consuming fuel.</li>
         <li>A lock-fuel response may be retried with a new challenge.</li>
         <li>A consumed or expired challenge cannot be retried.</li>
-        <li>A timeout does not commit partial storage operations.</li>
+        <li>The complete top-level and nested call tree commits only on success. Exceptions, nested errors, invalid result serialization, timeouts, and worker failures commit no storage operations.</li>
         <li>Proof of work is not authentication; the service is intentionally anonymous.</li>
       </ul>
       <p>See <code>capabilities.md</code> in the source repository for the full security assumptions and limitations.</p>

@@ -72,8 +72,8 @@ These are conditional guarantees, not a proof that the assumptions hold. The par
 - Fuel measures elapsed time and coarse storage charges, not deterministic instructions.
 - Proof of work can be parallelized, does not identify clients, and does not stop distributed attackers or requests to the cheap `/challenge` endpoint.
 - There is intentionally no authentication or user ownership. There is no rate limit; concurrency is capped at four workers and persistent SQLite storage at 32 MB.
-- Each invocation copies all registered procedure source plus its own shard state into a worker, so many procedures or a large individual shard increase memory and CPU cost.
-- Each completed invocation persists its operation log in one SQLite transaction. Same-shard call trees are serialized; different shards have disjoint state keys and may commit independently.
+- Workers open SQLite read-only and fetch procedure source and current-shard state on demand. Writes remain in a worker-local overlay until the parent commits a successful call tree.
+- A complete top-level and nested call tree commits its operation log in one SQLite transaction only on success. Exceptions, nested-call errors, serialization failures, timeouts, and worker failures discard every pending write.
 - The in-process cache assumes one server process owns the SQLite database; multiple replicas must not share the same database file.
 - Anyone who knows a procedure hash can invoke or inspect its source.
 - A parser or capability escape could expose powerful Bun worker globals. Worker isolation is not a hardened process or OS sandbox.
