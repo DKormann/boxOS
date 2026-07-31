@@ -87,10 +87,46 @@ const PROC_JSON = Object.freeze({
   },
 });
 
+// Keep mathematics deterministic and auditable. In particular, do not expose
+// Math.random or automatically inherit capabilities added by future runtimes.
+const PROC_MATH = Object.freeze({
+  E: Math.E,
+  LN2: Math.LN2,
+  LN10: Math.LN10,
+  LOG2E: Math.LOG2E,
+  LOG10E: Math.LOG10E,
+  PI: Math.PI,
+  SQRT1_2: Math.SQRT1_2,
+  SQRT2: Math.SQRT2,
+
+  abs: (value: number) => Math.abs(value),
+  ceil: (value: number) => Math.ceil(value),
+  floor: (value: number) => Math.floor(value),
+  round: (value: number) => Math.round(value),
+  trunc: (value: number) => Math.trunc(value),
+  min: (...values: number[]) => Math.min(...values),
+  max: (...values: number[]) => Math.max(...values),
+  pow: (value: number, exponent: number) => Math.pow(value, exponent),
+  sqrt: (value: number) => Math.sqrt(value),
+  cbrt: (value: number) => Math.cbrt(value),
+  hypot: (...values: number[]) => Math.hypot(...values),
+  exp: (value: number) => Math.exp(value),
+  log: (value: number) => Math.log(value),
+  log2: (value: number) => Math.log2(value),
+  log10: (value: number) => Math.log10(value),
+  sin: (value: number) => Math.sin(value),
+  cos: (value: number) => Math.cos(value),
+  tan: (value: number) => Math.tan(value),
+  asin: (value: number) => Math.asin(value),
+  acos: (value: number) => Math.acos(value),
+  atan: (value: number) => Math.atan(value),
+  atan2: (y: number, x: number) => Math.atan2(y, x),
+});
+
 function execute(code: string, ctx: ProcContext, arg: string): unknown {
-  // JSON is an explicit, frozen capability rather than an ambient worker global.
-  const func = new Function("ctx", "arg", "JSON", `"use strict";\n${code}`);
-  return func(ctx, arg, PROC_JSON);
+  // JSON and Math are explicit, frozen capabilities rather than ambient globals.
+  const func = new Function("ctx", "arg", "JSON", "Math", `"use strict";\n${code}`);
+  return func(ctx, arg, PROC_JSON, PROC_MATH);
 }
 
 self.onmessage = (event: MessageEvent<Invocation>) => {

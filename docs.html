@@ -123,7 +123,9 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
 
     <section>
       <h2>Procedure runtime</h2>
-      <p>The argument is available as <code>arg</code>. A frozen <code>JSON</code> capability provides <code>JSON.parse(string)</code> and <code>JSON.stringify(value)</code>. The <code>ctx</code> object provides:</p>
+      <p>The argument is available as <code>arg</code>. A frozen <code>JSON</code> capability provides <code>JSON.parse(string)</code> and <code>JSON.stringify(value)</code>.</p>
+      <p>A frozen deterministic <code>Math</code> capability provides the constants <code>E</code>, <code>LN2</code>, <code>LN10</code>, <code>LOG2E</code>, <code>LOG10E</code>, <code>PI</code>, <code>SQRT1_2</code>, and <code>SQRT2</code>; and the functions <code>abs</code>, <code>ceil</code>, <code>floor</code>, <code>round</code>, <code>trunc</code>, <code>min</code>, <code>max</code>, <code>pow</code>, <code>sqrt</code>, <code>cbrt</code>, <code>hypot</code>, <code>exp</code>, <code>log</code>, <code>log2</code>, <code>log10</code>, <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, and <code>atan2</code>. <code>Math.random</code> is intentionally unavailable.</p>
+      <p>The <code>ctx</code> object provides:</p>
       <ul>
         <li><code>ctx.store(key, value)</code>, <code>ctx.load(key)</code>, <code>ctx.delete(key)</code>, and <code>ctx.has(key)</code></li>
         <li><code>ctx.invoke(procedureHash, arg)</code>, which runs another procedure on the current shard</li>

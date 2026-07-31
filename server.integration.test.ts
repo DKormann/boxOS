@@ -221,6 +221,26 @@ describe("boxOS HTTP server", () => {
     expect(failed.error).toContain("count must be a number");
   });
 
+  test("provides deterministic allowlisted Math without random", async () => {
+    const code = `
+      let value = JSON.parse(arg);
+      return JSON.stringify({
+        floor: Math.floor(value),
+        root: Math.sqrt(value),
+        pi: Math.PI,
+        random: typeof Math.random
+      });
+    `;
+    const registered = await signedRequest({ register: code }, 1);
+    const result = await signedRequest({ invoke: registered.ok, shard: "math", arg: "9.8" }, 100);
+    expect(result.ok).toBe(`{"floor":9,"root":${Math.sqrt(9.8)},"pi":${Math.PI},"random":"undefined"}`);
+
+    const mutationCode = "Math.floor = Math.ceil; return 1;";
+    const mutation = await signedRequest({ register: mutationCode }, 1);
+    const failed = await signedRequest({ invoke: mutation.ok, shard: "math", arg: "" }, 100);
+    expect(typeof failed.error).toBe("string");
+  });
+
   test("charges procedure registration by stored source size", async () => {
     const code = `return arg; /* ${"x".repeat(2048)} */`;
     const underfunded = await signedRequest({ register: code }, 1);
