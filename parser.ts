@@ -8,6 +8,18 @@ const FORBIDDEN_PROPERTIES = new Set([
   "__proto__", "arguments", "callee", "caller", "constructor", "eval", "prototype",
 ]);
 
+// Some JavaScript reserved words are not grammar keywords in this small language.
+// Keep them available as fixed property names (for example, ctx.delete), but never
+// permit them as user-controlled bindings.
+const FORBIDDEN_BINDING_NAMES = new Set([
+  "await", "break", "case", "catch", "class", "const", "continue", "debugger",
+  "default", "delete", "do", "else", "enum", "eval", "export", "extends", "false",
+  "finally", "for", "function", "if", "implements", "import", "in", "instanceof",
+  "interface", "let", "new", "null", "package", "private", "protected", "public",
+  "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof",
+  "var", "void", "while", "with", "yield", "arguments",
+]);
+
 type TokenKind = "identifier" | "number" | "string" | "keyword" | "punctuator" | "eof";
 
 type Token = {
@@ -170,7 +182,7 @@ class Parser {
   constructor(source: string, argumentNames: readonly string[]) {
     const root = new Set<string>();
     for (const name of argumentNames) {
-      if (!isIdentifierName(name) || KEYWORDS.has(name)) {
+      if (!isIdentifierName(name) || FORBIDDEN_BINDING_NAMES.has(name)) {
         throw new TypeError(`Invalid procedure argument name: ${JSON.stringify(name)}`);
       }
       if (root.has(name)) throw new TypeError(`Duplicate procedure argument: ${name}`);
@@ -230,7 +242,7 @@ class Parser {
 
   private variableDeclaration(end: boolean): void {
     for (;;) {
-      const name = this.expectIdentifier("Expected a variable name");
+      const name = this.expectBindingIdentifier("Expected a variable name");
       this.declare(name);
       if (this.match("=")) this.expression();
       if (!this.match(",")) break;
@@ -239,13 +251,13 @@ class Parser {
   }
 
   private functionDeclaration(): void {
-    const name = this.expectIdentifier("Basic functions must have a name");
+    const name = this.expectBindingIdentifier("Basic functions must have a name");
     this.declare(name);
     this.expect("(");
     const parameters: string[] = [];
     if (!this.at(")")) {
       do {
-        const parameter = this.expectIdentifier("Expected a parameter name");
+        const parameter = this.expectBindingIdentifier("Expected a parameter name");
         if (parameters.includes(parameter.value)) this.fail(`Duplicate parameter '${parameter.value}'`, parameter);
         parameters.push(parameter.value);
       } while (this.match(","));
@@ -454,6 +466,14 @@ class Parser {
     return token;
   }
 
+  private expectBindingIdentifier(message: string): Token {
+    const token = this.expectIdentifier(message);
+    if (FORBIDDEN_BINDING_NAMES.has(token.value)) {
+      this.fail(`Reserved name '${token.value}' cannot be used as a binding`, token);
+    }
+    return token;
+  }
+
   private expect(value: string): void {
     if (!this.match(value)) this.fail(`Expected '${value}'`);
   }
@@ -471,7 +491,7 @@ class Parser {
   }
 
   private at(value: string): boolean {
-    return this.current.value === value;
+    return this.current.kind === "punctuator" && this.current.value === value;
   }
 
   private advance(): void {

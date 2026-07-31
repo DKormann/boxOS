@@ -28,6 +28,11 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+interface WorkerOptions {
+  /** Use Bun's smaller JavaScriptCore heap profile. This is not a hard memory limit. */
+  smol?: boolean;
+}
+
 declare const process: ProcessLike;
 
 declare namespace Bun {

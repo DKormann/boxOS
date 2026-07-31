@@ -1,189 +1,141 @@
-
 import { validateProcCode } from "./parser.ts";
 
-const builder = (()=>{
+const PORT = 4000;
+const INVOCATION_FUEL_MS = 100;
+const MAX_REQUEST_BYTES = 1_000_000;
 
-  type Schema <T> = (x: any) => T
-
-  type Infer<S extends Schema<any>> = S extends Schema<infer T> ? T : never
-
-  const string: Schema<string> = (x: any) => {
-    if (typeof x === "string") return x;
-    throw new Error(`Expected string, got ${typeof x}`);
-  }
-
-  const number: Schema<number> = (x: any) => {
-    if (typeof x === "number") return x;
-    throw new Error(`Expected number, got ${typeof x}`);
-  }
-
-  const boolean: Schema<boolean> = (x: any) => {
-    if (typeof x === "boolean") return x;
-    throw new Error(`Expected boolean, got ${typeof x}`);
-  }
-
-  function record<T> (schema: Schema<T>): Schema<Record<string, T>> {
-    return (x: any) => {
-      if (typeof x !== "object" || x === null) {
-        throw new Error(`Expected object, got ${typeof x}`);
-      }
-      const result: Record<string, T> = {};
-      for (const key in x) {
-        result[key] = schema(x[key]);
-      }
-      return result;
-    }
-  }
-
-  function struct<T extends Record<string, Schema<any>>> (schemas: T): Schema<{ [K in keyof T]: Infer<T[K]> }> {
-    return (x: any) => {
-      if (typeof x !== "object" || x === null) {
-        throw new Error(`Expected object, got ${typeof x}`);
-      }
-      const result: any = {};
-      for (const key in schemas) {
-        result[key] = schemas[key]!(x[key]);
-      }
-      return result;
-    }
-  }
-
-
-  function constant <T extends string | number | boolean>(value: T): Schema<T> {
-    return (x: any) => {
-      if (x === value) return value;
-      throw new Error(`Expected ${value}, got ${x}`);
-    }
-  }
-
-  function union <T extends Schema<any>[]>(...schemas: T): Schema<Infer<T[number]>> {
-    return (x: any) => {
-      for (const schema of schemas) {
-        try { 
-          return schema(x);
-        } catch (e) {
-          // ignore
-        }
-      }
-      throw new Error(`Value does not match any schema`);
-    }
-  }
-
-  return {
-    string,
-    number,
-    boolean,
-    record,
-    struct,
-    constant,
-    union,
-  }
-
-})()
-
-
-
-
-type PROC = {
-  $: "proc",
-  code: string,
-}
-
-function PROC_HASH (proc: PROC): string {
-  return Bun.hash.adler32(proc.code).toString(16);
-}
-
-
-type PROC_CTX = {
-  store: (key: string, value: string) => void,
-  load: (key: string) => string,
-  delete: (key: string) => void,
-  has: (key: string) => boolean,
-  hash: (proc: PROC) => string,
-  invoke: (proc_hash: string, arg: string) => string,
-  validate: (code: string) => void,
-} & typeof builder
-
-
-function _invoke (proc: PROC, ctx: PROC_CTX, arg: string): string {
-  try{
-    const func = new Function("ctx", "arg" , proc.code);
-    const result = func(ctx, arg);
-    return JSON.stringify({ok: result});
-  }catch (e){
-    return JSON.stringify({error: String(e)});
-  }
-}
-
-
-const funcs: PROC = {
-  $: "proc",
-  code: (
-    function(c: PROC_CTX, arg: string) {
-      let ARG = c.union(
-        c.struct({register: c.string,}),
-        c.struct({invoke: c.string, arg: c.string,}),
-        c.struct({inspect: c.string}),
-      )
-      let dat = ARG(JSON.parse(arg));
-      function sub_invoke (proc_hash: string, arg: string): string {
-
-        let ctx : PROC_CTX = {
-          ...c,
-          store (k,v) { c.store(proc_hash+":"+k,v) },
-          load (k) { return c.load(proc_hash+":"+k) },
-          delete (k) { c.delete(proc_hash+":"+k) },
-          has (k) { return c.has(proc_hash+":"+k) },
-          invoke (proc_hash, arg){ return sub_invoke(proc_hash, arg) }
-        }
-        return _invoke({$:"proc", code: c.load(proc_hash)}, ctx, arg);
-      }
-      if ("register" in dat){
-        let proc: PROC = {
-          $: "proc",
-          code: c.string(dat.register),
-        }
-        c.validate(proc.code);
-        let hash = c.hash(proc);
-        c.store(hash, proc.code);
-        return hash;
-      } if ("invoke" in dat){
-        let hash = c.string(dat.invoke);
-        return sub_invoke(hash, dat.arg);
-      }else{
-        return c.load(dat.inspect);
-      }
-
-    }
-  ).toString()
-}
-
+type Proc = { $: "proc"; code: string };
+type Operation =
+  | { type: "store"; key: string; value: string }
+  | { type: "delete"; key: string };
+type WorkerReply = { resultJson: string; operations: Operation[] };
 
 const storage = new Map<string, string>();
 
-Bun.serve({
-  port: 4000,
-  async fetch (req){
-    let url = new URL(req.url);
-    if (url.pathname === "/proc"){
-      let body = await req.text();
-      let ctx: PROC_CTX = {
-        load (key) {
-          let value = storage.get(key);
-          if (value === undefined) throw new Error(`No such key: ${key}`);
-          return value;
-        },
-        store: storage.set,
-        delete: storage.delete,
-        has: storage.has,
-        hash (proc) {return PROC_HASH(proc);},
-        validate: validateProcCode,
-        invoke () { throw new Error("Cannot invoke from top-level context") },
-        ...builder,
+function procHash(proc: Proc): string {
+  return Bun.hash.adler32(proc.code).toString(16);
+}
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function requireString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  if (typeof value !== "string") throw new TypeError(`Expected '${key}' to be a string`);
+  return value;
+}
+
+async function invokeIsolated(procHash: string, arg: string): Promise<unknown> {
+  if (!storage.has(procHash)) return { error: `Unknown procedure: ${procHash}` };
+
+  const worker = new Worker(new URL("./proc-worker.ts", import.meta.url), { smol: true });
+
+  return await new Promise(resolve => {
+    let settled = false;
+    const finish = (result: unknown): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate();
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      finish({ error: `Fuel exhausted after ${INVOCATION_FUEL_MS}ms` });
+    }, INVOCATION_FUEL_MS);
+
+    worker.onmessage = (event: MessageEvent<WorkerReply>) => {
+      if (settled) return;
+      const message = event.data;
+      if (!message || typeof message.resultJson !== "string" || !Array.isArray(message.operations)) {
+        finish({ error: "Invalid invocation worker response" });
+        return;
       }
-      return new Response(JSON.stringify(_invoke(funcs, ctx, body)), {status: 200});
-    }else{
-      return new Response("Not Found", {status: 404});
-    }
+
+      // Timed-out workers never commit partial writes. Successful and caught-error
+      // invocations commit their operations in order.
+      for (const operation of message.operations) {
+        if (operation.type === "store") storage.set(operation.key, operation.value);
+        else if (operation.type === "delete") storage.delete(operation.key);
+      }
+
+      try {
+        finish(JSON.parse(message.resultJson));
+      } catch {
+        finish({ error: "Invocation returned invalid JSON" });
+      }
+    };
+
+    worker.onerror = event => {
+      finish({ error: `Invocation worker failed: ${event.message}` });
+    };
+
+    worker.postMessage({ procHash, arg, storage: [...storage.entries()] });
+  });
+}
+
+async function handleProc(req: Request): Promise<Response> {
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+    return json({ error: "Request body is too large" }, 413);
   }
-})
+
+  try {
+    const body = await req.text();
+    if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
+      return json({ error: "Request body is too large" }, 413);
+    }
+
+    const value: unknown = JSON.parse(body);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new TypeError("Expected a JSON object");
+    }
+    const request = value as Record<string, unknown>;
+
+    if ("register" in request) {
+      const code = requireString(request, "register");
+      validateProcCode(code);
+      const hash = procHash({ $: "proc", code });
+      storage.set(hash, code);
+      return json({ ok: hash });
+    }
+
+    if ("invoke" in request) {
+      const hash = requireString(request, "invoke");
+      const arg = requireString(request, "arg");
+      // Keep the original API shape: dispatch succeeds, then the inner result is
+      // either {ok: procedureResult} or {error: ...}.
+      return json({ ok: await invokeIsolated(hash, arg) });
+    }
+
+    if ("inspect" in request) {
+      const key = requireString(request, "inspect");
+      if (key.includes(":")) throw new Error("Invalid inspect key");
+      return json({ ok: storage.get(key) });
+    }
+
+    throw new TypeError("Expected 'register', 'invoke', or 'inspect'");
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
+}
+
+Bun.serve({
+  port: PORT,
+  async fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname !== "/proc") return new Response("Not Found", { status: 404 });
+    if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+    return handleProc(req);
+  },
+});
+
+console.log(`boxOS listening on http://localhost:${PORT}`);
