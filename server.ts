@@ -32,10 +32,20 @@ const challenges = new Map<string, number>();
 let activeWorkers = 0;
 const lockedShards = new Set<string>();
 
+const CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+  "access-control-max-age": "86400",
+};
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...CORS_HEADERS,
+    },
   });
 }
 
@@ -363,6 +373,9 @@ Bun.serve({
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url);
+    if (req.method === "OPTIONS" && ["/challenge", "/proc", "/stats"].includes(url.pathname)) {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
     if (url.pathname === "/") return Response.redirect(new URL("/example", url), 302);
     if (url.pathname === "/health") return new Response("OK", { status: 200 });
     if (url.pathname === "/stats") {

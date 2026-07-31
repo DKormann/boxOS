@@ -147,6 +147,27 @@ describe("boxOS HTTP server", () => {
     expect(stats.proofOfWork.baseDifficultyBits).toBe(8);
   });
 
+  test("allows browser clients from any origin", async () => {
+    const preflight = await fetch(`${origin}/proc`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://client.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(preflight.headers.get("access-control-allow-headers")).toContain("content-type");
+
+    const challenge = await fetch(`${origin}/challenge`, {
+      method: "POST",
+      headers: { origin: "https://client.example" },
+    });
+    expect(challenge.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
   test("requires proof of work", async () => {
     const response = await fetch(`${origin}/proc`, {
       method: "POST",
