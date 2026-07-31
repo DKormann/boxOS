@@ -12,6 +12,7 @@ type Invocation = {
   storage: [string, string][];
   storageBytes: number;
   storageFuel: number;
+  stateRoot: string;
 };
 
 type Proc = { $: "proc"; code: string };
@@ -98,11 +99,11 @@ self.onmessage = (event: MessageEvent<Invocation>) => {
     return value;
   }
 
-  function invokeByHash(hash: string, arg: string): { ok: unknown } | { error: string } {
+  function invokeProcedure(hash: string, arg: string): { ok: unknown } | { error: string } {
     const code = storage.get(hash);
     if (code === undefined) return { error: `Unknown procedure: ${hash}` };
 
-    const prefix = `${hash}:`;
+    const prefix = `${task.stateRoot}${hash}:`;
     const ctx: ProcContext = {
       ...builder,
       store(key, value) {
@@ -139,13 +140,13 @@ self.onmessage = (event: MessageEvent<Invocation>) => {
       },
       has(key) { return storage.has(prefix + storageString(key, "Storage key")); },
       hash: proc => procHash(proc.code),
-      invoke: invokeByHash,
+      invoke: invokeProcedure,
       validate: validateProcCode,
     };
     return invoke(code, ctx, arg);
   }
 
-  const result = invokeByHash(task.procHash, task.arg);
+  const result = invokeProcedure(task.procHash, task.arg);
   try {
     // Serialize in the worker so arbitrary return values never cross the worker boundary.
     self.postMessage({ resultJson: JSON.stringify(result), operations });

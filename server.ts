@@ -6,9 +6,10 @@ import {
   MAX_STORAGE_OPERATIONS,
   MAX_WORKERS,
   storageFuelCost,
-  totalStorageBytes,
+  storagePressureMultiplier,
   WORKER_BASE_FUEL,
 } from "./resources.ts";
+import { PersistentStorage } from "./storage.ts";
 
 const PORT = Number(Bun.env.PORT ?? "4000");
 const MAX_FUEL_MS = 100;
@@ -17,6 +18,8 @@ const CHALLENGE_TTL_MS = 60_000;
 const MAX_CHALLENGES = 10_000;
 const MAX_REQUEST_BYTES = 1_000_000;
 const EXAMPLE_FILE = Bun.file(new URL("./example.html", import.meta.url));
+const DOCS_FILE = Bun.file(new URL("./docs.html", import.meta.url));
+const DATABASE_PATH = Bun.env.BOXOS_DB_PATH ?? "boxos.sqlite";
 type Operation =
   | { type: "store"; key: string; value: string }
   | { type: "delete"; key: string };
@@ -24,9 +27,10 @@ type WorkerMessage =
   | { fuelDelta: number }
   | { resultJson: string; operations: Operation[] };
 
-const storage = new Map<string, string>();
+const storage = new PersistentStorage(DATABASE_PATH);
 const challenges = new Map<string, number>();
 let activeWorkers = 0;
+const lockedShards = new Set<string>();
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -43,6 +47,14 @@ function requireString(record: Record<string, unknown>, key: string): string {
   const value = record[key];
   if (typeof value !== "string") throw new TypeError(`Expected '${key}' to be a string`);
   return value;
+}
+
+function requireShard(request: Record<string, unknown>): string {
+  const shard = requireString(request, "shard");
+  if (shard.length === 0 || shard.length > 128) {
+    throw new TypeError("Expected 'shard' to contain 1 to 128 characters");
+  }
+  return shard;
 }
 
 function requireFuel(request: Record<string, unknown>): number {
@@ -103,11 +115,58 @@ function issueChallenge(): Response {
   return json({ challenge, expiresAt, baseDifficultyBits: POW_BASE_BITS, maxFuel: MAX_FUEL_MS });
 }
 
+function serverStats(): Response {
+  const storageBytes = storage.byteLength;
+  const nextWorkerFuelCost = activeWorkers >= MAX_WORKERS
+    ? null
+    : WORKER_BASE_FUEL * (activeWorkers + 1);
+  const now = Date.now();
+  let liveChallenges = 0;
+  for (const expiresAt of challenges.values()) {
+    if (expiresAt >= now) liveChallenges++;
+  }
+
+  return json({
+    hashing: "SHA-256",
+    fuel: {
+      minimum: 1,
+      maximum: MAX_FUEL_MS,
+      workerBaseCost: WORKER_BASE_FUEL,
+      nextWorkerCost: nextWorkerFuelCost,
+      minimumFuelForNextWorker: nextWorkerFuelCost === null ? null : nextWorkerFuelCost + 1,
+      workerCostFormula: "workerBaseCost * (activeWorkers + 1)",
+    },
+    workers: {
+      active: activeWorkers,
+      limit: MAX_WORKERS,
+      lockedShards: lockedShards.size,
+      locking: "exclusive per requested shard",
+    },
+    storage: {
+      backend: "sqlite",
+      persistent: true,
+      usedBytes: storageBytes,
+      limitBytes: MAX_STORAGE_BYTES,
+      pressureMultiplier: storagePressureMultiplier(storageBytes),
+      fuelPerStartedKiB: storagePressureMultiplier(storageBytes),
+      operationLimitPerInvocation: MAX_STORAGE_OPERATIONS,
+    },
+    proofOfWork: {
+      baseDifficultyBits: POW_BASE_BITS,
+      difficultyFormula: "baseDifficultyBits + ceil(log2(fuel))",
+      challengeTtlMs: CHALLENGE_TTL_MS,
+      liveChallenges,
+      challengeLimit: MAX_CHALLENGES,
+    },
+    requestBodyLimitBytes: MAX_REQUEST_BYTES,
+  });
+}
+
 function commitOperations(operations: Operation[]): string | undefined {
   if (operations.length > MAX_STORAGE_OPERATIONS) return "Too many storage operations";
 
   const pending = new Map<string, string | undefined>();
-  let usedBytes = totalStorageBytes(storage);
+  let usedBytes = storage.byteLength;
   for (const operation of operations) {
     if (!operation || typeof operation.key !== "string") return "Invalid storage operation";
     const previous = pending.has(operation.key) ? pending.get(operation.key) : storage.get(operation.key);
@@ -124,27 +183,50 @@ function commitOperations(operations: Operation[]): string | undefined {
     if (usedBytes > MAX_STORAGE_BYTES) return "Storage limit exceeded";
   }
 
-  for (const [key, value] of pending) {
-    if (value === undefined) storage.delete(key);
-    else storage.set(key, value);
+  try {
+    storage.apply(pending);
+    return undefined;
+  } catch (error) {
+    return `Storage persistence failed: ${errorMessage(error)}`;
   }
-  return undefined;
 }
 
-async function invokeIsolated(procHash: string, arg: string, fuel: number): Promise<unknown> {
+async function invokeIsolated(procHash: string, shard: string, arg: string, fuel: number): Promise<unknown> {
   if (!storage.has(procHash)) return { error: `Unknown procedure: ${procHash}` };
-  if (activeWorkers >= MAX_WORKERS) return { error: "Worker limit reached; try again later" };
+
+  const requestDeadline = Date.now() + fuel;
+  while (lockedShards.has(shard) || activeWorkers >= MAX_WORKERS) {
+    const remaining = requestDeadline - Date.now();
+    if (remaining <= 0) return { error: "Fuel exhausted waiting for a shard or worker lock" };
+    await Bun.sleep(Math.min(remaining, 2));
+  }
 
   const creationCost = WORKER_BASE_FUEL * (activeWorkers + 1);
-  if (fuel <= creationCost) return { error: `Worker creation needs ${creationCost} fuel` };
-  const workerFuel = fuel - creationCost;
-  const storageBytes = totalStorageBytes(storage);
-  const worker = new Worker(new URL("./proc-worker.ts", import.meta.url), { smol: true });
+  const fuelDeadlineAtCreation = requestDeadline - creationCost;
+  const workerFuel = Math.floor(fuelDeadlineAtCreation - Date.now());
+  if (workerFuel <= 0) return { error: `Worker creation needs ${creationCost} fuel` };
+
+  const storageBytes = storage.byteLength;
+  const stateRoot = `s:${sha256(shard)}:`;
+  const shardStorage: [string, string][] = [];
+  for (const entry of storage.entries()) {
+    const isProcedure = /^[0-9a-f]{64}$/.test(entry[0]);
+    if (isProcedure || entry[0].startsWith(stateRoot)) shardStorage.push(entry);
+  }
+
+  lockedShards.add(shard);
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./proc-worker.ts", import.meta.url), { smol: true });
+  } catch (error) {
+    lockedShards.delete(shard);
+    return { error: `Could not create invocation worker: ${errorMessage(error)}` };
+  }
   activeWorkers++;
 
   return await new Promise(resolve => {
     let settled = false;
-    let fuelDeadline = Date.now() + workerFuel;
+    let fuelDeadline = fuelDeadlineAtCreation;
     let timer: ReturnType<typeof setTimeout>;
     const fuelError = (): { error: string } => ({
       error: `Fuel exhausted (${creationCost} fuel paid for worker creation)`,
@@ -155,6 +237,7 @@ async function invokeIsolated(procHash: string, arg: string, fuel: number): Prom
       clearTimeout(timer);
       worker.terminate();
       activeWorkers--;
+      lockedShards.delete(shard);
       resolve(result);
     };
     const scheduleTimeout = (): void => {
@@ -207,9 +290,10 @@ async function invokeIsolated(procHash: string, arg: string, fuel: number): Prom
       worker.postMessage({
         procHash,
         arg,
-        storage: [...storage.entries()],
+        storage: shardStorage,
         storageBytes,
         storageFuel: workerFuel,
+        stateRoot,
       });
     } catch (error) {
       finish({ error: `Could not start invocation: ${errorMessage(error)}` });
@@ -241,7 +325,7 @@ async function handleProc(req: Request): Promise<Response> {
       verifyProofOfWork(request, fuel, `register\n${code}`);
       validateProcCode(code);
       const hash = procHash(code);
-      const usedBytes = totalStorageBytes(storage);
+      const usedBytes = storage.byteLength;
       const previous = storage.get(hash);
       const nextBytes = usedBytes - (previous === undefined ? 0 : entryBytes(hash, previous)) + entryBytes(hash, code);
       if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
@@ -253,10 +337,11 @@ async function handleProc(req: Request): Promise<Response> {
 
     if ("invoke" in request) {
       const hash = requireString(request, "invoke");
+      const shard = requireShard(request);
       const arg = requireString(request, "arg");
       const fuel = requireFuel(request);
-      verifyProofOfWork(request, fuel, `invoke\n${hash}\n${arg}`);
-      return json(await invokeIsolated(hash, arg, fuel));
+      verifyProofOfWork(request, fuel, `invoke\n${shard}\n${hash}\n${arg}`);
+      return json(await invokeIsolated(hash, shard, arg, fuel));
     }
 
     if ("inspect" in request) {
@@ -278,6 +363,19 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/health") return new Response("OK", { status: 200 });
+    if (url.pathname === "/stats") {
+      if (req.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
+      return serverStats();
+    }
+    if (url.pathname === "/docs") {
+      if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+      return new Response(await DOCS_FILE.text(), {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "default-src 'none'",
+        },
+      });
+    }
     if (url.pathname === "/challenge") {
       if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       return issueChallenge();

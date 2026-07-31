@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>boxOS client documentation</title>
+</head>
+<body>
+  <header>
+    <h1>boxOS client documentation</h1>
+    <p>Protocol documentation for people and agents implementing boxOS clients.</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>Endpoints</h2>
+      <ul>
+        <li><code>POST /challenge</code>: create a one-use proof-of-work challenge.</li>
+        <li><code>POST /proc</code>: register, invoke, or inspect a procedure.</li>
+        <li><code>GET /stats</code>: read current limits, prices, and resource usage.</li>
+        <li><code>GET /health</code>: returns <code>OK</code>.</li>
+        <li><code>GET /example</code>: interactive example client.</li>
+      </ul>
+      <p>JSON requests should use <code>content-type: application/json</code>. Procedure responses are JSON objects containing either <code>ok</code> or <code>error</code>.</p>
+    </section>
+
+    <section>
+      <h2>1. Request a challenge</h2>
+      <pre><code>POST /challenge
+
+{
+  "challenge": "one-use UUID",
+  "expiresAt": 1730000000000,
+  "baseDifficultyBits": 8,
+  "maxFuel": 100
+}</code></pre>
+      <p>A challenge expires after the duration reported by <code>/stats</code>. It is consumed by the first validation attempt, including a failed attempt.</p>
+    </section>
+
+    <section>
+      <h2>2. Build the operation commitment</h2>
+      <p>Commitments use literal newline characters:</p>
+      <ul>
+        <li>Register: <code>"register\n" + code</code></li>
+        <li>Invoke: <code>"invoke\n" + shard + "\n" + hash + "\n" + arg</code></li>
+        <li>Inspect: <code>"inspect\n" + key</code></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>3. Compute proof of work</h2>
+      <p>Choose integer fuel from 1 through the current <code>maxFuel</code>. Find a non-negative safe-integer nonce such that:</p>
+      <pre><code>input = JSON.stringify([challenge, fuel, commitment, nonce])
+digest = SHA-256(UTF-8(input))
+requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
+      <p>The digest must begin with at least the required number of zero bits. Fuel therefore increases expected proof work approximately linearly.</p>
+    </section>
+
+    <section>
+      <h2>4. Submit the operation</h2>
+
+      <h3>Register</h3>
+      <pre><code>POST /proc
+
+{
+  "register": "return arg;",
+  "fuel": 1,
+  "challenge": "...",
+  "nonce": 123
+}
+
+{"ok":"SHA-256 source hash"}</code></pre>
+      <p>The hash is lowercase hexadecimal SHA-256 of the exact UTF-8 procedure source. Registration consumes storage fuel, so larger procedures or a fuller server may require more requested fuel.</p>
+
+      <h3>Invoke</h3>
+      <pre><code>POST /proc
+
+{
+  "invoke": "procedure hash",
+  "shard": "client-selected shard id",
+  "arg": "string argument",
+  "fuel": 100,
+  "challenge": "...",
+  "nonce": 456
+}
+
+{"ok":"procedure result"}</code></pre>
+      <p>The shard must contain 1 to 128 characters. Invocations on the same shard execute serially; different shards may execute in parallel. Worker creation consumes fuel according to <code>/stats</code>. Remaining fuel is a wall-clock execution budget. Storage writes consume additional fuel and shorten the deadline; deleting existing storage earns fuel.</p>
+
+      <h3>Inspect</h3>
+      <pre><code>POST /proc
+
+{
+  "inspect": "procedure hash",
+  "fuel": 1,
+  "challenge": "...",
+  "nonce": 789
+}
+
+{"ok":"stored procedure source"}</code></pre>
+      <p>Inspection keys containing <code>:</code> are rejected. This prevents direct inspection of procedure-namespaced state.</p>
+    </section>
+
+    <section>
+      <h2>Procedure runtime</h2>
+      <p>The argument is available as <code>arg</code>. The <code>ctx</code> object provides:</p>
+      <ul>
+        <li><code>ctx.store(key, value)</code>, <code>ctx.load(key)</code>, <code>ctx.delete(key)</code>, and <code>ctx.has(key)</code></li>
+        <li><code>ctx.invoke(procedureHash, arg)</code>, which runs another procedure on the current shard</li>
+        <li><code>ctx.hash(proc)</code> and <code>ctx.validate(code)</code></li>
+        <li><code>ctx.string</code>, <code>ctx.number</code>, <code>ctx.boolean</code>, <code>ctx.record</code>, <code>ctx.struct</code>, <code>ctx.constant</code>, and <code>ctx.union</code></li>
+      </ul>
+      <p>Keys and values passed to storage must be strings. Storage is namespaced by both shard and procedure hash, so different procedures on one shard do not share keys. Nested procedure calls remain on the current shard because <code>ctx.invoke</code> has no shard argument. Procedure source and namespaced state are persisted in SQLite across server restarts; challenges and active invocations are not persisted.</p>
+    </section>
+
+    <section>
+      <h2>Limits and retry behavior</h2>
+      <ul>
+        <li>Read <code>/stats</code> rather than hard-coding limits or prices.</li>
+        <li>Invocations wait for their exclusive shard lock and an available worker while consuming fuel.</li>
+        <li>A lock-fuel response may be retried with a new challenge.</li>
+        <li>A consumed or expired challenge cannot be retried.</li>
+        <li>A timeout does not commit partial storage operations.</li>
+        <li>Proof of work is not authentication; the service is intentionally anonymous.</li>
+      </ul>
+      <p>See <code>capabilities.md</code> in the source repository for the full security assumptions and limitations.</p>
+    </section>
+  </main>
+</body>
+</html>

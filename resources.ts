@@ -15,7 +15,10 @@ export function totalStorageBytes(storage: Map<string, string>): number {
   return total;
 }
 
+export function storagePressureMultiplier(usedBytes: number): number {
+  return Math.min(4, 1 + Math.floor((usedBytes * 4) / MAX_STORAGE_BYTES));
+}
+
 export function storageFuelCost(key: string, value: string, usedBytes: number): number {
-  const pressure = Math.min(4, 1 + Math.floor((usedBytes * 4) / MAX_STORAGE_BYTES));
-  return pressure * Math.max(1, Math.ceil(entryBytes(key, value) / 1024));
+  return storagePressureMultiplier(usedBytes) * Math.max(1, Math.ceil(entryBytes(key, value) / 1024));
 }

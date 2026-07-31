@@ -16,17 +16,23 @@
 </head>
 <body>
   <h1>boxOS example</h1>
-  <p>Register a procedure, then invoke it with a string argument.</p>
+  <p>Register this procedure, then invoke it repeatedly. Its counter is stored in SQLite under the procedure hash and survives server restarts.</p>
 
   <label for="code">Procedure body</label>
-  <textarea id="code">return "hello, " + arg;</textarea>
+  <textarea id="code">let count = +(ctx.load("count") || "0");
+count += 1;
+ctx.store("count", "" + count);
+return arg + ": " + count;</textarea>
   <button id="register" type="button">Register</button>
 
   <label for="hash">Procedure hash</label>
   <input id="hash" readonly placeholder="Register a procedure first">
 
+  <label for="shard">Shard</label>
+  <input id="shard" value="example-counter">
+
   <label for="arg">Argument</label>
-  <input id="arg" value="world">
+  <input id="arg" value="persistent count">
 
   <label for="fuel">Invocation fuel (milliseconds, 1–100)</label>
   <input id="fuel" type="number" min="1" max="100" value="100">
@@ -38,6 +44,7 @@
   <script>
     const code = document.querySelector("#code");
     const hash = document.querySelector("#hash");
+    const shard = document.querySelector("#shard");
     const arg = document.querySelector("#arg");
     const fuel = document.querySelector("#fuel");
     const output = document.querySelector("#output");
@@ -45,7 +52,7 @@
 
     function commitment(operation) {
       if ("register" in operation) return `register\n${operation.register}`;
-      if ("invoke" in operation) return `invoke\n${operation.invoke}\n${operation.arg}`;
+      if ("invoke" in operation) return `invoke\n${operation.shard}\n${operation.invoke}\n${operation.arg}`;
       return `inspect\n${operation.inspect}`;
     }
 
@@ -101,7 +108,7 @@
         output.textContent = "Register a procedure first.";
         return;
       }
-      call({ invoke: hash.value, arg: arg.value }, Number(fuel.value));
+      call({ invoke: hash.value, shard: shard.value, arg: arg.value }, Number(fuel.value));
     });
   </script>
 </body>
