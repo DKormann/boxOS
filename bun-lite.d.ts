@@ -164,6 +164,8 @@ declare namespace Bun {
         stdin: WritableStream<Uint8Array> | null;
         pid: number;
         exitCode: number | null;
+        exited: Promise<number>;
+        kill(signal?: number | string): void;
       };
       spawnSync(options: {
         cmd: string[];
@@ -193,6 +195,14 @@ declare module "*.png" {
   export default path;
 }
 
+declare module "node:crypto" {
+  export interface Hash {
+    update(data: string): Hash;
+    digest(encoding: "hex"): string;
+  }
+  export function createHash(algorithm: "sha256"): Hash;
+}
+
 declare module "node:fs" {
   export function mkdirSync(
     path: string | URL,
@@ -219,6 +229,19 @@ declare module "bun" {
   export const sleep: typeof Bun.sleep;
   export const which: typeof Bun.which;
   export default Bun;
+}
+
+declare module "bun:test" {
+  export function describe(name: string, test: () => void): void;
+  export function test(name: string, test: () => void | Promise<void>, timeout?: number): void;
+  export function beforeAll(setup: () => void | Promise<void>): void;
+  export function afterAll(teardown: () => void | Promise<void>): void;
+  export function expect(value: unknown): {
+    toBe(expected: unknown): void;
+    toContain(expected: unknown): void;
+    toMatch(expected: RegExp): void;
+    toHaveLength(expected: number): void;
+  };
 }
 
 declare module "bun:sqlite" {

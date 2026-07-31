@@ -1,51 +1,75 @@
-# boxOS capabilities and limits
+# boxOS capabilities and security model
 
 ## HTTP API
 
-`POST /proc` accepts one JSON operation:
+- `POST /challenge` returns a one-use proof-of-work challenge.
+- `POST /proc` accepts `register`, `invoke`, or `inspect` operations.
+- `GET /example` serves a small browser client.
+- `GET /health` returns server health.
 
-- `{"register":"<code>"}` validates and stores a procedure, returning its Adler-32 hash.
-- `{"invoke":"<hash>","arg":"<string>"}` invokes a stored procedure.
-- `{"inspect":"<hash>"}` returns stored top-level content. Keys containing `:` cannot be inspected.
+Every `/proc` request includes `fuel` (an integer from 1 to 100), the challenge, and a nonce. Request bodies are limited to 1 MB. Storage is in memory and is lost on restart.
 
-Request bodies are limited to 1 MB. Other paths return 404 and non-POST requests return 405. Storage is in memory and is lost when the server stops.
+Procedures are identified by the hexadecimal SHA-256 hash of their source code.
 
-## Procedure language
+## Proof of work and fuel
 
-Procedures use a small, validated JavaScript subset with:
+A client first requests a challenge, then finds a nonce for which:
 
-- `let`, `const`, named basic functions, blocks, `if`, `while`, and basic `for` loops
-- `return`, `throw`, `break`, and `continue`
-- primitive, array, and object literals
-- arithmetic, comparison, logical, conditional, assignment, and update operators
-- calls, fixed `value.field` access, and numeric `value[Number(expression)]` indexing
-- only declared locals, function parameters, `ctx`, and `arg`
+```text
+SHA-256(JSON.stringify([challenge, fuel, operationCommitment, nonce]))
+```
 
-Dynamic string indexing, reserved binding names, dangerous prototype properties, classes, `new`, `this`, imports, async code, and direct ambient globals are rejected. Validation is a security filter, not a guarantee that accepted code is valid JavaScript.
+has at least `8 + ceil(log2(fuel))` leading zero bits. Challenges expire after 60 seconds and are consumed after one attempt. Expected client work therefore grows approximately in proportion to requested fuel.
 
-## Runtime capabilities
+Fuel is capped at 100 units. Proof of work raises the cost of request floods, but does not replace rate limiting.
+
+Resource prices are deliberately simple:
+
+- At most four invocation workers may run at once.
+- Worker creation costs `5 × (active workers + 1)` fuel, so it becomes more expensive near the worker limit. The remaining fuel is the invocation's wall-clock budget.
+- Every storage write costs at least one fuel. Cost grows with entry size and rises from 1× to 4× as the 32 MB global store fills.
+- Deleting an existing value earns its calculated storage cost as additional invocation fuel and can extend the deadline. Writing the same amount back consumes that fuel again.
+- Registration pays the same storage price. Inspection does not consume storage fuel.
+
+Fuel is wall-clock based and includes worker startup. Storage charges shorten the current invocation deadline. Registration and inspection normally request only the fuel they need.
+
+## Procedure capabilities
+
+The validated JavaScript subset supports basic declarations, functions, control flow, literals, operators, calls, fixed property access, and guarded numeric indexing. Only declared names plus `ctx` and `arg` may be referenced.
 
 `arg` is the supplied string. `ctx` provides:
 
 - namespaced string storage: `store`, `load`, `delete`, and `has`
 - nested procedure invocation with `invoke`
-- procedure hashing and validation with `hash` and `validate`
-- value/schema helpers: `string`, `number`, `boolean`, `record`, `struct`, `constant`, and `union`
+- SHA-256 procedure hashing and parser validation
+- `string`, `number`, `boolean`, `record`, `struct`, `constant`, and `union` helpers
 
-Procedure storage keys are prefixed with the current procedure hash. Nested procedures receive their own namespace.
+Dynamic string indexing, dangerous prototype properties, reserved bindings, classes, `new`, `this`, imports, async code, and direct ambient globals are rejected.
 
-## Isolation and fuel
+## Security assumptions and conditional guarantees
 
-Each top-level invocation runs in a fresh Bun Web Worker in strict mode and receives a fixed 100 ms wall-clock budget. The worker is terminated when that budget expires. Timed-out invocations return a fuel-exhaustion error and do not commit partial storage writes.
+Assuming all of the following are true:
 
-Workers use Bun's `smol` heap profile, which reduces memory use but is **not a hard memory limit**. A worker still shares the server process; a hard memory boundary requires a subprocess or container with OS-level limits.
+1. The parser perfectly rejects every program outside its intended subset.
+2. JavaScriptCore and Bun have no relevant implementation vulnerabilities.
+3. The property restrictions prevent access to constructors, prototypes, ambient globals, or equivalent escape paths.
+4. Every object and function exposed through `ctx` behaves as documented and does not leak additional capabilities.
+5. SHA-256 remains collision and preimage resistant.
+6. Worker termination operates correctly.
 
-## Important limits
+Then procedure code is confined to pure computation, its argument, the explicit `ctx` capabilities, its hash-prefixed storage namespace, and procedures it explicitly invokes. It cannot directly access the filesystem, network, subprocesses, environment, server globals, or another procedure's namespaced storage. A timed-out top-level invocation cannot commit its partial storage operation log.
 
-- Fuel is elapsed time, not deterministic instruction counting.
-- Worker startup is included in the 100 ms budget.
-- Concurrent storage updates are not transactional; completed operation logs are applied in completion order.
-- Adler-32 is non-cryptographic and collision-prone, so hashes are not suitable for adversarial content addressing.
-- There are no persistent-storage, authentication, authorization, rate, or total-storage quotas.
-- The property denylist and exposed `ctx` API remain part of the security boundary; new capabilities require review.
-- Worker isolation reduces risk from loops and recursion but is not equivalent to a hardened sandbox or process boundary.
+These are conditional guarantees, not a proof that the assumptions hold. The parser, property rules, runtime, and `ctx` implementation are all part of the trusted computing base.
+
+## Security limits
+
+- Bun Web Workers share the server process. `smol` reduces heap use but is not a hard memory limit; memory exhaustion may terminate the server.
+- Fuel measures elapsed time and coarse storage charges, not deterministic instructions.
+- Proof of work can be parallelized, does not identify clients, and does not stop distributed attackers or requests to the cheap `/challenge` endpoint.
+- There is intentionally no authentication or user ownership. There is no rate limit or persistent storage; concurrency is capped at four workers and storage at 32 MB.
+- Each invocation copies the current storage map into a worker, so a large store increases memory and CPU cost even with the storage cap.
+- Completed concurrent invocations commit operation logs in completion order and are not transactional.
+- Anyone who knows a procedure hash can invoke or inspect its source.
+- A parser or capability escape could expose powerful Bun worker globals. Worker isolation is not a hardened process or OS sandbox.
+
+Public deployment should add authentication, request and storage quotas, concurrency limits, and execution in a non-privileged subprocess or container with OS-enforced CPU, memory, filesystem, and network restrictions.

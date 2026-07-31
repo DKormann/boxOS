@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>boxOS example</title>
+  <style>
+    body { max-width: 42rem; margin: 3rem auto; padding: 0 1rem; font: 16px/1.5 system-ui, sans-serif; }
+    label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
+    textarea, input, button, pre { box-sizing: border-box; font: inherit; }
+    textarea, input { width: 100%; padding: .6rem; }
+    textarea { min-height: 8rem; font-family: ui-monospace, monospace; }
+    button { margin-top: .75rem; padding: .5rem .8rem; }
+    pre { min-height: 4rem; padding: 1rem; overflow: auto; background: #f4f4f4; }
+  </style>
+</head>
+<body>
+  <h1>boxOS example</h1>
+  <p>Register a procedure, then invoke it with a string argument.</p>
+
+  <label for="code">Procedure body</label>
+  <textarea id="code">return "hello, " + arg;</textarea>
+  <button id="register" type="button">Register</button>
+
+  <label for="hash">Procedure hash</label>
+  <input id="hash" readonly placeholder="Register a procedure first">
+
+  <label for="arg">Argument</label>
+  <input id="arg" value="world">
+
+  <label for="fuel">Invocation fuel (milliseconds, 1–100)</label>
+  <input id="fuel" type="number" min="1" max="100" value="100">
+  <button id="invoke" type="button">Invoke</button>
+
+  <h2>Response</h2>
+  <pre id="output">Ready.</pre>
+
+  <script>
+    const code = document.querySelector("#code");
+    const hash = document.querySelector("#hash");
+    const arg = document.querySelector("#arg");
+    const fuel = document.querySelector("#fuel");
+    const output = document.querySelector("#output");
+    const encoder = new TextEncoder();
+
+    function commitment(operation) {
+      if ("register" in operation) return `register\n${operation.register}`;
+      if ("invoke" in operation) return `invoke\n${operation.invoke}\n${operation.arg}`;
+      return `inspect\n${operation.inspect}`;
+    }
+
+    function leadingZeroBits(bytes) {
+      let count = 0;
+      for (const byte of bytes) {
+        if (byte === 0) { count += 8; continue; }
+        for (let bit = 7; bit >= 0 && (byte & (1 << bit)) === 0; bit--) count++;
+        break;
+      }
+      return count;
+    }
+
+    async function proofOfWork(operation, fuel) {
+      const challengeResponse = await fetch("/challenge", { method: "POST" });
+      const challenge = await challengeResponse.json();
+      const difficulty = challenge.baseDifficultyBits + Math.ceil(Math.log2(fuel));
+      for (let nonce = 0; ; nonce++) {
+        const input = JSON.stringify([challenge.challenge, fuel, commitment(operation), nonce]);
+        const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
+        if (leadingZeroBits(new Uint8Array(digest)) >= difficulty) {
+          return { challenge: challenge.challenge, nonce };
+        }
+      }
+    }
+
+    async function call(operation, requestedFuel) {
+      output.textContent = "Computing proof of work…";
+      try {
+        const proof = await proofOfWork(operation, requestedFuel);
+        output.textContent = "Running…";
+        const response = await fetch("/proc", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...operation, fuel: requestedFuel, ...proof }),
+        });
+        const result = await response.json();
+        output.textContent = JSON.stringify(result, null, 2);
+        return result;
+      } catch (error) {
+        output.textContent = String(error);
+        return null;
+      }
+    }
+
+    document.querySelector("#register").addEventListener("click", async () => {
+      const result = await call({ register: code.value }, 1);
+      if (typeof result?.ok === "string") hash.value = result.ok;
+    });
+
+    document.querySelector("#invoke").addEventListener("click", () => {
+      if (!hash.value) {
+        output.textContent = "Register a procedure first.";
+        return;
+      }
+      call({ invoke: hash.value, arg: arg.value }, Number(fuel.value));
+    });
+  </script>
+</body>
+</html>

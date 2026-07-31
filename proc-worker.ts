@@ -1,4 +1,6 @@
+import { procHash } from "./hash.ts";
 import { validateProcCode } from "./parser.ts";
+import { entryBytes, MAX_STORAGE_BYTES, MAX_STORAGE_OPERATIONS, storageFuelCost } from "./resources.ts";
 
 type Operation =
   | { type: "store"; key: string; value: string }
@@ -8,6 +10,8 @@ type Invocation = {
   procHash: string;
   arg: string;
   storage: [string, string][];
+  storageBytes: number;
+  storageFuel: number;
 };
 
 type Proc = { $: "proc"; code: string };
@@ -71,10 +75,6 @@ function makeBuilder() {
   return { string, number, boolean, record, struct, constant, union };
 }
 
-function procHash(proc: Proc): string {
-  return Bun.hash.adler32(proc.code).toString(16);
-}
-
 function invoke(code: string, ctx: ProcContext, arg: string): { ok: unknown } | { error: string } {
   try {
     // Strict mode removes legacy/sloppy behavior from otherwise valid procedure code.
@@ -90,6 +90,13 @@ self.onmessage = (event: MessageEvent<Invocation>) => {
   const storage = new Map(task.storage);
   const operations: Operation[] = [];
   const builder = makeBuilder();
+  let usedStorageBytes = task.storageBytes;
+  let storageFuel = task.storageFuel;
+
+  function storageString(value: unknown, name: string): string {
+    if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+    return value;
+  }
 
   function invokeByHash(hash: string, arg: string): { ok: unknown } | { error: string } {
     const code = storage.get(hash);
@@ -99,18 +106,39 @@ self.onmessage = (event: MessageEvent<Invocation>) => {
     const ctx: ProcContext = {
       ...builder,
       store(key, value) {
-        const fullKey = prefix + key;
-        storage.set(fullKey, value);
-        operations.push({ type: "store", key: fullKey, value });
+        if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
+        const fullKey = prefix + storageString(key, "Storage key");
+        const storedValue = storageString(value, "Stored value");
+        const previous = storage.get(fullKey);
+        const nextBytes = usedStorageBytes - (previous === undefined ? 0 : entryBytes(fullKey, previous))
+          + entryBytes(fullKey, storedValue);
+        if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
+
+        const cost = storageFuelCost(fullKey, storedValue, usedStorageBytes);
+        if (cost > storageFuel) throw new Error(`Storage write needs ${cost} fuel; ${storageFuel} remains`);
+        storageFuel -= cost;
+        self.postMessage({ fuelDelta: cost });
+        usedStorageBytes = nextBytes;
+        storage.set(fullKey, storedValue);
+        operations.push({ type: "store", key: fullKey, value: storedValue });
       },
-      load(key) { return storage.get(prefix + key); },
+      load(key) { return storage.get(prefix + storageString(key, "Storage key")); },
       delete(key) {
-        const fullKey = prefix + key;
-        storage.delete(fullKey);
-        operations.push({ type: "delete", key: fullKey });
+        const fullKey = prefix + storageString(key, "Storage key");
+        const previous = storage.get(fullKey);
+        if (previous !== undefined) {
+          if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
+          const reward = storageFuelCost(fullKey, previous, usedStorageBytes);
+          const previousFuel = storageFuel;
+          usedStorageBytes -= entryBytes(fullKey, previous);
+          storageFuel += reward;
+          self.postMessage({ fuelDelta: previousFuel - storageFuel });
+          storage.delete(fullKey);
+          operations.push({ type: "delete", key: fullKey });
+        }
       },
-      has(key) { return storage.has(prefix + key); },
-      hash: procHash,
+      has(key) { return storage.has(prefix + storageString(key, "Storage key")); },
+      hash: proc => procHash(proc.code),
       invoke: invokeByHash,
       validate: validateProcCode,
     };
