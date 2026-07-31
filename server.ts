@@ -359,6 +359,7 @@ async function handleProc(req: Request): Promise<Response> {
 }
 
 Bun.serve({
+  hostname: Bun.env.HOST ?? "127.0.0.1",
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url);
