@@ -9,7 +9,7 @@ export function procHash(code: string): string {
 }
 
 /** Encode the complete SHA-256 digest in one lowercase DNS-safe label. */
-export function pageHash(html: string): string {
+export function fullPageHash(html: string): string {
   const bytes = sha256(html).match(/../g)!.map(byte => Number.parseInt(byte, 16));
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   let bits = 0;
@@ -26,4 +26,9 @@ export function pageHash(html: string): string {
   }
   if (bits > 0) result += alphabet[(buffer << (5 - bits)) & 31];
   return result;
+}
+
+/** An 80-bit content ID; collisions are detected and never overwrite content. */
+export function pageHash(html: string): string {
+  return fullPageHash(html).slice(0, 16);
 }

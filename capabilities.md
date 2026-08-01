@@ -13,7 +13,7 @@
 
 Every `/proc` request includes `fuel` (an integer from 1 to 100), the challenge, and a nonce. Request bodies are limited to 1 MB. Procedure source and namespaced state are persisted in SQLite at `BOXOS_DB_PATH` (default `boxos.sqlite`). Challenges and active-worker state are intentionally ephemeral.
 
-Procedures are identified by the hexadecimal SHA-256 hash of their source code. Hosted pages use the complete SHA-256 digest encoded as a 52-character lowercase Base32 DNS label.
+Procedures are identified by the hexadecimal SHA-256 hash of their source code. Hosted pages use a 16-character lowercase Base32 prefix containing the first 80 SHA-256 bits. A collision is rejected and can never overwrite existing content; legacy 52-character page URLs remain readable.
 
 ## Proof of work and fuel
 

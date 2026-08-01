@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { rm } from "fs/promises";
 import { BoxOSClient } from "./client.ts";
-import { procHash } from "./hash.ts";
+import { fullPageHash, pageHash, procHash } from "./hash.ts";
 
 const port = 41_000 + Math.floor(Math.random() * 10_000);
 const origin = `http://localhost:${port}`;
@@ -120,7 +120,7 @@ describe("boxOS HTTP server", () => {
     expect(rootResponse.headers.get("location")).toBe("/example");
     const redirect = await fetch(`${origin}/example`, { redirect: "manual" });
     const location = redirect.headers.get("location")!;
-    expect(location).toMatch(/^http:\/\/[a-z2-7]{52}\.pages\.test\/$/);
+    expect(location).toMatch(/^http:\/\/[a-z2-7]{16}\.pages\.test\/$/);
     const hostname = new URL(location).hostname;
     const response = await fetch(`${origin}/`, { headers: { host: hostname } });
     expect(response.status).toBe(200);
@@ -128,6 +128,11 @@ describe("boxOS HTTP server", () => {
     expect(body).toContain("<title>boxOS example</title>");
     expect(body).toContain("ctx.load(\"count\")");
     expect(body).toContain("ctx.store(\"count\"");
+
+    const legacyResponse = await fetch(`${origin}/`, {
+      headers: { host: `${fullPageHash(body)}.pages.test` },
+    });
+    expect(await legacyResponse.text()).toBe(body);
   });
 
   test("serves unstyled client documentation", async () => {
@@ -161,7 +166,8 @@ describe("boxOS HTTP server", () => {
     const client = new BoxOSClient(origin);
     const html = '<!doctype html><title>Published</title><script>document.body.append(" works")</script>';
     const first = await client.publish(html);
-    expect(first.hash).toMatch(/^[a-z2-7]{52}$/);
+    expect(first.hash).toMatch(/^[a-z2-7]{16}$/);
+    expect(first.hash).toBe(pageHash(html));
     expect(first.url).toBe(`http://${first.hash}.pages.test/`);
 
     const hostname = new URL(first.url).hostname;

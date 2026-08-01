@@ -125,9 +125,9 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
 
     <section>
       <h2>Content-addressed pages</h2>
-      <p><code>BoxOSClient.publish(html)</code> publishes one immutable HTML document of at most 32 KiB. Its URL contains the full SHA-256 digest encoded as 52 lowercase Base32 characters:</p>
+      <p><code>BoxOSClient.publish(html)</code> publishes one immutable HTML document of at most 32 KiB. Its URL uses the first 80 bits of SHA-256 encoded as 16 lowercase Base32 characters:</p>
       <pre><code>https://&lt;hash&gt;.pages.boxos.org/</code></pre>
-      <p>Pages run as normal JavaScript websites on separate hash subdomains. They may load external resources and use browser APIs subject to ordinary browser security rules. A page hostname never exposes boxOS API routes.</p>
+      <p>Pages run as normal JavaScript websites on separate hash subdomains. They may load external resources and use browser APIs subject to ordinary browser security rules. A page hostname never exposes boxOS API routes. If a short hash is already occupied by different HTML, publication fails and never overwrites existing content. Legacy 52-character page URLs remain supported.</p>
       <p>Publication requires 100 fuel plus five additional proof-of-work difficulty bits. A lease lasts seven days. Publishing identical HTML returns the same hash and extends its lease by another seven days. Pages are served with <code>nosniff</code> and <code>noindex, nofollow</code> headers.</p>
     </section>
 

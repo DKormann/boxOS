@@ -1,4 +1,4 @@
-import { pageHash, procHash, sha256 } from "./hash.ts";
+import { fullPageHash, pageHash, procHash, sha256 } from "./hash.ts";
 import { validateProcCode } from "./parser.ts";
 import {
   entryBytes,
@@ -26,6 +26,7 @@ const PAGES_BASE_DOMAIN = Bun.env.PAGES_BASE_DOMAIN ?? "pages.boxos.org";
 const PAGES_SCHEME = Bun.env.PAGES_SCHEME ?? "https";
 const EXAMPLE_HTML = await Bun.file(new URL("./example.html", import.meta.url)).text();
 const EXAMPLE_PAGE_HASH = pageHash(EXAMPLE_HTML);
+const EXAMPLE_LEGACY_PAGE_HASH = fullPageHash(EXAMPLE_HTML);
 const DOCS_FILE = Bun.file(new URL("./docs.html", import.meta.url));
 const CLIENT_FILE = Bun.file(new URL("./client.js", import.meta.url));
 const DATABASE_PATH = Bun.env.BOXOS_DB_PATH ?? "boxos.sqlite";
@@ -187,7 +188,7 @@ function serverStats(): Response {
     },
     pages: {
       baseDomain: PAGES_BASE_DOMAIN,
-      hashEncoding: "lowercase base32 SHA-256",
+      hashEncoding: "16-character lowercase Base32 SHA-256 prefix (80 bits)",
       count: storage.pageCount + 1,
       maximumBytes: MAX_PAGE_BYTES,
       requiredFuel: PAGE_FUEL,
@@ -349,14 +350,14 @@ function pageHashFromHostname(hostname: string): string | undefined {
   const suffix = `.${PAGES_BASE_DOMAIN}`;
   if (!hostname.endsWith(suffix)) return undefined;
   const hash = hostname.slice(0, -suffix.length);
-  return /^[a-z2-7]{52}$/.test(hash) ? hash : undefined;
+  return /^(?:[a-z2-7]{16}|[a-z2-7]{52})$/.test(hash) ? hash : undefined;
 }
 
 function servePage(req: Request, hash: string, pathname: string): Response {
   if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method Not Allowed", { status: 405 });
   if (pathname !== "/") return new Response("Not Found", { status: 404 });
 
-  const stored = hash === EXAMPLE_PAGE_HASH
+  const stored = hash === EXAMPLE_PAGE_HASH || hash === EXAMPLE_LEGACY_PAGE_HASH
     ? { html: EXAMPLE_HTML, expiresAt: Number.MAX_SAFE_INTEGER }
     : storage.getPage(hash);
   if (stored === undefined) return new Response("Page Not Found", { status: 404 });
@@ -403,6 +404,9 @@ async function handlePageUpload(req: Request): Promise<Response> {
     storage.purgeExpiredPages();
     const hash = pageHash(html);
     const existing = storage.getPage(hash);
+    if (existing !== undefined && existing.html !== html) {
+      throw new Error("Page hash collision; existing content was not changed");
+    }
     const usedBytes = storage.byteLength;
     const nextBytes = usedBytes - (existing === undefined ? 0 : pageStorageBytes(hash, existing.html))
       + pageStorageBytes(hash, html);
