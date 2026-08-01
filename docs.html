@@ -29,9 +29,9 @@
     <section>
       <h2>Client module</h2>
       <p>The hosted ES module handles hashing, proof of work, registration, and retries:</p>
-      <pre><code>import { BoxOSClient } from "https://164.90.168.234/client.js";
+      <pre><code>import { BoxOSClient } from "https://api.boxos.org/client.js";
 
-const box = new BoxOSClient("https://164.90.168.234");
+const box = new BoxOSClient("https://api.boxos.org");
 const counter = box.proc(`
   let count = +(ctx.load("count") || "0");
   count += 1;
