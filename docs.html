@@ -133,7 +133,7 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
 
     <section>
       <h2>Procedure runtime</h2>
-      <p>The argument is available as <code>arg</code>. A frozen <code>JSON</code> capability provides <code>JSON.parse(string)</code> and <code>JSON.stringify(value)</code>.</p>
+      <p>The argument is available as <code>arg</code>. A frozen <code>JSON</code> capability provides <code>JSON.parse(string)</code> and <code>JSON.stringify(value)</code>. A frozen callable <code>String(value)</code> capability performs ordinary JavaScript string conversion.</p>
       <p>A frozen deterministic <code>Math</code> capability provides the constants <code>E</code>, <code>LN2</code>, <code>LN10</code>, <code>LOG2E</code>, <code>LOG10E</code>, <code>PI</code>, <code>SQRT1_2</code>, and <code>SQRT2</code>; and the functions <code>abs</code>, <code>ceil</code>, <code>floor</code>, <code>round</code>, <code>trunc</code>, <code>min</code>, <code>max</code>, <code>pow</code>, <code>sqrt</code>, <code>cbrt</code>, <code>hypot</code>, <code>exp</code>, <code>log</code>, <code>log2</code>, <code>log10</code>, <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, and <code>atan2</code>. <code>Math.random</code> is intentionally unavailable.</p>
       <p>The <code>ctx</code> object provides:</p>
       <ul>
@@ -142,7 +142,7 @@ requiredLeadingZeroBits = baseDifficultyBits + ceil(log2(fuel))</code></pre>
         <li><code>ctx.hash(proc)</code> and <code>ctx.validate(code)</code></li>
         <li><code>ctx.string</code>, <code>ctx.number</code>, <code>ctx.boolean</code>, <code>ctx.record</code>, <code>ctx.struct</code>, <code>ctx.constant</code>, and <code>ctx.union</code></li>
       </ul>
-      <p>Procedures may throw any expression, for example <code>throw "invalid input";</code>. The language intentionally does not expose <code>new</code> or the ambient <code>Error</code> constructor.</p>
+      <p>Declarations may use <code>let</code>, <code>const</code>, or <code>var</code>. Both strict equality (<code>===</code>, <code>!==</code>) and coercing equality (<code>==</code>, <code>!=</code>) are available. Procedures may use <code>try</code>, optional <code>catch</code> bindings, and <code>finally</code>; and may throw any expression, for example <code>throw "invalid input";</code>. The language intentionally does not expose <code>new</code> or the ambient <code>Error</code> constructor.</p>
       <p>Keys and values passed to storage must be strings. Storage is namespaced by both shard and procedure hash, so different procedures on one shard do not share keys. Nested procedure calls remain on the current shard because <code>ctx.invoke</code> has no shard argument. Procedure source and namespaced state are persisted in SQLite across server restarts; challenges and active invocations are not persisted.</p>
     </section>
 

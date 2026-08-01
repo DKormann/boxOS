@@ -89,6 +89,8 @@ const PROC_JSON = Object.freeze({
 
 // Keep mathematics deterministic and auditable. In particular, do not expose
 // Math.random or automatically inherit capabilities added by future runtimes.
+const PROC_STRING = Object.freeze((value?: unknown): string => String(value));
+
 const PROC_MATH = Object.freeze({
   E: Math.E,
   LN2: Math.LN2,
@@ -124,9 +126,9 @@ const PROC_MATH = Object.freeze({
 });
 
 function execute(code: string, ctx: ProcContext, arg: string): unknown {
-  // JSON and Math are explicit, frozen capabilities rather than ambient globals.
-  const func = new Function("ctx", "arg", "JSON", "Math", `"use strict";\n${code}`);
-  return func(ctx, arg, PROC_JSON, PROC_MATH);
+  // These are explicit, frozen capabilities rather than ambient worker globals.
+  const func = new Function("ctx", "arg", "JSON", "Math", "String", `"use strict";\n${code}`);
+  return func(ctx, arg, PROC_JSON, PROC_MATH, PROC_STRING);
 }
 
 self.onmessage = (event: MessageEvent<Invocation>) => {

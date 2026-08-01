@@ -1,6 +1,7 @@
 const KEYWORDS = new Set([
-  "break", "const", "continue", "else", "false", "for", "function", "if",
-  "let", "null", "return", "throw", "true", "typeof", "while",
+  "break", "catch", "const", "continue", "else", "false", "finally", "for",
+  "function", "if", "let", "null", "return", "throw", "true", "try", "typeof",
+  "var", "while",
 ]);
 
 const FORBIDDEN_PROPERTIES = new Set([
@@ -110,7 +111,7 @@ class Lexer {
     }
 
     const two = this.source.slice(this.offset, this.offset + 2);
-    if (["&&", "||", "<=", ">=", "++", "--", "+=", "-=", "*=", "/=", "%="].includes(two)) {
+    if (["&&", "||", "==", "!=", "<=", ">=", "++", "--", "+=", "-=", "*=", "/=", "%="].includes(two)) {
       this.take(); this.take();
       return { kind: "punctuator", value: two, ...start };
     }
@@ -204,11 +205,14 @@ class Parser {
   private statement(): void {
     if (this.match(";")) return;
     if (this.at("{")) return this.block();
-    if (this.matchKeyword("let") || this.matchKeyword("const")) return this.variableDeclaration(true);
+    if (this.matchKeyword("let") || this.matchKeyword("const") || this.matchKeyword("var")) {
+      return this.variableDeclaration(true);
+    }
     if (this.matchKeyword("function")) return this.functionDeclaration();
     if (this.matchKeyword("if")) return this.ifStatement();
     if (this.matchKeyword("while")) return this.whileStatement();
     if (this.matchKeyword("for")) return this.forStatement();
+    if (this.matchKeyword("try")) return this.tryStatement();
     if (this.matchKeyword("return")) {
       if (!this.at(";") && !this.at("}") && this.current.kind !== "eof" && this.current.line === this.previous.line) {
         this.expression();
@@ -229,9 +233,9 @@ class Parser {
     this.endStatement();
   }
 
-  private block(): void {
+  private block(initialNames: readonly string[] = []): void {
     this.expect("{");
-    this.scopes.push(new Set());
+    this.scopes.push(new Set(initialNames));
     while (!this.at("}")) {
       if (this.current.kind === "eof") this.fail("Expected '}'");
       this.statement();
@@ -289,7 +293,9 @@ class Parser {
   private forStatement(): void {
     this.expect("(");
     this.scopes.push(new Set());
-    if (this.matchKeyword("let") || this.matchKeyword("const")) this.variableDeclaration(false);
+    if (this.matchKeyword("let") || this.matchKeyword("const") || this.matchKeyword("var")) {
+      this.variableDeclaration(false);
+    }
     else if (!this.at(";")) this.expression();
     this.expect(";");
     if (!this.at(";")) this.expression();
@@ -300,6 +306,25 @@ class Parser {
     this.statement();
     this.loopDepth--;
     this.scopes.pop();
+  }
+
+  private tryStatement(): void {
+    this.block();
+    let handled = false;
+    if (this.matchKeyword("catch")) {
+      handled = true;
+      let parameter: string | undefined;
+      if (this.match("(")) {
+        parameter = this.expectBindingIdentifier("Expected a catch parameter").value;
+        this.expect(")");
+      }
+      this.block(parameter === undefined ? [] : [parameter]);
+    }
+    if (this.matchKeyword("finally")) {
+      handled = true;
+      this.block();
+    }
+    if (!handled) this.fail("A try statement requires catch or finally");
   }
 
   private parenthesizedExpression(): void {
@@ -507,7 +532,7 @@ class Parser {
 function binaryPrecedence(operator: string): number {
   if (operator === "||") return 1;
   if (operator === "&&") return 2;
-  if (operator === "===" || operator === "!==") return 3;
+  if (["==", "!=", "===", "!=="].includes(operator)) return 3;
   if (["<", "<=", ">", ">="].includes(operator)) return 4;
   if (operator === "+" || operator === "-") return 5;
   if (operator === "*" || operator === "/" || operator === "%") return 6;
@@ -541,7 +566,7 @@ function isIdentifierName(value: string): boolean {
  */
 export function validateProcCode(
   source: string,
-  argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math"],
+  argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math", "String"],
 ): void {
   if (typeof source !== "string") throw new TypeError("Procedure code must be a string");
   new Parser(source, argumentNames).parse();
@@ -549,7 +574,7 @@ export function validateProcCode(
 
 export function isValidProcCode(
   source: string,
-  argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math"],
+  argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math", "String"],
 ): boolean {
   try {
     validateProcCode(source, argumentNames);

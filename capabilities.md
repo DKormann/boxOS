@@ -49,9 +49,9 @@ The hash covers only the stored HTML, not external resources loaded by that HTML
 
 ## Procedure capabilities
 
-The validated JavaScript subset supports basic declarations, functions, control flow, literals, operators, calls, fixed property access, guarded numeric indexing, and throwing expressions. Only declared names plus `ctx`, `arg`, and the frozen `JSON` and `Math` capabilities may be referenced.
+The validated JavaScript subset supports `let`, `const`, and `var` declarations; basic functions and control flow; `try`, `catch`, and `finally`; literals; strict and coercing equality; other basic operators; calls; fixed property access; guarded numeric indexing; and throwing expressions. Only declared names plus `ctx`, `arg`, and the frozen `JSON`, `Math`, and `String` capabilities may be referenced.
 
-`arg` is the supplied string. `JSON` provides only `parse` and `stringify`. `Math` provides explicitly allowlisted constants and deterministic numeric functions; `Math.random` is unavailable. `ctx` provides:
+`arg` is the supplied string. `JSON` provides only `parse` and `stringify`. `Math` provides explicitly allowlisted constants and deterministic numeric functions; `Math.random` is unavailable. `String(value)` performs ordinary string conversion. `ctx` provides:
 
 - storage namespaced by both current shard and procedure hash: `store`, `load`, `delete`, and `has`
 - nested procedure invocation on the current shard with `invoke`

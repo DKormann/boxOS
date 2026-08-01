@@ -258,6 +258,24 @@ describe("boxOS HTTP server", () => {
     expect(failed.error).toContain("count must be a number");
   });
 
+  test("supports var, try/catch/finally, loose equality, and String conversion", async () => {
+    const code = `
+      var value = JSON.parse(arg).value;
+      try {
+        if (value == 5) throw "matched";
+        if (value != 6) throw "unexpected";
+      } catch (error) {
+        value = String(error);
+      } finally {
+        value += "!";
+      }
+      return value;
+    `;
+    const registered = await signedRequest({ register: code }, 1);
+    const result = await signedRequest({ invoke: registered.ok, shard: "common-language", arg: '{"value":"5"}' }, 100);
+    expect(result.ok).toBe("matched!");
+  });
+
   test("provides deterministic allowlisted Math without random", async () => {
     const code = `
       let value = JSON.parse(arg);
