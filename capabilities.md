@@ -4,6 +4,7 @@
 
 - `POST /challenge` returns a one-use proof-of-work challenge.
 - `POST /proc` accepts `register`, `invoke`, or `inspect` operations.
+- `POST /page` publishes or renews a content-addressed HTML page.
 - `GET /example` serves a small browser client.
 - `GET /client.js` serves the compiled browser ES module from `client.ts`.
 - `GET /docs` serves unstyled client protocol documentation.
@@ -12,7 +13,7 @@
 
 Every `/proc` request includes `fuel` (an integer from 1 to 100), the challenge, and a nonce. Request bodies are limited to 1 MB. Procedure source and namespaced state are persisted in SQLite at `BOXOS_DB_PATH` (default `boxos.sqlite`). Challenges and active-worker state are intentionally ephemeral.
 
-Procedures are identified by the hexadecimal SHA-256 hash of their source code.
+Procedures are identified by the hexadecimal SHA-256 hash of their source code. Hosted pages use the complete SHA-256 digest encoded as a 52-character lowercase Base32 DNS label.
 
 ## Proof of work and fuel
 
@@ -37,6 +38,14 @@ Resource prices are deliberately simple:
 - Registration pays the same storage price. Inspection does not consume storage fuel.
 
 Fuel is wall-clock based and includes worker startup. Storage charges shorten the current invocation deadline. Registration and inspection normally request only the fuel they need.
+
+## Static page hosting
+
+A page is one immutable UTF-8 HTML document of at most 32 KiB, hosted at `https://<hash>.pages.boxos.org/`. Pages have full JavaScript and ordinary browser capabilities. Each hash receives a distinct hostname; page hosts do not expose API routes.
+
+Publication requires 100 fuel and five extra proof-of-work difficulty bits. Leases last seven days. Republishing identical HTML renews the same hash and extends its lease. Responses use `nosniff`, `noindex, nofollow`, an ETag, and a one-hour public cache lifetime.
+
+The hash covers only the stored HTML, not external resources loaded by that HTML. Full JavaScript pages can display abusive content or load changing external code; takedown blocking and operational abuse handling remain required.
 
 ## Procedure capabilities
 

@@ -1,10 +1,11 @@
-import { procHash, sha256 } from "./hash.ts";
+import { pageHash, procHash, sha256 } from "./hash.ts";
 import { validateProcCode } from "./parser.ts";
 import {
   entryBytes,
   MAX_STORAGE_BYTES,
   MAX_STORAGE_OPERATIONS,
   MAX_WORKERS,
+  pageStorageBytes,
   storageFuelCost,
   storagePressureMultiplier,
   WORKER_BASE_FUEL,
@@ -17,7 +18,14 @@ const POW_BASE_BITS = 8;
 const CHALLENGE_TTL_MS = 60_000;
 const MAX_CHALLENGES = 10_000;
 const MAX_REQUEST_BYTES = 1_000_000;
-const EXAMPLE_FILE = Bun.file(new URL("./example.html", import.meta.url));
+const MAX_PAGE_BYTES = 32 * 1024;
+const PAGE_FUEL = 100;
+const PAGE_POW_BONUS_BITS = Number(Bun.env.PAGE_POW_BONUS_BITS ?? "5");
+const PAGE_LEASE_MS = 7 * 24 * 60 * 60 * 1000;
+const PAGES_BASE_DOMAIN = Bun.env.PAGES_BASE_DOMAIN ?? "pages.boxos.org";
+const PAGES_SCHEME = Bun.env.PAGES_SCHEME ?? "https";
+const EXAMPLE_HTML = await Bun.file(new URL("./example.html", import.meta.url)).text();
+const EXAMPLE_PAGE_HASH = pageHash(EXAMPLE_HTML);
 const DOCS_FILE = Bun.file(new URL("./docs.html", import.meta.url));
 const CLIENT_FILE = Bun.file(new URL("./client.js", import.meta.url));
 const DATABASE_PATH = Bun.env.BOXOS_DB_PATH ?? "boxos.sqlite";
@@ -92,7 +100,12 @@ function leadingZeroBits(hex: string): number {
   return count;
 }
 
-function verifyProofOfWork(request: Record<string, unknown>, fuel: number, commitment: string): void {
+function verifyProofOfWork(
+  request: Record<string, unknown>,
+  fuel: number,
+  commitment: string,
+  difficultyBonus = 0,
+): void {
   const challenge = requireString(request, "challenge");
   const nonce = request.nonce;
   if (!Number.isSafeInteger(nonce) || (nonce as number) < 0) {
@@ -103,7 +116,7 @@ function verifyProofOfWork(request: Record<string, unknown>, fuel: number, commi
   challenges.delete(challenge); // Every challenge is one-use, including failed proofs.
   if (expiresAt === undefined || expiresAt < Date.now()) throw new Error("Invalid or expired challenge");
 
-  const difficulty = POW_BASE_BITS + Math.ceil(Math.log2(fuel));
+  const difficulty = POW_BASE_BITS + Math.ceil(Math.log2(fuel)) + difficultyBonus;
   const digest = sha256(JSON.stringify([challenge, fuel, commitment, nonce]));
   if (leadingZeroBits(digest) < difficulty) throw new Error("Invalid proof of work");
 }
@@ -127,6 +140,7 @@ function issueChallenge(): Response {
 }
 
 function serverStats(): Response {
+  storage.purgeExpiredPages();
   const storageBytes = storage.byteLength;
   const nextWorkerFuelCost = activeWorkers >= MAX_WORKERS
     ? null
@@ -170,6 +184,15 @@ function serverStats(): Response {
       challengeTtlMs: CHALLENGE_TTL_MS,
       liveChallenges,
       challengeLimit: MAX_CHALLENGES,
+    },
+    pages: {
+      baseDomain: PAGES_BASE_DOMAIN,
+      hashEncoding: "lowercase base32 SHA-256",
+      count: storage.pageCount + 1,
+      maximumBytes: MAX_PAGE_BYTES,
+      requiredFuel: PAGE_FUEL,
+      difficultyBonusBits: PAGE_POW_BONUS_BITS,
+      leaseMs: PAGE_LEASE_MS,
     },
     requestBodyLimitBytes: MAX_REQUEST_BYTES,
   });
@@ -318,6 +341,84 @@ async function invokeIsolated(procHash: string, shard: string, arg: string, fuel
   });
 }
 
+function pageUrl(hash: string): string {
+  return `${PAGES_SCHEME}://${hash}.${PAGES_BASE_DOMAIN}/`;
+}
+
+function pageHashFromHostname(hostname: string): string | undefined {
+  const suffix = `.${PAGES_BASE_DOMAIN}`;
+  if (!hostname.endsWith(suffix)) return undefined;
+  const hash = hostname.slice(0, -suffix.length);
+  return /^[a-z2-7]{52}$/.test(hash) ? hash : undefined;
+}
+
+function servePage(req: Request, hash: string, pathname: string): Response {
+  if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method Not Allowed", { status: 405 });
+  if (pathname !== "/") return new Response("Not Found", { status: 404 });
+
+  const stored = hash === EXAMPLE_PAGE_HASH
+    ? { html: EXAMPLE_HTML, expiresAt: Number.MAX_SAFE_INTEGER }
+    : storage.getPage(hash);
+  if (stored === undefined) return new Response("Page Not Found", { status: 404 });
+
+  const etag = `"${hash}"`;
+  const headers = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "public, max-age=3600",
+    "etag": etag,
+    "x-content-type-options": "nosniff",
+    "x-robots-tag": "noindex, nofollow",
+    "referrer-policy": "strict-origin-when-cross-origin",
+  };
+  if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers });
+  return new Response(req.method === "HEAD" ? null : stored.html, { headers });
+}
+
+async function handlePageUpload(req: Request): Promise<Response> {
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+    return json({ error: "Request body is too large" }, 413);
+  }
+
+  try {
+    const body = await req.text();
+    if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
+      return json({ error: "Request body is too large" }, 413);
+    }
+    const value: unknown = JSON.parse(body);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new TypeError("Expected a JSON object");
+    }
+    const request = value as Record<string, unknown>;
+    const html = requireString(request, "html");
+    const fuel = requireFuel(request);
+    if (fuel !== PAGE_FUEL) throw new Error(`Page publication requires exactly ${PAGE_FUEL} fuel`);
+    verifyProofOfWork(request, fuel, `page\n${html}`, PAGE_POW_BONUS_BITS);
+
+    const htmlBytes = new TextEncoder().encode(html).byteLength;
+    if (htmlBytes === 0 || htmlBytes > MAX_PAGE_BYTES) {
+      throw new Error(`Page HTML must contain 1 to ${MAX_PAGE_BYTES} UTF-8 bytes`);
+    }
+
+    storage.purgeExpiredPages();
+    const hash = pageHash(html);
+    const existing = storage.getPage(hash);
+    const usedBytes = storage.byteLength;
+    const nextBytes = usedBytes - (existing === undefined ? 0 : pageStorageBytes(hash, existing.html))
+      + pageStorageBytes(hash, html);
+    if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
+    const storageCost = storageFuelCost(`page:${hash}`, html, usedBytes);
+    if (storageCost > fuel) throw new Error(`Page storage needs ${storageCost} fuel`);
+
+    const now = Date.now();
+    const expiresAt = Math.max(now, existing?.expiresAt ?? now) + PAGE_LEASE_MS;
+    storage.setPage(hash, html, expiresAt);
+    return json({ ok: { hash, url: pageUrl(hash), expiresAt } });
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
+}
+
 async function handleProc(req: Request): Promise<Response> {
   const contentLength = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
@@ -380,7 +481,15 @@ Bun.serve({
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url);
-    if (req.method === "OPTIONS" && ["/challenge", "/proc", "/stats"].includes(url.pathname)) {
+    const isPagesHostname = url.hostname === PAGES_BASE_DOMAIN || url.hostname.endsWith(`.${PAGES_BASE_DOMAIN}`);
+    if (isPagesHostname) {
+      const hash = pageHashFromHostname(url.hostname);
+      return hash === undefined
+        ? new Response("Page Not Found", { status: 404 })
+        : servePage(req, hash, url.pathname);
+    }
+
+    if (req.method === "OPTIONS" && ["/challenge", "/page", "/proc", "/stats"].includes(url.pathname)) {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
     if (url.pathname === "/") return Response.redirect(new URL("/example", url), 302);
@@ -414,12 +523,11 @@ Bun.serve({
     }
     if (url.pathname === "/example" || url.pathname === "/example/") {
       if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
-      return new Response(await EXAMPLE_FILE.text(), {
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
-        },
-      });
+      return Response.redirect(pageUrl(EXAMPLE_PAGE_HASH), 302);
+    }
+    if (url.pathname === "/page") {
+      if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      return handlePageUpload(req);
     }
     if (url.pathname !== "/proc") return new Response("Not Found", { status: 404 });
     if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);

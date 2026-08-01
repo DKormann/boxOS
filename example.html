@@ -42,9 +42,9 @@ return arg + ": " + count;</textarea>
   <pre id="output">Ready.</pre>
 
   <script type="module">
-    import { BoxOSClient } from "/client.js";
+    import { BoxOSClient } from "https://api.boxos.org/client.js";
 
-    const client = new BoxOSClient();
+    const client = new BoxOSClient("https://api.boxos.org");
     const code = document.querySelector("#code");
     const hash = document.querySelector("#hash");
     const shard = document.querySelector("#shard");

@@ -5,12 +5,18 @@ export type ProcOperation =
 
 export type RequestOptions = { fuel?: number };
 export type RunOptions = RequestOptions & { registrationFuel?: number };
+export type PublishedPage = { hash: string; url: string; expiresAt: number };
 
 type ApiResult<T> = { ok?: T; error?: string };
 type Challenge = { challenge: string; baseDifficultyBits: number; maxFuel: number };
 type Stats = {
   fuel: { maximum: number };
   storage: { fuelPerStartedKiB: number };
+  pages: {
+    maximumBytes: number;
+    requiredFuel: number;
+    difficultyBonusBits: number;
+  };
 };
 
 export class BoxOSError extends Error {
@@ -66,6 +72,32 @@ export class BoxOSClient {
 
   async inspect(hash: string, options: RequestOptions = {}): Promise<string | undefined> {
     return this.unwrap<string | undefined>(await this.request({ inspect: hash }, options.fuel ?? 1));
+  }
+
+  async publish(html: string): Promise<PublishedPage> {
+    const stats = await this.stats();
+    const bytes = new TextEncoder().encode(html).byteLength;
+    if (bytes < 1 || bytes > stats.pages.maximumBytes) {
+      throw new TypeError(`Page HTML must contain 1 to ${stats.pages.maximumBytes} UTF-8 bytes`);
+    }
+
+    const fuel = stats.pages.requiredFuel;
+    const challengeResponse = await fetch(`${this.baseUrl}/challenge`, { method: "POST" });
+    if (!challengeResponse.ok) {
+      throw new BoxOSError(`Challenge request failed with HTTP ${challengeResponse.status}`);
+    }
+    const challenge = await challengeResponse.json() as Challenge;
+    const difficulty = challenge.baseDifficultyBits + Math.ceil(Math.log2(fuel))
+      + stats.pages.difficultyBonusBits;
+    const nonce = await this.mine(challenge.challenge, fuel, `page\n${html}`, difficulty);
+    const response = await fetch(`${this.baseUrl}/page`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ html, fuel, challenge: challenge.challenge, nonce }),
+    });
+    const result = await response.json() as ApiResult<PublishedPage>;
+    if (!response.ok) throw new BoxOSError(result.error ?? `Request failed with HTTP ${response.status}`, result);
+    return this.unwrap(result);
   }
 
   private async registrationFuel(source: string): Promise<number> {

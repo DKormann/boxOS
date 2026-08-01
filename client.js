@@ -48,6 +48,31 @@ class BoxOSClient {
   async inspect(hash, options = {}) {
     return this.unwrap(await this.request({ inspect: hash }, options.fuel ?? 1));
   }
+  async publish(html) {
+    const stats = await this.stats();
+    const bytes = new TextEncoder().encode(html).byteLength;
+    if (bytes < 1 || bytes > stats.pages.maximumBytes) {
+      throw new TypeError(`Page HTML must contain 1 to ${stats.pages.maximumBytes} UTF-8 bytes`);
+    }
+    const fuel = stats.pages.requiredFuel;
+    const challengeResponse = await fetch(`${this.baseUrl}/challenge`, { method: "POST" });
+    if (!challengeResponse.ok) {
+      throw new BoxOSError(`Challenge request failed with HTTP ${challengeResponse.status}`);
+    }
+    const challenge = await challengeResponse.json();
+    const difficulty = challenge.baseDifficultyBits + Math.ceil(Math.log2(fuel)) + stats.pages.difficultyBonusBits;
+    const nonce = await this.mine(challenge.challenge, fuel, `page
+${html}`, difficulty);
+    const response = await fetch(`${this.baseUrl}/page`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ html, fuel, challenge: challenge.challenge, nonce })
+    });
+    const result = await response.json();
+    if (!response.ok)
+      throw new BoxOSError(result.error ?? `Request failed with HTTP ${response.status}`, result);
+    return this.unwrap(result);
+  }
   async registrationFuel(source) {
     const stats = await this.stats();
     const bytes = new TextEncoder().encode(source).byteLength + 64;

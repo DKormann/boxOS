@@ -9,6 +9,10 @@ export function entryBytes(key: string, value: string): number {
   return encoder.encode(key).byteLength + encoder.encode(value).byteLength;
 }
 
+export function pageStorageBytes(hash: string, html: string): number {
+  return entryBytes(`page:${hash}`, html) + 8; // Include the persisted expiry timestamp.
+}
+
 export function totalStorageBytes(storage: Map<string, string>): number {
   let total = 0;
   for (const [key, value] of storage) total += entryBytes(key, value);

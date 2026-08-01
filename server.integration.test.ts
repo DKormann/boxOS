@@ -13,8 +13,12 @@ const environment = Object.fromEntries(
 const databasePath = `/tmp/boxos-${port}.sqlite`;
 environment.PORT = String(port);
 environment.BOXOS_DB_PATH = databasePath;
+environment.PAGES_BASE_DOMAIN = "pages.test";
+environment.PAGES_SCHEME = "http";
+environment.PAGE_POW_BONUS_BITS = "0";
 
 let server: ReturnType<typeof Bun.spawn>;
+let publishedPage: { hash: string; html: string } | undefined;
 
 function leadingZeroBits(hex: string): number {
   let count = 0;
@@ -111,10 +115,14 @@ afterAll(async () => {
 });
 
 describe("boxOS HTTP server", () => {
-  test("serves the example client", async () => {
-    const rootResponse = await fetch(`${origin}/`);
-    expect(rootResponse.url).toBe(`${origin}/example`);
-    const response = await fetch(`${origin}/example`);
+  test("serves the example as a content-addressed page", async () => {
+    const rootResponse = await fetch(`${origin}/`, { redirect: "manual" });
+    expect(rootResponse.headers.get("location")).toBe(`${origin}/example`);
+    const redirect = await fetch(`${origin}/example`, { redirect: "manual" });
+    const location = redirect.headers.get("location")!;
+    expect(location).toMatch(/^http:\/\/[a-z2-7]{52}\.pages\.test\/$/);
+    const hostname = new URL(location).hostname;
+    const response = await fetch(`${origin}/`, { headers: { host: hostname } });
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain("<title>boxOS example</title>");
@@ -148,6 +156,29 @@ describe("boxOS HTTP server", () => {
     expect(result).toBe("client: works");
     expect(await client.inspect(await client.hash(source))).toBe(source);
   });
+
+  test("publishes, renews, and serves a content-addressed HTML page", async () => {
+    const client = new BoxOSClient(origin);
+    const html = '<!doctype html><title>Published</title><script>document.body.append(" works")</script>';
+    const first = await client.publish(html);
+    expect(first.hash).toMatch(/^[a-z2-7]{52}$/);
+    expect(first.url).toBe(`http://${first.hash}.pages.test/`);
+
+    const hostname = new URL(first.url).hostname;
+    const response = await fetch(`${origin}/`, { headers: { host: hostname } });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(html);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("x-robots-tag")).toContain("noindex");
+
+    const apiLeak = await fetch(`${origin}/proc`, { headers: { host: hostname } });
+    expect(apiLeak.status).toBe(404);
+
+    const renewed = await client.publish(html);
+    expect(renewed.hash).toBe(first.hash);
+    expect(renewed.expiresAt > first.expiresAt).toBe(true);
+    publishedPage = { hash: first.hash, html };
+  }, 20_000);
 
   test("reports current prices and limits", async () => {
     const response = await fetch(`${origin}/stats`);
@@ -414,5 +445,9 @@ describe("boxOS HTTP server", () => {
 
     const invoked = await signedRequest({ invoke: registered.ok, shard: "persistence", arg: "still" }, 100);
     expect(invoked.ok).toBe("still persisted");
+
+    const page = publishedPage!;
+    const pageResponse = await fetch(`${origin}/`, { headers: { host: `${page.hash}.pages.test` } });
+    expect(await pageResponse.text()).toBe(page.html);
   });
 });
