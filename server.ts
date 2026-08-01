@@ -492,7 +492,7 @@ Bun.serve({
     if (req.method === "OPTIONS" && ["/challenge", "/page", "/proc", "/stats"].includes(url.pathname)) {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
-    if (url.pathname === "/") return Response.redirect(new URL("/example", url), 302);
+    if (url.pathname === "/") return new Response(null, { status: 302, headers: { location: "/example" } });
     if (url.pathname === "/health") return new Response("OK", { status: 200 });
     if (url.pathname === "/stats") {
       if (req.method !== "GET") return json({ error: "Method Not Allowed" }, 405);

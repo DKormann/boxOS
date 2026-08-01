@@ -117,7 +117,7 @@ afterAll(async () => {
 describe("boxOS HTTP server", () => {
   test("serves the example as a content-addressed page", async () => {
     const rootResponse = await fetch(`${origin}/`, { redirect: "manual" });
-    expect(rootResponse.headers.get("location")).toBe(`${origin}/example`);
+    expect(rootResponse.headers.get("location")).toBe("/example");
     const redirect = await fetch(`${origin}/example`, { redirect: "manual" });
     const location = redirect.headers.get("location")!;
     expect(location).toMatch(/^http:\/\/[a-z2-7]{52}\.pages\.test\/$/);
