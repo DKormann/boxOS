@@ -5,18 +5,24 @@ export const MAX_STORAGE_OPERATIONS = 1_000;
 
 const encoder = new TextEncoder();
 
+export function utf8Bytes(value: string): number {
+  return encoder.encode(value).byteLength;
+}
+
 export function entryBytes(key: string, value: string): number {
-  return encoder.encode(key).byteLength + encoder.encode(value).byteLength;
+  return utf8Bytes(key) + utf8Bytes(value);
+}
+
+export function procedureStorageBytes(hash: string, code: string): number {
+  return entryBytes(hash, code);
+}
+
+export function stateStorageBytes(procedureHash: string, key: string, value: string): number {
+  return entryBytes(procedureHash, key) + utf8Bytes(value) + 8;
 }
 
 export function pageStorageBytes(hash: string, html: string): number {
-  return entryBytes(`page:${hash}`, html) + 8; // Include the persisted expiry timestamp.
-}
-
-export function totalStorageBytes(storage: Map<string, string>): number {
-  let total = 0;
-  for (const [key, value] of storage) total += entryBytes(key, value);
-  return total;
+  return entryBytes(`page:${hash}`, html) + 8;
 }
 
 export function storagePressureMultiplier(usedBytes: number): number {

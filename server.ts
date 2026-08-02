@@ -1,26 +1,23 @@
 import { fullPageHash, pageHash, procHash, sha256 } from "./hash.ts";
 import { validateProcCode } from "./parser.ts";
+import { MAX_STORAGE_BYTES, MAX_STORAGE_OPERATIONS, MAX_WORKERS, storagePressureMultiplier, WORKER_BASE_FUEL } from "./resources.ts";
 import {
-  entryBytes,
-  MAX_STORAGE_BYTES,
-  MAX_STORAGE_OPERATIONS,
-  MAX_WORKERS,
-  pageStorageBytes,
-  storageFuelCost,
-  storagePressureMultiplier,
-  WORKER_BASE_FUEL,
-} from "./resources.ts";
-import { PersistentStorage } from "./storage.ts";
+  InsufficientBalanceError,
+  PersistentStorage,
+  TransactionConflictError,
+  type StateOperation,
+  type StateRead,
+} from "./storage.ts";
 
 const PORT = Number(Bun.env.PORT ?? "4000");
-const MAX_FUEL_MS = 100;
-const POW_BASE_BITS = 8;
+const MAX_INVOCATION_FUEL = 100;
+const MAX_FUND_AMOUNT = 10_000;
+const POW_BASE_BITS = Number(Bun.env.POW_BASE_BITS ?? "8");
 const CHALLENGE_TTL_MS = 60_000;
 const MAX_CHALLENGES = 10_000;
 const MAX_REQUEST_BYTES = 1_000_000;
 const MAX_PAGE_BYTES = 32 * 1024;
-const PAGE_FUEL = 100;
-const PAGE_POW_BONUS_BITS = Number(Bun.env.PAGE_POW_BONUS_BITS ?? "5");
+const PAGE_COST = 3_200;
 const PAGE_LEASE_MS = 7 * 24 * 60 * 60 * 1000;
 const PAGES_BASE_DOMAIN = Bun.env.PAGES_BASE_DOMAIN ?? "pages.boxos.org";
 const PAGES_SCHEME = Bun.env.PAGES_SCHEME ?? "https";
@@ -30,37 +27,43 @@ const EXAMPLE_LEGACY_PAGE_HASH = fullPageHash(EXAMPLE_HTML);
 const DOCS_FILE = Bun.file(new URL("./docs.html", import.meta.url));
 const CLIENT_FILE = Bun.file(new URL("./client.js", import.meta.url));
 const DATABASE_PATH = Bun.env.BOXOS_DB_PATH ?? "boxos.sqlite";
-type Operation =
-  | { type: "store"; key: string; value: string }
-  | { type: "delete"; key: string };
+
 type WorkerMessage =
   | { fuelDelta: number }
-  | { resultJson: string; operations: Operation[]; commit: boolean };
+  | {
+      resultJson: string;
+      reads: StateRead[];
+      operations: StateOperation[];
+      commit: boolean;
+    };
 
 const storage = new PersistentStorage(DATABASE_PATH);
 const challenges = new Map<string, number>();
 let activeWorkers = 0;
-const lockedShards = new Set<string>();
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "authorization, content-type",
   "access-control-max-age": "86400",
 };
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...CORS_HEADERS,
-    },
+    headers: { "content-type": "application/json; charset=utf-8", ...CORS_HEADERS },
   });
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function requireObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Expected a JSON object");
+  }
+  return value as Record<string, unknown>;
 }
 
 function requireString(record: Record<string, unknown>, key: string): string {
@@ -69,30 +72,34 @@ function requireString(record: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function requireShard(request: Record<string, unknown>): string {
-  const shard = requireString(request, "shard");
-  if (shard.length === 0 || shard.length > 128) {
-    throw new TypeError("Expected 'shard' to contain 1 to 128 characters");
+function requireInteger(record: Record<string, unknown>, key: string, minimum: number, maximum: number): number {
+  const value = record[key];
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new TypeError(`Expected '${key}' to be an integer from ${minimum} to ${maximum}`);
   }
-  return shard;
+  return value as number;
 }
 
-function requireFuel(request: Record<string, unknown>): number {
-  const fuel = request.fuel;
-  if (!Number.isInteger(fuel) || (fuel as number) < 1 || (fuel as number) > MAX_FUEL_MS) {
-    throw new TypeError(`Expected 'fuel' to be an integer from 1 to ${MAX_FUEL_MS}`);
-  }
-  return fuel as number;
+function userId(req: Request): string {
+  const authorization = req.headers.get("authorization") ?? "";
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization);
+  if (match === null) throw new Error("A 256-bit bearer identity is required");
+  return sha256(match[1]!);
+}
+
+async function requestBody(req: Request): Promise<Record<string, unknown>> {
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) throw new Error("Request body is too large");
+  const body = await req.text();
+  if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) throw new Error("Request body is too large");
+  return requireObject(JSON.parse(body));
 }
 
 function leadingZeroBits(hex: string): number {
   let count = 0;
   for (const character of hex) {
     const nibble = Number.parseInt(character, 16);
-    if (nibble === 0) {
-      count += 4;
-      continue;
-    }
+    if (nibble === 0) { count += 4; continue; }
     if (nibble < 2) count += 3;
     else if (nibble < 4) count += 2;
     else if (nibble < 8) count += 1;
@@ -101,24 +108,15 @@ function leadingZeroBits(hex: string): number {
   return count;
 }
 
-function verifyProofOfWork(
-  request: Record<string, unknown>,
-  fuel: number,
-  commitment: string,
-  difficultyBonus = 0,
-): void {
+function verifyProofOfWork(request: Record<string, unknown>, amount: number, commitment: string): void {
   const challenge = requireString(request, "challenge");
   const nonce = request.nonce;
-  if (!Number.isSafeInteger(nonce) || (nonce as number) < 0) {
-    throw new TypeError("Expected 'nonce' to be a non-negative safe integer");
-  }
-
+  if (!Number.isSafeInteger(nonce) || (nonce as number) < 0) throw new TypeError("Expected a non-negative safe-integer nonce");
   const expiresAt = challenges.get(challenge);
-  challenges.delete(challenge); // Every challenge is one-use, including failed proofs.
+  challenges.delete(challenge);
   if (expiresAt === undefined || expiresAt < Date.now()) throw new Error("Invalid or expired challenge");
-
-  const difficulty = POW_BASE_BITS + Math.ceil(Math.log2(fuel)) + difficultyBonus;
-  const digest = sha256(JSON.stringify([challenge, fuel, commitment, nonce]));
+  const difficulty = POW_BASE_BITS + Math.ceil(Math.log2(amount));
+  const digest = sha256(JSON.stringify([challenge, amount, commitment, nonce]));
   if (leadingZeroBits(digest) < difficulty) throw new Error("Invalid proof of work");
 }
 
@@ -133,235 +131,177 @@ function issueChallenge(): Response {
     if (oldest === undefined) break;
     challenges.delete(oldest);
   }
-
   const challenge = crypto.randomUUID();
   const expiresAt = now + CHALLENGE_TTL_MS;
   challenges.set(challenge, expiresAt);
-  return json({ challenge, expiresAt, baseDifficultyBits: POW_BASE_BITS, maxFuel: MAX_FUEL_MS });
+  return json({ challenge, expiresAt, baseDifficultyBits: POW_BASE_BITS, maxFundAmount: MAX_FUND_AMOUNT });
 }
 
-function serverStats(): Response {
-  storage.purgeExpiredPages();
-  const storageBytes = storage.byteLength;
-  const nextWorkerFuelCost = activeWorkers >= MAX_WORKERS
-    ? null
-    : WORKER_BASE_FUEL * (activeWorkers + 1);
-  const now = Date.now();
-  let liveChallenges = 0;
-  for (const expiresAt of challenges.values()) {
-    if (expiresAt >= now) liveChallenges++;
+function balanceError(error: unknown): Response {
+  if (error instanceof InsufficientBalanceError) {
+    return json({ error: error.message, code: "insufficient_balance", balance: error.balance, required: error.required }, 402);
   }
-
-  return json({
-    hashing: "SHA-256",
-    fuel: {
-      minimum: 1,
-      maximum: MAX_FUEL_MS,
-      workerBaseCost: WORKER_BASE_FUEL,
-      nextWorkerCost: nextWorkerFuelCost,
-      minimumFuelForNextWorker: nextWorkerFuelCost === null ? null : nextWorkerFuelCost + 1,
-      workerCostFormula: "workerBaseCost * (activeWorkers + 1)",
-    },
-    workers: {
-      active: activeWorkers,
-      limit: MAX_WORKERS,
-      lockedShards: lockedShards.size,
-      locking: "exclusive per requested shard",
-    },
-    storage: {
-      backend: "sqlite",
-      persistent: true,
-      workerAccess: "read-only on demand",
-      registrationCostFormula: "pressureMultiplier * ceil((64 + UTF8 source bytes) / 1024)",
-      usedBytes: storageBytes,
-      limitBytes: MAX_STORAGE_BYTES,
-      pressureMultiplier: storagePressureMultiplier(storageBytes),
-      fuelPerStartedKiB: storagePressureMultiplier(storageBytes),
-      operationLimitPerInvocation: MAX_STORAGE_OPERATIONS,
-    },
-    proofOfWork: {
-      baseDifficultyBits: POW_BASE_BITS,
-      difficultyFormula: "baseDifficultyBits + ceil(log2(fuel))",
-      challengeTtlMs: CHALLENGE_TTL_MS,
-      liveChallenges,
-      challengeLimit: MAX_CHALLENGES,
-    },
-    pages: {
-      baseDomain: PAGES_BASE_DOMAIN,
-      hashEncoding: "16-character lowercase Base32 SHA-256 prefix (80 bits)",
-      count: storage.pageCount + 1,
-      maximumBytes: MAX_PAGE_BYTES,
-      requiredFuel: PAGE_FUEL,
-      difficultyBonusBits: PAGE_POW_BONUS_BITS,
-      leaseMs: PAGE_LEASE_MS,
-    },
-    requestBodyLimitBytes: MAX_REQUEST_BYTES,
-  });
+  return json({ error: errorMessage(error) }, 400);
 }
 
-function commitOperations(operations: Operation[]): string | undefined {
-  if (operations.length > MAX_STORAGE_OPERATIONS) return "Too many storage operations";
-
-  const pending = new Map<string, string | undefined>();
-  let usedBytes = storage.byteLength;
-  for (const operation of operations) {
-    if (!operation || typeof operation.key !== "string") return "Invalid storage operation";
-    const previous = pending.has(operation.key) ? pending.get(operation.key) : storage.get(operation.key);
-    if (previous !== undefined) usedBytes -= entryBytes(operation.key, previous);
-
-    if (operation.type === "store" && typeof operation.value === "string") {
-      usedBytes += entryBytes(operation.key, operation.value);
-      pending.set(operation.key, operation.value);
-    } else if (operation.type === "delete") {
-      pending.set(operation.key, undefined);
-    } else {
-      return "Invalid storage operation";
+async function invokeOptimistically(procedureHash: string, arg: string, fuel: number, user: string): Promise<unknown> {
+  if (!storage.hasProcedure(procedureHash)) return { error: `Unknown procedure: ${procedureHash}`, code: "unknown_procedure" };
+  const startedAt = Date.now();
+  let balance: number;
+  try { balance = storage.reserveFuel(user, fuel); }
+  catch (error) {
+    if (error instanceof InsufficientBalanceError) {
+      return { error: error.message, code: "insufficient_balance", balance: error.balance, required: fuel };
     }
-    if (usedBytes > MAX_STORAGE_BYTES) return "Storage limit exceeded";
+    return { error: errorMessage(error) };
   }
 
-  try {
-    storage.apply(pending);
-    return undefined;
-  } catch (error) {
-    return `Storage persistence failed: ${errorMessage(error)}`;
-  }
-}
-
-async function invokeIsolated(procHash: string, shard: string, arg: string, fuel: number): Promise<unknown> {
-  if (!storage.has(procHash)) return { error: `Unknown procedure: ${procHash}` };
-
-  const requestDeadline = Date.now() + fuel;
-  while (lockedShards.has(shard) || activeWorkers >= MAX_WORKERS) {
-    const remaining = requestDeadline - Date.now();
-    if (remaining <= 0) return { error: "Fuel exhausted waiting for a shard or worker lock" };
-    await Bun.sleep(Math.min(remaining, 2));
+  let deadline = startedAt + fuel;
+  while (activeWorkers >= MAX_WORKERS) {
+    if (Date.now() >= deadline) return { error: "Fuel exhausted waiting for a worker", balance };
+    await Bun.sleep(2);
   }
 
   const creationCost = WORKER_BASE_FUEL * (activeWorkers + 1);
-  const fuelDeadlineAtCreation = requestDeadline - creationCost;
-  const workerFuel = Math.floor(fuelDeadlineAtCreation - Date.now());
-  if (workerFuel <= 0) return { error: `Worker creation needs ${creationCost} fuel` };
+  deadline -= creationCost;
+  const workerFuel = Math.floor(deadline - Date.now());
+  if (workerFuel <= 0) return { error: `Worker creation needs ${creationCost} fuel`, balance };
 
-  const storageBytes = storage.byteLength;
-  const stateRoot = `s:${sha256(shard)}:`;
-
-  lockedShards.add(shard);
   let worker: Worker;
-  try {
-    worker = new Worker(new URL("./proc-worker.ts", import.meta.url), { smol: true });
-  } catch (error) {
-    lockedShards.delete(shard);
-    return { error: `Could not create invocation worker: ${errorMessage(error)}` };
-  }
+  try { worker = new Worker(new URL("./proc-worker.ts", import.meta.url), { smol: true }); }
+  catch (error) { return { error: `Could not create invocation worker: ${errorMessage(error)}`, balance }; }
   activeWorkers++;
 
   return await new Promise(resolve => {
     let settled = false;
-    let fuelDeadline = fuelDeadlineAtCreation;
     let timer: ReturnType<typeof setTimeout>;
-    const fuelError = (): { error: string } => ({
-      error: `Fuel exhausted (${creationCost} fuel paid for worker creation)`,
-    });
     const finish = (result: unknown): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       worker.terminate();
       activeWorkers--;
-      lockedShards.delete(shard);
       resolve(result);
     };
     const scheduleTimeout = (): void => {
       clearTimeout(timer);
-      timer = setTimeout(() => finish(fuelError()), Math.max(0, fuelDeadline - Date.now()));
+      timer = setTimeout(() => finish({ error: "Fuel exhausted", balance }), Math.max(0, deadline - Date.now()));
     };
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       if (settled) return;
       const message = event.data;
       if (message && "fuelDelta" in message) {
-        if (!Number.isSafeInteger(message.fuelDelta)) {
-          finish({ error: "Invalid invocation worker response" });
+        if (!Number.isSafeInteger(message.fuelDelta) || message.fuelDelta < 0) {
+          finish({ error: "Invalid invocation worker response", balance });
           return;
         }
-        fuelDeadline -= message.fuelDelta;
+        deadline -= message.fuelDelta;
         scheduleTimeout();
         return;
       }
-      if (Date.now() >= fuelDeadline) {
-        finish(fuelError());
-        return;
-      }
+      if (Date.now() >= deadline) { finish({ error: "Fuel exhausted", balance }); return; }
       if (!message || !("resultJson" in message) || typeof message.resultJson !== "string"
-        || !Array.isArray(message.operations) || typeof message.commit !== "boolean") {
-        finish({ error: "Invalid invocation worker response" });
+        || !Array.isArray(message.reads) || !Array.isArray(message.operations) || typeof message.commit !== "boolean") {
+        finish({ error: "Invalid invocation worker response", balance });
         return;
       }
+      let result: Record<string, unknown>;
+      try { result = requireObject(JSON.parse(message.resultJson)); }
+      catch { finish({ error: "Invocation returned invalid JSON", balance }); return; }
+      if (!message.commit) { finish({ ...result, balance }); return; }
 
-      let result: unknown;
+      const refund = Math.max(0, Math.min(fuel, Math.floor(deadline - Date.now())));
       try {
-        result = JSON.parse(message.resultJson);
-      } catch {
-        finish({ error: "Invocation returned invalid JSON" });
-        return;
+        const settlement = storage.commitInvocation(user, message.reads, message.operations, refund);
+        finish({
+          ...result,
+          fuel: { reserved: fuel, spent: fuel - refund, refunded: refund, deletionReward: settlement.deletionReward },
+          balance: settlement.balance,
+        });
+      } catch (error) {
+        if (error instanceof TransactionConflictError) {
+          finish({ error: error.message, code: "conflict", retryable: true, balance });
+        } else {
+          finish({ error: errorMessage(error), balance });
+        }
       }
-
-      if (!message.commit) {
-        finish(result);
-        return;
-      }
-
-      // Successful call trees commit atomically. Every error, timeout, worker
-      // failure, or serialization failure discards the complete operation log.
-      const storageError = commitOperations(message.operations);
-      if (storageError !== undefined) {
-        finish({ error: storageError });
-        return;
-      }
-      finish(result);
     };
-
-    worker.onerror = event => {
-      finish({ error: `Invocation worker failed: ${event.message}` });
-    };
-
+    worker.onerror = event => finish({ error: `Invocation worker failed: ${event.message}`, balance });
     scheduleTimeout();
     try {
       worker.postMessage({
-        procHash,
+        procHash: procedureHash,
         arg,
         databasePath: DATABASE_PATH,
-        storageBytes,
+        storageBytes: storage.byteLength,
         storageFuel: workerFuel,
-        stateRoot,
       });
     } catch (error) {
-      finish({ error: `Could not start invocation: ${errorMessage(error)}` });
+      finish({ error: `Could not start invocation: ${errorMessage(error)}`, balance });
     }
   });
+}
+
+async function handleProc(req: Request): Promise<Response> {
+  let user: string;
+  try { user = userId(req); }
+  catch (error) { return json({ error: errorMessage(error), code: "identity_required" }, 401); }
+  try {
+    const request = await requestBody(req);
+    if ("register" in request) {
+      const code = requireString(request, "register");
+      validateProcCode(code);
+      const hash = procHash(code);
+      const registration = storage.registerProcedure(user, hash, code);
+      return json({ ok: hash, registration });
+    }
+    if ("invoke" in request) {
+      const hash = requireString(request, "invoke");
+      const arg = requireString(request, "arg");
+      const fuel = requireInteger(request, "fuel", 1, MAX_INVOCATION_FUEL);
+      return json(await invokeOptimistically(hash, arg, fuel, user));
+    }
+    if ("inspect" in request) {
+      const hash = requireString(request, "inspect");
+      return json({ ok: storage.getProcedure(hash) });
+    }
+    throw new TypeError("Expected 'register', 'invoke', or 'inspect'");
+  } catch (error) {
+    return balanceError(error);
+  }
+}
+
+async function handleFuel(req: Request): Promise<Response> {
+  let user: string;
+  try { user = userId(req); }
+  catch (error) { return json({ error: errorMessage(error), code: "identity_required" }, 401); }
+  try {
+    const request = await requestBody(req);
+    const amount = requireInteger(request, "amount", 1, MAX_FUND_AMOUNT);
+    verifyProofOfWork(request, amount, `fuel\n${user}\n${amount}`);
+    return json({ ok: { credited: amount, balance: storage.fund(user, amount) } });
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
 }
 
 function pageUrl(hash: string): string {
   return `${PAGES_SCHEME}://${hash}.${PAGES_BASE_DOMAIN}/`;
 }
-
 function pageHashFromHostname(hostname: string): string | undefined {
   const suffix = `.${PAGES_BASE_DOMAIN}`;
   if (!hostname.endsWith(suffix)) return undefined;
   const hash = hostname.slice(0, -suffix.length);
   return /^(?:[a-z2-7]{16}|[a-z2-7]{52})$/.test(hash) ? hash : undefined;
 }
-
 function servePage(req: Request, hash: string, pathname: string): Response {
   if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method Not Allowed", { status: 405 });
   if (pathname !== "/") return new Response("Not Found", { status: 404 });
-
   const stored = hash === EXAMPLE_PAGE_HASH || hash === EXAMPLE_LEGACY_PAGE_HASH
     ? { html: EXAMPLE_HTML, expiresAt: Number.MAX_SAFE_INTEGER }
     : storage.getPage(hash);
   if (stored === undefined) return new Response("Page Not Found", { status: 404 });
-
   const etag = `"${hash}"`;
   const headers = {
     "content-type": "text/html; charset=utf-8",
@@ -376,108 +316,59 @@ function servePage(req: Request, hash: string, pathname: string): Response {
 }
 
 async function handlePageUpload(req: Request): Promise<Response> {
-  const contentLength = Number(req.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
-    return json({ error: "Request body is too large" }, 413);
-  }
-
+  let user: string;
+  try { user = userId(req); }
+  catch (error) { return json({ error: errorMessage(error), code: "identity_required" }, 401); }
   try {
-    const body = await req.text();
-    if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
-      return json({ error: "Request body is too large" }, 413);
-    }
-    const value: unknown = JSON.parse(body);
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      throw new TypeError("Expected a JSON object");
-    }
-    const request = value as Record<string, unknown>;
+    const request = await requestBody(req);
     const html = requireString(request, "html");
-    const fuel = requireFuel(request);
-    if (fuel !== PAGE_FUEL) throw new Error(`Page publication requires exactly ${PAGE_FUEL} fuel`);
-    verifyProofOfWork(request, fuel, `page\n${html}`, PAGE_POW_BONUS_BITS);
-
     const htmlBytes = new TextEncoder().encode(html).byteLength;
-    if (htmlBytes === 0 || htmlBytes > MAX_PAGE_BYTES) {
-      throw new Error(`Page HTML must contain 1 to ${MAX_PAGE_BYTES} UTF-8 bytes`);
-    }
-
+    if (htmlBytes < 1 || htmlBytes > MAX_PAGE_BYTES) throw new Error(`Page HTML must contain 1 to ${MAX_PAGE_BYTES} UTF-8 bytes`);
     storage.purgeExpiredPages();
     const hash = pageHash(html);
-    const existing = storage.getPage(hash);
-    if (existing !== undefined && existing.html !== html) {
-      throw new Error("Page hash collision; existing content was not changed");
-    }
-    const usedBytes = storage.byteLength;
-    const nextBytes = usedBytes - (existing === undefined ? 0 : pageStorageBytes(hash, existing.html))
-      + pageStorageBytes(hash, html);
-    if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
-    const storageCost = storageFuelCost(`page:${hash}`, html, usedBytes);
-    if (storageCost > fuel) throw new Error(`Page storage needs ${storageCost} fuel`);
-
-    const now = Date.now();
-    const expiresAt = Math.max(now, existing?.expiresAt ?? now) + PAGE_LEASE_MS;
-    storage.setPage(hash, html, expiresAt);
-    return json({ ok: { hash, url: pageUrl(hash), expiresAt } });
+    const result = storage.publishPage(user, hash, html, PAGE_COST, PAGE_LEASE_MS);
+    return json({ ok: { hash, url: pageUrl(hash), expiresAt: result.expiresAt }, balance: result.balance });
   } catch (error) {
-    return json({ error: errorMessage(error) }, 400);
+    return balanceError(error);
   }
 }
 
-async function handleProc(req: Request): Promise<Response> {
-  const contentLength = Number(req.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
-    return json({ error: "Request body is too large" }, 413);
-  }
-
-  try {
-    const body = await req.text();
-    if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
-      return json({ error: "Request body is too large" }, 413);
-    }
-
-    const value: unknown = JSON.parse(body);
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      throw new TypeError("Expected a JSON object");
-    }
-    const request = value as Record<string, unknown>;
-
-    if ("register" in request) {
-      const code = requireString(request, "register");
-      const fuel = requireFuel(request);
-      verifyProofOfWork(request, fuel, `register\n${code}`);
-      validateProcCode(code);
-      const hash = procHash(code);
-      const usedBytes = storage.byteLength;
-      const previous = storage.get(hash);
-      const nextBytes = usedBytes - (previous === undefined ? 0 : entryBytes(hash, previous)) + entryBytes(hash, code);
-      if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
-      const cost = storageFuelCost(hash, code, usedBytes);
-      if (cost > fuel) throw new Error(`Registration storage needs ${cost} fuel`);
-      storage.set(hash, code);
-      return json({ ok: hash });
-    }
-
-    if ("invoke" in request) {
-      const hash = requireString(request, "invoke");
-      const shard = requireShard(request);
-      const arg = requireString(request, "arg");
-      const fuel = requireFuel(request);
-      verifyProofOfWork(request, fuel, `invoke\n${shard}\n${hash}\n${arg}`);
-      return json(await invokeIsolated(hash, shard, arg, fuel));
-    }
-
-    if ("inspect" in request) {
-      const key = requireString(request, "inspect");
-      const fuel = requireFuel(request);
-      verifyProofOfWork(request, fuel, `inspect\n${key}`);
-      if (key.includes(":")) throw new Error("Invalid inspect key");
-      return json({ ok: storage.get(key) });
-    }
-
-    throw new TypeError("Expected 'register', 'invoke', or 'inspect'");
-  } catch (error) {
-    return json({ error: errorMessage(error) }, 400);
-  }
+function serverStats(): Response {
+  storage.purgeExpiredPages();
+  const storageBytes = storage.byteLength;
+  return json({
+    hashing: "SHA-256",
+    fuel: {
+      maximumInvocation: MAX_INVOCATION_FUEL,
+      maximumFunding: MAX_FUND_AMOUNT,
+      workerBaseCost: WORKER_BASE_FUEL,
+      fundingDifficultyFormula: "baseDifficultyBits + ceil(log2(amount))",
+    },
+    workers: { active: activeWorkers, limit: MAX_WORKERS, concurrency: "optimistic per-key transactions" },
+    storage: {
+      backend: "sqlite",
+      persistent: true,
+      usedBytes: storageBytes,
+      limitBytes: MAX_STORAGE_BYTES,
+      pressureMultiplier: storagePressureMultiplier(storageBytes),
+      operationLimitPerInvocation: MAX_STORAGE_OPERATIONS,
+    },
+    proofOfWork: {
+      baseDifficultyBits: POW_BASE_BITS,
+      challengeTtlMs: CHALLENGE_TTL_MS,
+      liveChallenges: [...challenges.values()].filter(expiry => expiry >= Date.now()).length,
+      challengeLimit: MAX_CHALLENGES,
+    },
+    pages: {
+      baseDomain: PAGES_BASE_DOMAIN,
+      hashEncoding: "16-character lowercase Base32 SHA-256 prefix (80 bits)",
+      count: storage.pageCount + 1,
+      maximumBytes: MAX_PAGE_BYTES,
+      publicationCost: PAGE_COST,
+      leaseMs: PAGE_LEASE_MS,
+    },
+    requestBodyLimitBytes: MAX_REQUEST_BYTES,
+  });
 }
 
 Bun.serve({
@@ -488,54 +379,37 @@ Bun.serve({
     const isPagesHostname = url.hostname === PAGES_BASE_DOMAIN || url.hostname.endsWith(`.${PAGES_BASE_DOMAIN}`);
     if (isPagesHostname) {
       const hash = pageHashFromHostname(url.hostname);
-      return hash === undefined
-        ? new Response("Page Not Found", { status: 404 })
-        : servePage(req, hash, url.pathname);
+      return hash === undefined ? new Response("Page Not Found", { status: 404 }) : servePage(req, hash, url.pathname);
     }
-
-    if (req.method === "OPTIONS" && ["/challenge", "/page", "/proc", "/stats"].includes(url.pathname)) {
+    if (req.method === "OPTIONS" && ["/balance", "/challenge", "/fuel", "/page", "/proc", "/stats"].includes(url.pathname)) {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
     if (url.pathname === "/") return new Response(null, { status: 302, headers: { location: "/example" } });
-    if (url.pathname === "/health") return new Response("OK", { status: 200 });
-    if (url.pathname === "/stats") {
+    if (url.pathname === "/health") return new Response("OK");
+    if (url.pathname === "/stats") return req.method === "GET" ? serverStats() : json({ error: "Method Not Allowed" }, 405);
+    if (url.pathname === "/challenge") return req.method === "POST" ? issueChallenge() : json({ error: "Method Not Allowed" }, 405);
+    if (url.pathname === "/balance") {
       if (req.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
-      return serverStats();
+      try { const user = userId(req); return json({ ok: { user, balance: storage.balance(user) } }); }
+      catch (error) { return json({ error: errorMessage(error), code: "identity_required" }, 401); }
     }
+    if (url.pathname === "/fuel") return req.method === "POST" ? handleFuel(req) : json({ error: "Method Not Allowed" }, 405);
     if (url.pathname === "/client.js") {
       if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
       return new Response(await CLIENT_FILE.text(), {
-        headers: {
-          "content-type": "text/javascript; charset=utf-8",
-          "cache-control": "public, max-age=300",
-          "access-control-allow-origin": "*",
-        },
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=300", "access-control-allow-origin": "*" },
       });
     }
     if (url.pathname === "/docs") {
       if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
-      return new Response(await DOCS_FILE.text(), {
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'none'",
-        },
-      });
-    }
-    if (url.pathname === "/challenge") {
-      if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
-      return issueChallenge();
+      return new Response(await DOCS_FILE.text(), { headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'" } });
     }
     if (url.pathname === "/example" || url.pathname === "/example/") {
-      if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
-      return Response.redirect(pageUrl(EXAMPLE_PAGE_HASH), 302);
+      return req.method === "GET" ? Response.redirect(pageUrl(EXAMPLE_PAGE_HASH), 302) : new Response("Method Not Allowed", { status: 405 });
     }
-    if (url.pathname === "/page") {
-      if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
-      return handlePageUpload(req);
-    }
-    if (url.pathname !== "/proc") return new Response("Not Found", { status: 404 });
-    if (req.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
-    return handleProc(req);
+    if (url.pathname === "/page") return req.method === "POST" ? handlePageUpload(req) : json({ error: "Method Not Allowed" }, 405);
+    if (url.pathname === "/proc") return req.method === "POST" ? handleProc(req) : json({ error: "Method Not Allowed" }, 405);
+    return new Response("Not Found", { status: 404 });
   },
 });
 

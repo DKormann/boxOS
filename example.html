@@ -28,9 +28,6 @@ return arg + ": " + count;</textarea>
   <label for="hash">Procedure hash</label>
   <input id="hash" readonly placeholder="Register a procedure first">
 
-  <label for="shard">Shard</label>
-  <input id="shard" value="example-counter">
-
   <label for="arg">Argument</label>
   <input id="arg" value="persistent count">
 
@@ -47,7 +44,6 @@ return arg + ": " + count;</textarea>
     const client = new BoxOSClient("https://api.boxos.org");
     const code = document.querySelector("#code");
     const hash = document.querySelector("#hash");
-    const shard = document.querySelector("#shard");
     const arg = document.querySelector("#arg");
     const fuel = document.querySelector("#fuel");
     const output = document.querySelector("#output");
@@ -74,7 +70,7 @@ return arg + ": " + count;</textarea>
         output.textContent = "Register a procedure first.";
         return;
       }
-      show(() => client.invokeHash(hash.value, shard.value, arg.value, { fuel: Number(fuel.value) }));
+      show(() => client.invokeHash(hash.value, arg.value, { fuel: Number(fuel.value) }));
     });
   </script>
 </body>

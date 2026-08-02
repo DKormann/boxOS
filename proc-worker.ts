@@ -1,11 +1,13 @@
 import { Database } from "bun:sqlite";
 import { procHash } from "./hash.ts";
 import { validateProcCode } from "./parser.ts";
-import { entryBytes, MAX_STORAGE_BYTES, MAX_STORAGE_OPERATIONS, storageFuelCost } from "./resources.ts";
-
-type Operation =
-  | { type: "store"; key: string; value: string }
-  | { type: "delete"; key: string };
+import {
+  MAX_STORAGE_BYTES,
+  MAX_STORAGE_OPERATIONS,
+  stateStorageBytes,
+  storageFuelCost,
+} from "./resources.ts";
+import type { StateOperation, StateRead } from "./storage.ts";
 
 type Invocation = {
   procHash: string;
@@ -13,7 +15,6 @@ type Invocation = {
   databasePath: string;
   storageBytes: number;
   storageFuel: number;
-  stateRoot: string;
 };
 
 type Proc = { $: "proc"; code: string };
@@ -82,51 +83,26 @@ const PROC_JSON = Object.freeze({
     if (typeof value !== "string") throw new TypeError("JSON.parse expects a string");
     return JSON.parse(value);
   },
-  stringify(value: unknown): string | undefined {
-    return JSON.stringify(value);
-  },
+  stringify(value: unknown): string | undefined { return JSON.stringify(value); },
 });
-
-// Keep mathematics deterministic and auditable. In particular, do not expose
-// Math.random or automatically inherit capabilities added by future runtimes.
 const PROC_STRING = Object.freeze((value?: unknown): string => String(value));
-
 const PROC_MATH = Object.freeze({
-  E: Math.E,
-  LN2: Math.LN2,
-  LN10: Math.LN10,
-  LOG2E: Math.LOG2E,
-  LOG10E: Math.LOG10E,
-  PI: Math.PI,
-  SQRT1_2: Math.SQRT1_2,
-  SQRT2: Math.SQRT2,
-
-  abs: (value: number) => Math.abs(value),
-  ceil: (value: number) => Math.ceil(value),
-  floor: (value: number) => Math.floor(value),
-  round: (value: number) => Math.round(value),
-  trunc: (value: number) => Math.trunc(value),
-  min: (...values: number[]) => Math.min(...values),
-  max: (...values: number[]) => Math.max(...values),
-  pow: (value: number, exponent: number) => Math.pow(value, exponent),
-  sqrt: (value: number) => Math.sqrt(value),
-  cbrt: (value: number) => Math.cbrt(value),
-  hypot: (...values: number[]) => Math.hypot(...values),
-  exp: (value: number) => Math.exp(value),
-  log: (value: number) => Math.log(value),
-  log2: (value: number) => Math.log2(value),
-  log10: (value: number) => Math.log10(value),
-  sin: (value: number) => Math.sin(value),
-  cos: (value: number) => Math.cos(value),
-  tan: (value: number) => Math.tan(value),
-  asin: (value: number) => Math.asin(value),
-  acos: (value: number) => Math.acos(value),
-  atan: (value: number) => Math.atan(value),
-  atan2: (y: number, x: number) => Math.atan2(y, x),
+  E: Math.E, LN2: Math.LN2, LN10: Math.LN10, LOG2E: Math.LOG2E, LOG10E: Math.LOG10E,
+  PI: Math.PI, SQRT1_2: Math.SQRT1_2, SQRT2: Math.SQRT2,
+  abs: (value: number) => Math.abs(value), ceil: (value: number) => Math.ceil(value),
+  floor: (value: number) => Math.floor(value), round: (value: number) => Math.round(value),
+  trunc: (value: number) => Math.trunc(value), min: (...values: number[]) => Math.min(...values),
+  max: (...values: number[]) => Math.max(...values), pow: (value: number, exponent: number) => Math.pow(value, exponent),
+  sqrt: (value: number) => Math.sqrt(value), cbrt: (value: number) => Math.cbrt(value),
+  hypot: (...values: number[]) => Math.hypot(...values), exp: (value: number) => Math.exp(value),
+  log: (value: number) => Math.log(value), log2: (value: number) => Math.log2(value),
+  log10: (value: number) => Math.log10(value), sin: (value: number) => Math.sin(value),
+  cos: (value: number) => Math.cos(value), tan: (value: number) => Math.tan(value),
+  asin: (value: number) => Math.asin(value), acos: (value: number) => Math.acos(value),
+  atan: (value: number) => Math.atan(value), atan2: (y: number, x: number) => Math.atan2(y, x),
 });
 
 function execute(code: string, ctx: ProcContext, arg: string): unknown {
-  // These are explicit, frozen capabilities rather than ambient worker globals.
   const func = new Function("ctx", "arg", "JSON", "Math", "String", `"use strict";\n${code}`);
   return func(ctx, arg, PROC_JSON, PROC_MATH, PROC_STRING);
 }
@@ -134,24 +110,32 @@ function execute(code: string, ctx: ProcContext, arg: string): unknown {
 self.onmessage = (event: MessageEvent<Invocation>) => {
   const task = event.data;
   const database = new Database(task.databasePath, { readonly: true });
-  const readValueStatement = database.query<{ value: string }>("SELECT value FROM storage WHERE key = ?");
+  const procedureStatement = database.query<{ code: string }>("SELECT code FROM procedures WHERE hash = ?");
+  const stateStatement = database.query<{ value: string | null; version: number }>(
+    "SELECT value, version FROM state WHERE procedure_hash = ? AND key = ?",
+  );
   const pending = new Map<string, string | undefined>();
-  const operations: Operation[] = [];
+  const reads = new Map<string, StateRead>();
+  const operations: StateOperation[] = [];
   const builder = makeBuilder();
   let usedStorageBytes = task.storageBytes;
   let storageFuel = task.storageFuel;
   let transactionError: string | undefined;
 
-  function storageString(value: unknown, name: string): string {
+  function checkedString(value: unknown, name: string): string {
     if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
     return value;
   }
-
-  function readValue(key: string): string | undefined {
-    if (pending.has(key)) return pending.get(key);
-    return readValueStatement.get(key)?.value;
+  function stateId(procedureHash: string, key: string): string {
+    return `${procedureHash}\u0000${key}`;
   }
-
+  function readState(procedureHash: string, key: string): string | undefined {
+    const id = stateId(procedureHash, key);
+    if (pending.has(id)) return pending.get(id);
+    const row = stateStatement.get(procedureHash, key);
+    if (!reads.has(id)) reads.set(id, { procedureHash, key, version: row?.version ?? null });
+    return row?.value ?? undefined;
+  }
   function fail(error: unknown): string {
     const message = String(error);
     transactionError ??= message;
@@ -160,50 +144,44 @@ self.onmessage = (event: MessageEvent<Invocation>) => {
 
   function invokeProcedure(hashValue: string, argValue: string): { ok: unknown } | { error: string } {
     try {
-      const hash = storageString(hashValue, "Procedure hash");
-      const arg = storageString(argValue, "Procedure argument");
-      const code = readValueStatement.get(hash)?.value;
+      const hash = checkedString(hashValue, "Procedure hash");
+      const arg = checkedString(argValue, "Procedure argument");
+      const code = procedureStatement.get(hash)?.code;
       if (code === undefined) throw new Error(`Unknown procedure: ${hash}`);
-
-      const prefix = `${task.stateRoot}${hash}:`;
       const ctx: ProcContext = {
         ...builder,
-        store(key, value) {
+        store(keyValue, value) {
           if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
-          const fullKey = prefix + storageString(key, "Storage key");
-          const storedValue = storageString(value, "Stored value");
-          const previous = readValue(fullKey);
-          const nextBytes = usedStorageBytes - (previous === undefined ? 0 : entryBytes(fullKey, previous))
-            + entryBytes(fullKey, storedValue);
+          const key = checkedString(keyValue, "Storage key");
+          const storedValue = checkedString(value, "Stored value");
+          const previous = readState(hash, key);
+          const nextBytes = usedStorageBytes
+            - (previous === undefined ? 0 : stateStorageBytes(hash, key, previous))
+            + stateStorageBytes(hash, key, storedValue);
           if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
-
-          const cost = storageFuelCost(fullKey, storedValue, usedStorageBytes);
+          const cost = storageFuelCost(`${hash}:${key}`, storedValue, usedStorageBytes);
           if (cost > storageFuel) throw new Error(`Storage write needs ${cost} fuel; ${storageFuel} remains`);
           storageFuel -= cost;
           self.postMessage({ fuelDelta: cost });
           usedStorageBytes = nextBytes;
-          pending.set(fullKey, storedValue);
-          operations.push({ type: "store", key: fullKey, value: storedValue });
+          pending.set(stateId(hash, key), storedValue);
+          operations.push({ type: "store", procedureHash: hash, key, value: storedValue });
         },
-        load(key) { return readValue(prefix + storageString(key, "Storage key")); },
-        delete(key) {
-          const fullKey = prefix + storageString(key, "Storage key");
-          const previous = readValue(fullKey);
+        load(keyValue) { return readState(hash, checkedString(keyValue, "Storage key")); },
+        delete(keyValue) {
+          const key = checkedString(keyValue, "Storage key");
+          const previous = readState(hash, key);
           if (previous !== undefined) {
             if (operations.length >= MAX_STORAGE_OPERATIONS) throw new Error("Too many storage operations");
-            const reward = storageFuelCost(fullKey, previous, usedStorageBytes);
-            const previousFuel = storageFuel;
-            usedStorageBytes -= entryBytes(fullKey, previous);
-            storageFuel += reward;
-            self.postMessage({ fuelDelta: previousFuel - storageFuel });
-            pending.set(fullKey, undefined);
-            operations.push({ type: "delete", key: fullKey });
+            usedStorageBytes -= stateStorageBytes(hash, key, previous);
+            // Speculative deletion credit may fund writes, but never extends runtime.
+            storageFuel += storageFuelCost(`${hash}:${key}`, previous, usedStorageBytes);
+            pending.set(stateId(hash, key), undefined);
+            operations.push({ type: "delete", procedureHash: hash, key });
           }
         },
-        has(key) { return readValue(prefix + storageString(key, "Storage key")) !== undefined; },
-        hash: proc => procHash(proc.code),
-        invoke: invokeProcedure,
-        validate: validateProcCode,
+        has(keyValue) { return readState(hash, checkedString(keyValue, "Storage key")) !== undefined; },
+        hash: proc => procHash(proc.code), invoke: invokeProcedure, validate: validateProcCode,
       };
       return { ok: execute(code, ctx, arg) };
     } catch (error) {
@@ -213,15 +191,15 @@ self.onmessage = (event: MessageEvent<Invocation>) => {
 
   let result: { ok: unknown } | { error: string } = invokeProcedure(task.procHash, task.arg);
   if (transactionError !== undefined) result = { error: transactionError };
-
   let resultJson: string;
-  try {
-    resultJson = JSON.stringify(result);
-  } catch (error) {
-    resultJson = JSON.stringify({ error: fail(error) });
-  }
-
+  try { resultJson = JSON.stringify(result); }
+  catch (error) { resultJson = JSON.stringify({ error: fail(error) }); }
   database.close();
   const commit = transactionError === undefined;
-  self.postMessage({ resultJson, operations: commit ? operations : [], commit });
+  self.postMessage({
+    resultJson,
+    reads: [...reads.values()],
+    operations: commit ? operations : [],
+    commit,
+  });
 };
