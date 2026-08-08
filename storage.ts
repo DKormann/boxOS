@@ -1,236 +1,186 @@
 import { Database } from "bun:sqlite";
-import {
-  MAX_STORAGE_BYTES,
-  pageStorageBytes,
-  procedureStorageBytes,
-  stateStorageBytes,
-  storageFuelCost,
-} from "./resources.ts";
 
-export type StateRead = {
-  procedureHash: string;
-  key: string;
-  version: number | null;
-};
+export const INITIAL_USER_FUEL = 2_000_000;
+export const STORAGE_FUEL_PER_BYTE = 8;
 
-export type StateOperation =
-  | { type: "store"; procedureHash: string; key: string; value: string }
-  | { type: "delete"; procedureHash: string; key: string };
+export type CodeKind = "reducer" | "procedure";
+export type StoredCode = { hash: string; kind: CodeKind; code: string };
+export type StateVisibility = "private" | "public";
+export type ReducerState = Record<StateVisibility, Record<string, unknown>>;
+export type StateSnapshot = Record<string, ReducerState>;
 
-export type StoredPage = { html: string; expiresAt: number };
-
-export class TransactionConflictError extends Error {
-  constructor() {
-    super("State changed while the transaction was executing");
-    this.name = "TransactionConflictError";
-  }
-}
-
-export class InsufficientBalanceError extends Error {
+export class InsufficientFuelError extends Error {
   constructor(readonly balance: number, readonly required: number) {
-    super(`Insufficient balance: ${required} fuel required, ${balance} available`);
-    this.name = "InsufficientBalanceError";
+    super(`Insufficient fuel: ${required} required, ${balance} available`);
+    this.name = "InsufficientFuelError";
   }
 }
 
-export class PersistentStorage {
-  private readonly database: Database;
-  private bytes = 0;
+/** Durable code, accounts, and reducer state. */
+export class Storage {
+  private readonly db: Database;
 
-  constructor(path: string) {
-    this.database = new Database(path, { create: true });
-    this.database.exec("PRAGMA journal_mode = WAL");
-    this.database.exec("PRAGMA synchronous = NORMAL");
-    this.database.exec("CREATE TABLE IF NOT EXISTS procedures (hash TEXT PRIMARY KEY, code TEXT NOT NULL)");
-    this.database.exec(`CREATE TABLE IF NOT EXISTS state (
-      procedure_hash TEXT NOT NULL,
-      key TEXT NOT NULL,
-      value TEXT,
-      version INTEGER NOT NULL,
-      PRIMARY KEY (procedure_hash, key)
+  constructor(path = "boxos.sqlite") {
+    this.db = new Database(path, { create: true });
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
+    this.db.exec("CREATE TABLE IF NOT EXISTS code (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, source TEXT NOT NULL)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, fuel INTEGER NOT NULL)");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS reducer_state (
+      reducer_hash TEXT NOT NULL, visibility TEXT NOT NULL, key TEXT NOT NULL,
+      value TEXT NOT NULL, locked_fuel INTEGER NOT NULL,
+      PRIMARY KEY (reducer_hash, visibility, key)
     )`);
-    this.database.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, balance INTEGER NOT NULL)");
-    this.database.exec("CREATE TABLE IF NOT EXISTS pages (hash TEXT PRIMARY KEY, html TEXT NOT NULL, expires_at INTEGER NOT NULL)");
-    this.database.prepare("DELETE FROM pages WHERE expires_at <= ?").run(Date.now());
+  }
 
-    for (const row of this.database.query<{ hash: string; code: string }>("SELECT hash, code FROM procedures").all()) {
-      this.bytes += procedureStorageBytes(row.hash, row.code);
+  close(): void {
+    this.db.close();
+  }
+
+  putSystemCode(hash: string, kind: CodeKind, code: string): void {
+    const found = this.get(hash);
+    if (found) {
+      if (found.kind !== kind || found.code !== code) throw new Error("SHA-256 collision or code kind mismatch");
+      return;
     }
-    for (const row of this.database.query<{ procedure_hash: string; key: string; value: string | null }>(
-      "SELECT procedure_hash, key, value FROM state",
-    ).all()) {
-      if (row.value !== null) this.bytes += stateStorageBytes(row.procedure_hash, row.key, row.value);
-    }
-    for (const row of this.database.query<{ hash: string; html: string }>("SELECT hash, html FROM pages").all()) {
-      this.bytes += pageStorageBytes(row.hash, row.html);
-    }
+    this.db.prepare("INSERT INTO code (hash, kind, source) VALUES (?, ?, ?)").run(hash, kind, code);
   }
 
-  get byteLength(): number {
-    return this.bytes;
-  }
-
-  get pageCount(): number {
-    return this.database.query<{ count: number }>("SELECT COUNT(*) AS count FROM pages").get()?.count ?? 0;
-  }
-
-  balance(userId: string): number {
-    return this.database.query<{ balance: number }>("SELECT balance FROM users WHERE id = ?").get(userId)?.balance ?? 0;
-  }
-
-  fund(userId: string, amount: number): number {
-    const transaction = this.database.transaction(() => {
-      this.ensureUser(userId);
-      this.database.prepare("UPDATE users SET balance = balance + ? WHERE id = ?").run(amount, userId);
-      return this.balance(userId);
-    });
-    return transaction();
-  }
-
-  reserveFuel(userId: string, amount: number): number {
-    const transaction = this.database.transaction(() => {
-      const balance = this.balance(userId);
-      if (balance < amount) throw new InsufficientBalanceError(balance, amount);
-      this.database.prepare("UPDATE users SET balance = balance - ? WHERE id = ?").run(amount, userId);
-      return balance - amount;
-    });
-    return transaction();
-  }
-
-  hasProcedure(hash: string): boolean {
-    return this.database.query<{ found: number }>("SELECT 1 AS found FROM procedures WHERE hash = ?").get(hash) !== null;
-  }
-
-  getProcedure(hash: string): string | undefined {
-    return this.database.query<{ code: string }>("SELECT code FROM procedures WHERE hash = ?").get(hash)?.code;
-  }
-
-  registerProcedure(userId: string, hash: string, code: string): { cost: number; balance: number; created: boolean } {
-    const transaction = this.database.transaction(() => {
-      if (this.hasProcedure(hash)) return { cost: 0, balance: this.balance(userId), created: false };
-      const cost = storageFuelCost(`proc:${hash}`, code, this.bytes);
-      const balance = this.balance(userId);
-      if (balance < cost) throw new InsufficientBalanceError(balance, cost);
-      const nextBytes = this.bytes + procedureStorageBytes(hash, code);
-      if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
-      this.database.prepare("UPDATE users SET balance = balance - ? WHERE id = ?").run(cost, userId);
-      this.database.prepare("INSERT INTO procedures (hash, code) VALUES (?, ?)").run(hash, code);
-      this.bytes = nextBytes;
-      return { cost, balance: balance - cost, created: true };
-    });
-    return transaction();
-  }
-
-  commitInvocation(
-    userId: string,
-    reads: readonly StateRead[],
-    operations: readonly StateOperation[],
-    refund: number,
-  ): { balance: number; deletionReward: number } {
-    let nextBytes = this.bytes;
-    let deletionReward = 0;
-    const transaction = this.database.transaction(() => {
-      const readStatement = this.database.query<{ value: string | null; version: number }>(
-        "SELECT value, version FROM state WHERE procedure_hash = ? AND key = ?",
-      );
-      for (const read of reads) {
-        const current = readStatement.get(read.procedureHash, read.key);
-        const currentVersion = current?.version ?? null;
-        if (currentVersion !== read.version) throw new TransactionConflictError();
+  registerCode(user: string, hash: string, kind: CodeKind, code: string): { created: boolean; cost: number; balance: number } {
+    return this.db.transaction(() => {
+      this.ensureUser(user);
+      const found = this.get(hash);
+      if (found) {
+        if (found.kind !== kind || found.code !== code) throw new Error("SHA-256 collision or code kind mismatch");
+        return { created: false, cost: 0, balance: this.balance(user) };
       }
-
-      const finalOperations = new Map<string, StateOperation>();
-      for (const operation of operations) {
-        finalOperations.set(`${operation.procedureHash}\u0000${operation.key}`, operation);
-      }
-
-      for (const operation of finalOperations.values()) {
-        const current = readStatement.get(operation.procedureHash, operation.key);
-        if (current?.value !== null && current?.value !== undefined) {
-          nextBytes -= stateStorageBytes(operation.procedureHash, operation.key, current.value);
-        }
-        if (operation.type === "store") {
-          nextBytes += stateStorageBytes(operation.procedureHash, operation.key, operation.value);
-        } else if (current?.value !== null && current?.value !== undefined) {
-          deletionReward += storageFuelCost(
-            `${operation.procedureHash}:${operation.key}`,
-            current.value,
-            this.bytes,
-          );
-        }
-      }
-      if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
-
-      const store = this.database.prepare(`INSERT INTO state (procedure_hash, key, value, version)
-        VALUES (?, ?, ?, 1)
-        ON CONFLICT(procedure_hash, key) DO UPDATE SET value = excluded.value, version = state.version + 1`);
-      const remove = this.database.prepare(`INSERT INTO state (procedure_hash, key, value, version)
-        VALUES (?, ?, NULL, 1)
-        ON CONFLICT(procedure_hash, key) DO UPDATE SET value = NULL, version = state.version + 1`);
-      for (const operation of finalOperations.values()) {
-        if (operation.type === "store") store.run(operation.procedureHash, operation.key, operation.value);
-        else remove.run(operation.procedureHash, operation.key);
-      }
-
-      this.ensureUser(userId);
-      this.database.prepare("UPDATE users SET balance = balance + ? WHERE id = ?")
-        .run(refund + deletionReward, userId);
-      return this.balance(userId);
-    });
-    const balance = transaction();
-    this.bytes = nextBytes;
-    return { balance, deletionReward };
+      const cost = utf8Bytes(code) * STORAGE_FUEL_PER_BYTE;
+      this.debit(user, cost);
+      this.db.prepare("INSERT INTO code (hash, kind, source) VALUES (?, ?, ?)").run(hash, kind, code);
+      return { created: true, cost, balance: this.balance(user) };
+    })();
   }
 
-  getPage(hash: string, now = Date.now()): StoredPage | undefined {
-    const page = this.database.query<{ html: string; expires_at: number }>(
-      "SELECT html, expires_at FROM pages WHERE hash = ?",
+  get(hash: string): StoredCode | undefined {
+    const row = this.db.query<{ hash: string; kind: string; source: string }>(
+      "SELECT hash, kind, source FROM code WHERE hash = ?",
     ).get(hash);
-    if (page === null) return undefined;
-    if (page.expires_at > now) return { html: page.html, expiresAt: page.expires_at };
-    this.database.prepare("DELETE FROM pages WHERE hash = ?").run(hash);
-    this.bytes -= pageStorageBytes(hash, page.html);
-    return undefined;
+    return row ? { hash: row.hash, kind: row.kind as CodeKind, code: row.source } : undefined;
   }
 
-  publishPage(
-    userId: string,
-    hash: string,
-    html: string,
-    cost: number,
-    leaseMs: number,
-  ): { expiresAt: number; balance: number } {
-    let nextBytes = this.bytes;
-    const transaction = this.database.transaction(() => {
-      const existing = this.database.query<{ html: string; expires_at: number }>(
-        "SELECT html, expires_at FROM pages WHERE hash = ?",
-      ).get(hash);
-      if (existing !== null && existing.html !== html) throw new Error("Page hash collision; existing content was not changed");
-      const balance = this.balance(userId);
-      if (balance < cost) throw new InsufficientBalanceError(balance, cost);
-      if (existing === null) nextBytes += pageStorageBytes(hash, html);
-      if (nextBytes > MAX_STORAGE_BYTES) throw new Error("Storage limit exceeded");
-      const expiresAt = Math.max(Date.now(), existing?.expires_at ?? Date.now()) + leaseMs;
-      this.database.prepare("UPDATE users SET balance = balance - ? WHERE id = ?").run(cost, userId);
-      this.database.prepare(`INSERT INTO pages (hash, html, expires_at) VALUES (?, ?, ?)
-        ON CONFLICT(hash) DO UPDATE SET expires_at = excluded.expires_at`).run(hash, html, expiresAt);
-      return { expiresAt, balance: balance - cost };
-    });
-    const result = transaction();
-    this.bytes = nextBytes;
-    return result;
+  allReducers(): StoredCode[] {
+    return this.db.query<{ hash: string; source: string }>(
+      "SELECT hash, source FROM code WHERE kind = 'reducer'",
+    ).all().map(row => ({ hash: row.hash, kind: "reducer", code: row.source }));
   }
 
-  purgeExpiredPages(now = Date.now()): void {
-    const expired = this.database.query<{ hash: string; html: string }>(
-      "SELECT hash, html FROM pages WHERE expires_at <= ?",
-    ).all(now);
-    if (expired.length === 0) return;
-    this.database.prepare("DELETE FROM pages WHERE expires_at <= ?").run(now);
-    for (const page of expired) this.bytes -= pageStorageBytes(page.hash, page.html);
+  account(user: string): number {
+    this.ensureUser(user);
+    return this.balance(user);
   }
 
-  private ensureUser(userId: string): void {
-    this.database.prepare("INSERT INTO users (id, balance) VALUES (?, 0) ON CONFLICT(id) DO NOTHING").run(userId);
+  balance(user: string): number {
+    return this.db.query<{ fuel: number }>("SELECT fuel FROM users WHERE id = ?").get(user)?.fuel ?? 0;
   }
+
+  reserveFuel(user: string, amount: number): number {
+    return this.db.transaction(() => {
+      this.ensureUser(user);
+      this.debit(user, amount);
+      return this.balance(user);
+    })();
+  }
+
+  creditFuel(user: string, amount: number): number {
+    this.ensureUser(user);
+    this.db.prepare("UPDATE users SET fuel = fuel + ? WHERE id = ?").run(amount, user);
+    return this.balance(user);
+  }
+
+  publicValue(hash: string, key: string): unknown | undefined {
+    const row = this.db.query<{ value: string }>(
+      "SELECT value FROM reducer_state WHERE reducer_hash = ? AND visibility = 'public' AND key = ?",
+    ).get(hash, key);
+    return row ? JSON.parse(row.value) : undefined;
+  }
+
+  snapshot(): StateSnapshot {
+    const state: StateSnapshot = Object.create(null) as StateSnapshot;
+    for (const row of this.db.query<{ reducer_hash: string; visibility: StateVisibility; key: string; value: string }>(
+      "SELECT reducer_hash, visibility, key, value FROM reducer_state",
+    ).all()) {
+      const reducer = state[row.reducer_hash] ??= emptyReducerState();
+      reducer[row.visibility][row.key] = JSON.parse(row.value);
+    }
+    return state;
+  }
+
+  commitState(user: string, state: StateSnapshot): { balance: number; charged: number; repaid: number } {
+    return this.db.transaction(() => {
+      this.ensureUser(user);
+      const oldRows = this.db.query<{
+        reducer_hash: string; visibility: StateVisibility; key: string; value: string; locked_fuel: number;
+      }>("SELECT reducer_hash, visibility, key, value, locked_fuel FROM reducer_state").all();
+      const old = new Map(oldRows.map(row => [stateId(row.reducer_hash, row.visibility, row.key), row]));
+      const next: Array<{ hash: string; visibility: StateVisibility; key: string; value: string; locked: number }> = [];
+      let charged = 0;
+      let repaid = 0;
+
+      for (const hash of Object.keys(state)) {
+        for (const visibility of ["private", "public"] as const) {
+          for (const key of Object.keys(state[hash]![visibility])) {
+            const value = JSON.stringify(state[hash]![visibility][key]);
+            if (value === undefined) throw new TypeError("State must be JSON serializable");
+            const id = stateId(hash, visibility, key);
+            const previous = old.get(id);
+            old.delete(id);
+            if (previous?.value === value) {
+              next.push({ hash, visibility, key, value, locked: previous.locked_fuel });
+            } else {
+              if (previous) repaid += previous.locked_fuel;
+              const locked = (utf8Bytes(key) + utf8Bytes(value)) * STORAGE_FUEL_PER_BYTE;
+              charged += locked;
+              next.push({ hash, visibility, key, value, locked });
+            }
+          }
+        }
+      }
+      for (const removed of old.values()) repaid += removed.locked_fuel;
+
+      const balance = this.balance(user);
+      const required = Math.max(0, charged - repaid);
+      if (balance < required) throw new InsufficientFuelError(balance, required);
+
+      this.db.prepare("DELETE FROM reducer_state").run();
+      const insert = this.db.prepare(
+        "INSERT INTO reducer_state (reducer_hash, visibility, key, value, locked_fuel) VALUES (?, ?, ?, ?, ?)",
+      );
+      for (const item of next) insert.run(item.hash, item.visibility, item.key, item.value, item.locked);
+      this.db.prepare("UPDATE users SET fuel = fuel + ? WHERE id = ?").run(repaid - charged, user);
+      return { balance: this.balance(user), charged, repaid };
+    })();
+  }
+
+  private ensureUser(user: string): void {
+    this.db.prepare("INSERT INTO users (id, fuel) VALUES (?, ?) ON CONFLICT(id) DO NOTHING")
+      .run(user, INITIAL_USER_FUEL);
+  }
+
+  private debit(user: string, amount: number): void {
+    const balance = this.balance(user);
+    if (balance < amount) throw new InsufficientFuelError(balance, amount);
+    this.db.prepare("UPDATE users SET fuel = fuel - ? WHERE id = ?").run(amount, user);
+  }
+}
+
+function stateId(hash: string, visibility: StateVisibility, key: string): string {
+  return `${hash}\0${visibility}\0${key}`;
+}
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+function emptyReducerState(): ReducerState {
+  return {
+    private: Object.create(null) as Record<string, unknown>,
+    public: Object.create(null) as Record<string, unknown>,
+  };
 }

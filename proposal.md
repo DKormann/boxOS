@@ -1,66 +1,91 @@
-# Architecture summary
+# Architecture proposal
 
-## The user-facing model
+## Model
 
-Submit a function definition over HTTP; it runs server-side with private persistent storage. Also host static assets addressed by SHA-256. A full-stack app is a handful of HTTP calls, no account required.
+Submit restricted JavaScript code over HTTP. It is stored as SHA-256-addressed code and runs per request with private persistent state. Function code is immutable and publicly readable. Upgrade behavior is expressed in the code, making it visible to callers.
 
-## Identity and state
+## User accounts
 
-- A function is identified by the hash of its code. State is namespaced per function — invocations of the same function share state, nothing else does.
-- **Immutable and transparent by default.** Any upgradeability is built *in* the function (logic-as-data, hardcoded admin key) and is therefore visible to everyone who reads it. The invariant: every user can see exactly if and how a function can be updated.
-- *Proposed, undecided:* submission becomes `{template: hash, params: {...}}` with namespace `= hash(template, params)`. Puts the owner key in params (closing an initialization front-running race), makes template recognition free, and lets one compiled artifact be shared across every user of a template.
-- Writes carry a TTL. Indefinite storage deferred — the cost is a stock, not a flow, and betting on price decline needs an endowment model.
+A user is an implicit account identified by an unguessable bearer credential. No separate registration, username, password, or predefined account is required. The permanent store contains only a hash of the credential and the account's fuel balance. A function receives the stable, public user ID derived from that credential, never the credential itself.
 
-## Execution and transactions
+A newly observed user receives a one-time allocation of **2,000,000 fuel**. There is no automatic replenishment or administrative top-up in the initial protocol. Fuel balances persist across server restarts. Creating another credential creates another account, so this initial model provides accounting and isolation rather than Sybil resistance.
 
-- Restricted JS subset, validated by a custom parser at registration. Validator is **versioned**, and each function records which version it passed — because content-addressed code is permanent, so tightening the grammar later can't be a flag day.
-- `eval` / `new Function` supported, validated at eval time under the enclosing function's validator version.
-- **Standard eager JS async semantics, unmodified.** Subset, don't redefine. Safety comes from statically rejecting floating promises and enforcing structured concurrency at the invocation boundary.
-- **`await` is the transaction boundary.** Each segment between awaits commits atomically; effects flush between segments. Segments are transactional by default — no opt-in ceremony for the common case.
-- Effects are deferred to post-commit and delivered at-least-once, so contention resolves *before* money is spent. Storage effects are exactly-once; external effects are at-least-once with idempotency keys.
-- **Replay-based durable execution.** An event-sourced log records reads, writes, effect results, and every nondeterministic value. Resumption re-runs from the top with committed segments served entirely from the log — never live storage — and concurrent effects resolved in logged order.
-- Retry granularity is the whole invocation, not inner blocks. Avoids the captured-mutable-locals bug that every retry-callback API ships.
-- `Promise.all` batches effects into a single segment: one commit, one suspension, one replay.
-
-## Composition
-
-- Function calls are **in-process, not RPC**. A whole call tree runs on one worker, in one transaction, one commit.
-- **Reentrancy is illegal** — call-stack membership check, trap on re-entry. Default-deny, opt-out available. Note it only protects within a synchronous stack, not across awaits.
-- Pinned hash references **cannot form cycles** (a hash cycle is infeasible to construct), so a fully-pinned call graph is acyclic by construction and reentrancy is unreachable within it. Free property, worth surfacing as something callers can demand.
-- Dependencies injected as parameters rather than hardcoded, so upgrades are a caller-side decision instead of requiring redeploy of every transitive dependent.
-- Fuel capped explicitly at each call site. A callee that awaits splits its caller's transaction, so "does this await?" is part of a function's public contract.
-
-## Runtime and caching
-
-**Code is replicable; state is not.** Replicate code everywhere, route by whatever clusters.
-
-- V8, caching `UnboundScript` per isolate, bound into a **fresh Context per invocation** — reuses compiled code with no serialization, while making dirty state structurally impossible rather than statically argued.
-- Content addressing means no cache invalidation, ever. Two-tier cache (worker-local → DB → compile), write-behind for artifacts, in-process single-flight per hash.
-- Session/user affinity, strictly advisory. Buys cache locality, contention locality, and — most importantly under replay — lets a resumption skip replay entirely by finding its state already warm.
-- One DB, N workers.
+Every invocation is attributed to its authenticated caller. Reducers and procedures receive a frozen context containing `caller`, the caller's user ID. Nested reducer calls retain the original caller; a procedure cannot substitute another identity.
 
 ## Fuel
 
-PoW-minted, later purchasable. Memory-hard hash function (the ASIC gap is the whole ballgame), adaptive difficulty. Metering covers storage writes and bytes-over-time, not just instructions. No pricing guarantees offered.
+Fuel is an integer account balance. Runtime costs **one fuel per elapsed millisecond**, rounded up with a minimum charge of one fuel. Execution reserves a caller-selected budget before starting, up to **10,000 fuel**. A successful invocation refunds its unused reservation. A timeout, runtime failure, invalid result, worker failure, or rolled-back transaction receives no runtime refund.
 
-<details>
-<summary><strong>Considered and set aside</strong></summary>
+Initial limits are:
 
-- **Mutable code pointer with owner key** — rejected; the transparency invariant is better.
-- **Procedure as the default path** — resolved by the async model, which makes segments transactional by default.
-- **Lazy futures** — JS promises are eager, and eager is actually better here because it batches effects.
-- **QuickJS native** — simpler, exact metering, cheap fresh runtimes; still the fallback if V8 metering or isolate cost disappoints.
-- **Wasmtime + Javy** — memory-level sandboxing, machine-code artifacts, built-in fuel, and language-agnostic submission. The path if the JS engine shouldn't be the only security boundary.
-- **Routing by function hash** — inverted once it became clear code replicates freely and access clusters per user.
+- initial account allocation: 2,000,000 fuel, granted once;
+- maximum invocation reservation: 10,000 fuel;
+- maximum source size: 128 KiB;
+- maximum HTTP request body: 1 MiB;
+- maximum individual canonical state value: 256 KiB;
+- maximum reducer state operations per transaction: 1,000.
 
-</details>
+Prices and limits are exposed by a read-only server metadata endpoint. Deployment-wide disk and concurrency limits remain operator configuration and are also reported by that endpoint.
 
-## Open
+## Permanent storage pricing
 
-1. Submission format (template + params) — accept or keep raw source?
-2. Whether PoW survives as the mint, or becomes a rate limiter with a different faucet.
-3. Storage rent mechanism: TTL renewal vs. continuous drip vs. hard quota.
-4. Replay history size limits and the continue-as-new equivalent.
-5. Fuel for resumptions and replay — who pays, and how it's metered separately.
-6. Whether a lint against pre-await reads used post-await is worth building (it's mechanically detectable and catches a silent hazard).
-7. What happens when one DB stops being enough.
+All newly retained logical bytes cost **8 fuel per UTF-8 byte**, regardless of whether they contain registered function code or reducer state.
+
+- Registering new code charges the caller for every UTF-8 byte of the exact source. Registering identical content again is free because it creates no bytes.
+- Creating either private or public reducer state charges the caller for the UTF-8 bytes of the key plus the stored JSON value. Public and private entries are charged independently.
+- Replacing state repays the deleting caller for the old entry, then charges that caller for the new entry.
+- Deleting reducer state always repays the deleting caller exactly the amount of fuel locked in the deleted entry. There are no ownership exceptions and the original payer is irrelevant.
+- Repayment from deletions may fund writes in the same transaction. The transaction commits only if its net storage charge and runtime reservation can be covered.
+- Failed or rolled-back transactions neither charge nor repay storage fuel.
+- Storage charges and repayments are committed atomically with state changes.
+- Immutable function code cannot be deleted and therefore its storage fuel is not repayable.
+
+Each state entry stores only its serialized JSON value and locked-fuel amount; it does not store a fuel owner. State uses the server's standard JSON serialization, and `undefined`, non-finite numbers, and other non-JSON values are rejected. Database implementation overhead, indexes, reducer hashes, code hashes, and accounting metadata are not billable. Pricing remains straightforward: exact source bytes for code, and key plus stored-value bytes for state.
+
+If a reducer permits a deletion, the caller performing that deletion always receives the reward. A reducer may use `ctx.caller` to decide whether deletion itself is permitted, but it cannot redirect or suppress the reward after deleting state.
+
+## Reducers
+
+Reducers run transactionally. They can read and write only their own state. State is strictly encapsulated per reducer.
+
+Each reducer key has two completely distinct slots: `private` and `public`. A reducer chooses the slot on every state operation through `ctx.state.private` or `ctx.state.public`; both expose `get`, `has`, `set`, and `delete`. The same key may exist in both slots with unrelated values. Private slots can be read only by their reducer. Public slots remain writable only by their reducer but are publicly readable through `GET /state/:reducerHash/:key`.
+
+A reducer receives `ctx` and `input`. Its frozen context exposes `ctx.caller`, deterministic `ctx.sha256` and `ctx.pageHash`, and its own `ctx.state` capabilities. Reducers cannot make fetch requests, inspect another reducer's state, open nested transactions, or change the attributed caller.
+
+Multiple reducer calls made in one transaction commit atomically. An exception, timeout, failed fuel reservation, serialization error, or storage limit violation rolls back the complete transaction, including storage charges and repayments.
+
+## Procedures
+
+Procedures can make fetch requests. They can invoke a transaction as a lambda function, and inside that transaction they can call reducers.
+
+A procedure receives `ctx` and `input`. Its frozen context exposes `ctx.caller`, `ctx.transaction`, and `ctx.fetch`. Fetch runs outside reducer state access. Reducers called by a procedure observe the same caller as the procedure invocation.
+
+`ctx.fetch` accepts only public `http:` and `https:` destinations. Loopback, private, link-local, multicast, and cloud-metadata addresses are blocked after DNS resolution; every redirect is resolved and checked again. Fetch follows at most five redirects, returns at most 1 MiB, and remains subject to the invocation's fuel deadline. These restrictions prevent procedures from using the server as an SSRF path into its private network.
+
+## Built-in static page reducer
+
+The server always registers one well-known reducer whose immutable source accepts a string, computes a short content ID from the first 80 bits of `SHA-256(string)` encoded as 16 lowercase Base32 characters, stores the string in its public slot under that ID, and returns the ID. Before writing, it rejects the operation if that ID already contains different content, so a collision never overwrites a page. Its source and reducer hash are exposed by the normal code API; the reducer hash and size limit are also returned by `GET /page`.
+
+A caller publishes a page by invoking this reducer with the complete HTML string. Normal invocation and storage fuel charges apply to publication. The initial maximum page size is 256 KiB.
+
+Requests to `http(s)://<16-character-id>.<server-host>/` directly read that reducer's public slot. For local development this is `http://<id>.localhost:4000/`. These reads require no identity and consume no fuel, up to the page size limit. They never start a worker or transaction. A found value is returned as `text/html; charset=utf-8` with its ID as an immutable ETag and cache key. Other reducers and private slots cannot be reached through a page host. Because every ID is a different origin, pages do not share local storage, cookies, service workers, or DOM access by default.
+
+## Public code and upgrades
+
+Code is addressed by the SHA-256 digest of its exact source and is immutable. Anyone may inspect registered source by hash. State remains attached to the reducer hash and is not directly readable through the public code API.
+
+Upgradeability must be implemented explicitly in immutable code—for example, by checking `ctx.caller` and selecting another pinned hash—so callers can inspect the authorization and upgrade rules before invocation.
+
+## Initial limitations
+
+- Bearer credentials can be stolen and must be treated as secrets.
+- Unrestricted creation of credentials makes the fixed initial allocation vulnerable to Sybil farming.
+- Wall-clock metering is simple but less deterministic than instruction metering.
+- Worker isolation is a capability boundary, not an operating-system process sandbox.
+- External fetch effects cannot be rolled back with a database transaction.
+
+## Chosen initial defaults
+
+The initial protocol deliberately favors simple, inspectable accounting: a one-time 2,000,000-fuel account allocation, one fuel per runtime millisecond, an invocation cap of 10,000 fuel, and permanent logical storage priced at 8 fuel per UTF-8 byte. Deletion rewards the deleting caller. Fetch is restricted to bounded responses from public HTTP(S) destinations.
+
+These values are explicit server constants reported by metadata. Every state entry stores its original locked-fuel amount, making repayment a direct credit to the deleting caller without ownership bookkeeping.

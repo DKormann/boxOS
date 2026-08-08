@@ -1,77 +1,48 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>boxOS example</title>
-  <style>
-    body { max-width: 42rem; margin: 3rem auto; padding: 0 1rem; font: 16px/1.5 system-ui, sans-serif; }
-    label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
-    textarea, input, button, pre { box-sizing: border-box; font: inherit; }
-    textarea, input { width: 100%; padding: .6rem; }
-    textarea { min-height: 8rem; font-family: ui-monospace, monospace; }
-    button { margin-top: .75rem; padding: .5rem .8rem; }
-    pre { min-height: 4rem; padding: 1rem; overflow: auto; background: #f4f4f4; }
-  </style>
-</head>
-<body>
-  <h1>boxOS example</h1>
-  <p>Register this procedure, then invoke it repeatedly. Its counter is stored in SQLite under the procedure hash and survives server restarts.</p>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOXOS persistent counter</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: #171725; }
+  main { width: min(28rem, calc(100% - 3rem)); padding: 2.5rem; text-align: center; color: #202033; background: #fff; border-radius: 1.25rem; box-shadow: 0 1rem 4rem #0006; }
+  output { display: block; min-height: 1.2em; margin: 1rem; font-size: 4rem; font-weight: 750; color: #5546d7; }
+  button { padding: .8rem 1.3rem; border: 0; border-radius: .7rem; color: #fff; background: #5546d7; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .6; }
+  small { display: block; margin-top: 1.5rem; color: #666; overflow-wrap: anywhere; }
+</style>
+<main>
+  <h1>Persistent counter</h1>
+  <p>This value is shared by every visitor and stored by a BOXOS reducer.</p>
+  <output id="count">…</output>
+  <button id="increment" type="button">Increment</button>
+  <small>Reducer: 22b2e192642c1098fc5a59222ada9233decbe93294f91f6d068d6e63e63d63c0</small>
+</main>
+<script type="module">
+  import { BoxOSClient } from "http://localhost:4000/client.js";
 
-  <label for="code">Procedure body</label>
-  <textarea id="code">let count = +(ctx.load("count") || "0");
-count += 1;
-ctx.store("count", "" + count);
-return arg + ": " + count;</textarea>
-  <button id="register" type="button">Register</button>
+  const reducer = "22b2e192642c1098fc5a59222ada9233decbe93294f91f6d068d6e63e63d63c0";
+  const boxos = new BoxOSClient("http://localhost:4000");
+  const count = document.querySelector("#count");
+  const button = document.querySelector("#increment");
 
-  <label for="hash">Procedure hash</label>
-  <input id="hash" readonly placeholder="Register a procedure first">
+  async function read() {
+    const response = await fetch(`http://localhost:4000/state/${reducer}/count`);
+    count.value = response.ok ? (await response.json()).value : 0;
+  }
 
-  <label for="arg">Argument</label>
-  <input id="arg" value="persistent count">
-
-  <label for="fuel">Invocation fuel (milliseconds, 1–100)</label>
-  <input id="fuel" type="number" min="1" max="100" value="100">
-  <button id="invoke" type="button">Invoke</button>
-
-  <h2>Response</h2>
-  <pre id="output">Ready.</pre>
-
-  <script type="module">
-    import { BoxOSClient } from "https://api.boxos.org/client.js";
-
-    const client = new BoxOSClient("https://api.boxos.org");
-    const code = document.querySelector("#code");
-    const hash = document.querySelector("#hash");
-    const arg = document.querySelector("#arg");
-    const fuel = document.querySelector("#fuel");
-    const output = document.querySelector("#output");
-
-    async function show(action) {
-      output.textContent = "Computing proof of work…";
-      try {
-        const value = await action();
-        output.textContent = JSON.stringify({ ok: value }, null, 2);
-        return value;
-      } catch (error) {
-        output.textContent = JSON.stringify({ error: String(error) }, null, 2);
-        return undefined;
-      }
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const result = await boxos.invoke(reducer);
+      count.value = result.ok;
+    } catch (error) {
+      count.value = "Error";
+      console.error(error);
+    } finally {
+      button.disabled = false;
     }
+  });
 
-    document.querySelector("#register").addEventListener("click", async () => {
-      const value = await show(() => client.register(code.value));
-      if (typeof value === "string") hash.value = value;
-    });
-
-    document.querySelector("#invoke").addEventListener("click", () => {
-      if (!hash.value) {
-        output.textContent = "Register a procedure first.";
-        return;
-      }
-      show(() => client.invokeHash(hash.value, arg.value, { fuel: Number(fuel.value) }));
-    });
-  </script>
-</body>
-</html>
+  await read();
+</script>

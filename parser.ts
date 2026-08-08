@@ -1,12 +1,12 @@
 const KEYWORDS = new Set([
-  "break", "catch", "const", "continue", "else", "false", "finally", "for",
+  "await", "break", "catch", "const", "continue", "else", "false", "finally", "for",
   "function", "if", "let", "null", "return", "throw", "true", "try", "typeof",
   "var", "while",
 ]);
 
 const FORBIDDEN_PROPERTIES = new Set([
   "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
-  "__proto__", "arguments", "callee", "caller", "constructor", "eval", "prototype",
+  "__proto__", "arguments", "callee", "constructor", "eval", "prototype",
 ]);
 
 // Some JavaScript reserved words are not grammar keywords in this small language.
@@ -180,7 +180,7 @@ class Parser {
   private readonly scopes: Set<string>[];
   private loopDepth = 0;
 
-  constructor(source: string, argumentNames: readonly string[]) {
+  constructor(source: string, argumentNames: readonly string[], private readonly allowAwait: boolean) {
     const root = new Set<string>();
     for (const name of argumentNames) {
       if (!isIdentifierName(name) || FORBIDDEN_BINDING_NAMES.has(name)) {
@@ -371,6 +371,11 @@ class Parser {
   }
 
   private unary(): Expression {
+    if (this.matchKeyword("await")) {
+      if (!this.allowAwait) this.fail("await is only available in procedures", this.previous);
+      this.unary();
+      return VALUE;
+    }
     if (this.matchKeyword("typeof") || this.match("!") || this.match("+") || this.match("-")) {
       this.unary();
       return VALUE;
@@ -567,9 +572,10 @@ function isIdentifierName(value: string): boolean {
 export function validateProcCode(
   source: string,
   argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math", "String"],
+  allowAwait = false,
 ): void {
   if (typeof source !== "string") throw new TypeError("Procedure code must be a string");
-  new Parser(source, argumentNames).parse();
+  new Parser(source, argumentNames, allowAwait).parse();
 }
 
 export function isValidProcCode(
