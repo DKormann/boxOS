@@ -18,6 +18,10 @@ main { width: min(56rem, calc(100% - 2rem)); margin: 4vh auto; }
 
 header { margin-bottom: 1.5rem; }
 h1 { font-size: 1.8rem; margin: 0 0 .2rem; }
+h1 .brand { color: #5149d8; text-decoration: none; }
+h1 .brand:hover { text-decoration: underline; }
+.card .meta a { color: #5149d8; text-decoration: none; }
+.card .meta a:hover { text-decoration: underline; }
 h2 { font-size: 1.15rem; margin: 0 0 .8rem; }
 .muted { color: #6b6d76; margin: 0 0 1rem; }
 
@@ -73,7 +77,7 @@ button.danger { background: #fdecea; color: #b3261e; }
 <body>
 <main>
   <header>
-    <h1>boxOS App Gallery</h1>
+    <h1><a class="brand" href="https://boxos.org/">boxOS</a> App Gallery</h1>
     <p class="muted">Discover, collect, and share boxOS apps.</p>
     <div id="signed-out"><button id="sign-in" type="button">Sign in with boxOS account</button></div>
     <div id="signed-in" class="account-bar" hidden>
@@ -412,11 +416,10 @@ throw "Unknown action";`;
 // BOXOS gallery procedure.
 //
 // Verifies a reusable signed "curate apps" grant, then applies the requested
-// operation (submit / like / unlike / collect / uncollect / remove) to the
-// gallery reducer under the grant's account. The grant is requested once at
-// sign-in and reused forever.
+// operation to the gallery reducer. Also syncs grant.name to the profile
+// reducer on every call, so the canonical name store stays current.
 
-function buildGalleryProcedureCode(reducerHash, identityReducerHash) {
+function buildGalleryProcedureCode(reducerHash, identityReducerHash, profileReducerHash) {
   return `if (input.action != "mutate") throw "Unknown action";
 if (typeof input.authorization != "object" || typeof input.authorization.message != "string" || typeof input.authorization.signature != "string") throw "Invalid authorization";
 let grant = JSON.parse(input.authorization.message);
@@ -430,12 +433,58 @@ if (typeof publicKey != "string") throw "Unknown account";
 let valid = await ctx.verify(publicKey, input.authorization.message, input.authorization.signature);
 if (!valid) throw "Invalid signature";
 let op = input.op;
-function run(tx) { return tx.invoke("${reducerHash}", { action: op.type, account: grant.account, authorName: grant.name, app: op.app, appId: op.appId }); }
+function run(tx) {
+  tx.invoke("${profileReducerHash}", { action: "setName", account: grant.account, name: grant.name });
+  return tx.invoke("${reducerHash}", { action: op.type, account: grant.account, authorName: grant.name, app: op.app, appId: op.appId });
+}
+return await ctx.transaction(run);`;
+}
+
+
+// --- profile-reducer.js ---
+
+// BOXOS profile reducer — the canonical name store.
+//
+// Every app writes the signed-in user's name here on sign-in (using their
+// "set profile" capability grant), and reads everyone's name from here.
+// One source of truth, no fallbacks.
+//
+// Key:
+//   profile:<account> → string name
+
+const PROFILE_REDUCER_CODE = `if (input.action != "setName") throw "Unknown action";
+if (typeof input.account != "string" || typeof input.name != "string") throw "Invalid input";
+if (input.name.length < 1 || input.name.length > 80) throw "Invalid name";
+ctx.state.public.set("profile:" + input.account, input.name);
+return input.name;`;
+
+
+// --- profile-procedure.js ---
+
+// BOXOS profile procedure — verifies a signed "set profile" grant and writes
+// the account's name to the profile reducer.
+
+function buildProfileProcedureCode(reducerHash, identityReducerHash) {
+  return `if (input.action != "setName") throw "Unknown action";
+if (typeof input.authorization != "object" || typeof input.authorization.message != "string" || typeof input.authorization.signature != "string") throw "Invalid authorization";
+let grant = JSON.parse(input.authorization.message);
+if (grant.version != 1 || grant.domain != "boxos-capability" || grant.resource != "${reducerHash}" || typeof grant.account != "string" || typeof grant.name != "string" || typeof grant.text != "string" || typeof grant.nonce != "string") throw "Invalid authorization";
+let allowed = false;
+for (let i = 0; i < grant.capabilities.length; i += 1) if (grant.capabilities[Number(i)] == "set profile") allowed = true;
+if (!allowed) throw "Missing set profile capability";
+function identity(tx) { return tx.invoke("${identityReducerHash}", { action: "lookup", account: grant.account }); }
+let publicKey = await ctx.transaction(identity);
+if (typeof publicKey != "string") throw "Unknown account";
+let valid = await ctx.verify(publicKey, input.authorization.message, input.authorization.signature);
+if (!valid) throw "Invalid signature";
+function run(tx) { return tx.invoke("${reducerHash}", { action: "setName", account: grant.account, name: grant.name }); }
 return await ctx.transaction(run);`;
 }
 
 
 // --- app.js ---
+
+
 
 
 
@@ -453,6 +502,8 @@ const AUTH_KEY = "gallery.authorization";
 
 let reducerHash = null;
 let procedureHash = null;
+let profileReducerHash = null;
+let profileProcedureHash = null;
 let authorization = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
 let myAccount = authorization?.grant?.account || null;
 let myName = authorization?.grant?.name || null;
@@ -473,8 +524,25 @@ async function ensureRegistered() {
   const stats = await boxos.stats();
   const procCode = buildGalleryProcedureCode(reducerHash, stats.identities.reducer);
   procedureHash = await sha256Hex(procCode);
+  profileReducerHash = await sha256Hex(PROFILE_REDUCER_CODE);
+  const profileProcCode = buildProfileProcedureCode(profileReducerHash, stats.identities.reducer);
+  profileProcedureHash = await sha256Hex(profileProcCode);
   await boxos.registerReducer(GALLERY_REDUCER_CODE);
   await boxos.registerProcedure(procCode);
+  await boxos.registerReducer(PROFILE_REDUCER_CODE);
+  await boxos.registerProcedure(profileProcCode);
+}
+
+async function readName(account) {
+  const res = await fetch(`/state/${profileReducerHash}/profile:${encodeURIComponent(account)}`);
+  if (!res.ok) return "";
+  const v = (await res.json()).value;
+  return typeof v === "string" ? v : "";
+}
+
+async function writeMyName() {
+  // Name sync happens server-side: the gallery procedure writes grant.name to
+  // the profile reducer on every mutate. Nothing to do client-side.
 }
 
 // ----- free public-state reads -----
@@ -543,7 +611,7 @@ function signOut() {
 }
 
 // ----- rendering -----
-function card(app, likeCount) {
+function card(app, likeCount, authorName) {
   const el = document.createElement("article");
   el.className = "card";
   const isOwn = published.has(app.id);
@@ -565,7 +633,15 @@ function card(app, likeCount) {
   const meta = document.createElement("div");
   meta.className = "meta";
   const author = document.createElement("span");
-  author.textContent = "by " + (app.authorName || "anonymous");
+  author.textContent = "by ";
+  if (app.author) {
+    const authorLink = document.createElement("a");
+    authorLink.href = "https://pzzizqwdhoefinsp.pages.boxos.org/?u=" + encodeURIComponent(app.author);
+    authorLink.textContent = authorName || "anonymous";
+    author.append(authorLink);
+  } else {
+    author.textContent += authorName || "anonymous";
+  }
   const likes = document.createElement("span");
   likes.textContent = "♥ " + (likeCount || 0);
   meta.append(author, likes);
@@ -621,7 +697,8 @@ async function renderGrid(apps) {
   }
   $("empty").hidden = true;
   const counts = await Promise.all(apps.map((a) => readCount(a.id)));
-  for (let i = 0; i < apps.length; i += 1) grid.append(card(apps[i], counts[i]));
+  const authorNames = await Promise.all(apps.map((a) => a.author ? readName(a.author) : ""));
+  for (let i = 0; i < apps.length; i += 1) grid.append(card(apps[i], counts[i], authorNames[i]));
 }
 
 async function renderTab() {
