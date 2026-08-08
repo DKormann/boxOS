@@ -140,6 +140,24 @@ async function publishCode(kind: unknown, code: unknown): Promise<unknown> {
   });
 }
 
+function base64UrlBytes(value: unknown, name: string): Uint8Array<ArrayBuffer> {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) throw new TypeError(`${name} must be Base64URL`);
+  const encoded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(encoded + "=".repeat((4 - encoded.length % 4) % 4));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function verifySignature(publicKey: unknown, messageValue: unknown, signatureValue: unknown): Promise<boolean> {
+  if (typeof messageValue !== "string") throw new TypeError("Signed message must be a string");
+  const keyBytes = base64UrlBytes(publicKey, "Public key");
+  const signature = base64UrlBytes(signatureValue, "Signature");
+  if (keyBytes.byteLength !== 32 || signature.byteLength !== 64) return false;
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "Ed25519" }, false, ["verify"]);
+  return crypto.subtle.verify("Ed25519", key, signature, new TextEncoder().encode(messageValue));
+}
+
 async function safeFetch(resource: unknown, options?: unknown): Promise<unknown> {
   if (typeof resource !== "string") throw new TypeError("fetch URL must be a string");
   const response = await fetch(resource, cloneJson(options ?? {}, "fetch options") as RequestInit);
@@ -161,6 +179,7 @@ async function run(start: Start): Promise<void> {
         fetch: safeFetch,
         validate: validateCode,
         publish: publishCode,
+        verify: verifySignature,
       });
       const fn = new AsyncFunction("ctx", "input", "JSON", "Math", "String", `"use strict";\n${start.code}`);
       result = await fn(ctx, cloneJson(start.input, "Procedure input"), JSON_CAP, MATH_CAP, String);

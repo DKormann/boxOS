@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS Status</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f4f5f8}*{box-sizing:border-box}body{margin:0}main{width:min(42rem,calc(100% - 2rem));margin:6vh auto}h1{font-size:2.4rem;margin-bottom:.2rem}h2{margin-top:2.5rem;font-size:1.15rem}.muted{color:#6b6d76}.composer,.search{display:flex;gap:.5rem;margin:1.5rem 0}input{flex:1;padding:.8rem;border:1px solid #c9cad1;border-radius:.6rem;font:inherit}button{padding:.8rem 1rem;border:0;border-radius:.6rem;background:#5149d8;color:white;font:600 14px system-ui;cursor:pointer}button:disabled{opacity:.55}.statuses{display:grid;gap:.65rem}.status{padding:1rem 1.1rem;background:white;border:1px solid #dedfe5;border-radius:.75rem}.name{font-weight:650}.text{margin:.3rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.empty{padding:1rem 0;color:#777}.message{min-height:1.5rem;color:#666}.error{color:#b3261e}
+</style>
+<main>
+  <h1>Status</h1>
+  <p class="muted">Share a short status using one of your BOXOS accounts.</p>
+  <div class="composer"><input id="status" maxlength="280" placeholder="What is your status?"><button id="post">Set status</button></div>
+  <p id="message" class="message"></p>
+
+  <h2>Recent</h2>
+  <div id="recent" class="statuses"></div>
+
+  <h2>Look up a person</h2>
+  <div class="search"><input id="name" placeholder="Account name"><button id="lookup">Look up</button></div>
+  <div id="results" class="statuses"></div>
+</main>
+<script type="module">
+import { BoxOSClient } from "/client.js";
+const boxos = new BoxOSClient();
+const $ = id => document.querySelector(`#${id}`);
+const stats = await boxos.stats();
+const statusApp = stats.applications.status;
+
+function showStatuses(target, entries) {
+  const container = $(target); container.textContent = "";
+  if (!entries.length) {
+    const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "No statuses yet."; container.append(empty); return;
+  }
+  for (const entry of entries) {
+    const card = document.createElement("article"); card.className = "status";
+    const name = document.createElement("div"); name.className = "name"; name.textContent = entry.name;
+    const text = document.createElement("p"); text.className = "text"; text.textContent = entry.status || "No status";
+    card.append(name, text); container.append(card);
+  }
+}
+function message(value, error = false) {
+  $("message").textContent = value; $("message").classList.toggle("error", error);
+}
+async function call(input) {
+  const receipt = await boxos.invoke(statusApp.procedure, input);
+  return receipt.ok;
+}
+async function refresh() {
+  try { showStatuses("recent", await call({ action: "recent" })); }
+  catch (error) { message(error.message, true); }
+}
+$("post").onclick = async () => {
+  const value = $("status").value.trim();
+  if (!value) return message("Enter a status first.", true);
+  $("post").disabled = true; message("Choose an account to authorize this status…");
+  try {
+    const authorization = await boxos.authorize(["set status"], value, statusApp.reducer);
+    await call({ action: "set", authorization });
+    $("status").value = ""; message("Status updated."); await refresh();
+  } catch (error) { message(error.message, true); }
+  finally { $("post").disabled = false; }
+};
+$("lookup").onclick = async () => {
+  const name = $("name").value.trim();
+  if (!name) return;
+  try { showStatuses("results", await call({ action: "lookup", name })); }
+  catch (error) { message(error.message, true); }
+};
+await refresh();
+</script>

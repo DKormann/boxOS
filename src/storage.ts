@@ -96,6 +96,21 @@ export class Storage {
     return this.balance(user);
   }
 
+  putSystemPublicValue(hash: string, key: string, value: unknown): void {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new TypeError("State must be JSON serializable");
+    const existing = this.db.query<{ value: string }>(
+      "SELECT value FROM reducer_state WHERE reducer_hash = ? AND visibility = 'public' AND key = ?",
+    ).get(hash, key);
+    if (existing) {
+      if (existing.value !== encoded) throw new Error(`Public state collision: ${hash}/${key}`);
+      return;
+    }
+    this.db.prepare(
+      "INSERT INTO reducer_state (reducer_hash, visibility, key, value, locked_fuel) VALUES (?, 'public', ?, ?, 0)",
+    ).run(hash, key, encoded);
+  }
+
   publicValue(hash: string, key: string): unknown | undefined {
     const row = this.db.query<{ value: string }>(
       "SELECT value FROM reducer_state WHERE reducer_hash = ? AND visibility = 'public' AND key = ?",

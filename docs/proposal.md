@@ -18,7 +18,7 @@ This split keeps durable state changes deterministic and inspectable while still
 
 ## Identity and economics
 
-Users are implicit accounts controlled by unguessable bearer credentials. Functions receive a stable hash-derived caller ID, never the credential itself.
+Users are implicit fuel accounts controlled by unguessable bearer credentials. Functions receive a stable hash-derived caller ID, never the credential itself. Separately, applications may use browser-owned Ed25519 identities to sign audience-bound, arbitrary capability grants without exposing private keys.
 
 Every account has fuel. Runtime reserves a caller-selected budget and charges for elapsed execution time. Permanent code and state charge by stored byte. Successful calls return unused runtime fuel; failures do not. Deleting state releases its locked fuel to the deleting caller.
 

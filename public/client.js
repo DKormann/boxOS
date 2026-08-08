@@ -18,6 +18,56 @@ export class BoxOSClient {
     return this.request("/stats", {}, false);
   }
 
+  async authorize(capabilities, text = "", resource = "") {
+    if (!Array.isArray(capabilities) || capabilities.some(value => typeof value !== "string")) {
+      throw new TypeError("Capabilities must be an array of strings");
+    }
+    const expectedCapabilities = [...new Set(capabilities)].sort();
+    const popup = globalThis.open(`${this.baseUrl}/examples/accounts`, "boxos-accounts", "popup,width=560,height=720");
+    if (!popup) throw new BoxOSError("The account popup was blocked");
+    const requestId = crypto.randomUUID();
+    const nonce = crypto.randomUUID();
+    const request = { boxos: "authorize", requestId, nonce, capabilities, text, resource };
+    return await new Promise((resolve, reject) => {
+      const send = setInterval(() => { if (!popup.closed) popup.postMessage(request, "*"); }, 300);
+      const timeout = setTimeout(() => finish(new BoxOSError("Authorization timed out")), 5 * 60 * 1000);
+      const receive = event => {
+        if (event.source !== popup || event.data?.requestId !== requestId) return;
+        if (event.data.boxos === "authorization-denied") return finish(new BoxOSError("Authorization denied"));
+        if (event.data.boxos !== "authorization") return;
+        const authorization = event.data;
+        if (authorization.grant?.audience !== globalThis.location.origin || authorization.grant?.nonce !== nonce
+          || authorization.grant?.text !== text || authorization.grant?.resource !== resource
+          || JSON.stringify(authorization.grant?.capabilities) !== JSON.stringify(expectedCapabilities)) {
+          return finish(new BoxOSError("Invalid authorization response"));
+        }
+        if (authorization.message !== canonicalJson(authorization.grant)) {
+          return finish(new BoxOSError("Authorization message is not canonical"));
+        }
+        finish(undefined, authorization);
+      };
+      const finish = (error, value) => {
+        clearInterval(send); clearTimeout(timeout); removeEventListener("message", receive); popup.close();
+        if (error) reject(error); else resolve(value);
+      };
+      addEventListener("message", receive);
+      popup.postMessage(request, "*");
+    });
+  }
+
+  async verifyAuthorization(authorization, options = {}) {
+    if (!authorization || authorization.message !== canonicalJson(authorization.grant)) {
+      throw new TypeError("Invalid authorization");
+    }
+    const stats = await this.stats();
+    return this.invoke(stats.identities.procedure, {
+      action: "verify",
+      account: authorization.grant.account,
+      message: authorization.message,
+      signature: authorization.signature,
+    }, options);
+  }
+
   async validateCode(kind, code, options = {}) {
     const stats = await this.stats();
     return this.invoke(stats.procedures.validate, { kind, code }, options);
@@ -108,6 +158,14 @@ function loadIdentity(storageKey) {
   } catch {
     return randomIdentity();
   }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function randomIdentity() {

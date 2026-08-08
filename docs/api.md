@@ -124,6 +124,7 @@ Available procedure capabilities:
 - `tx.invoke(reducerHash, input)`: invokes a reducer inside that transaction.
 - `ctx.validate(kind, code)`: validates reducer or procedure source without storing it.
 - `ctx.publish(kind, code)`: validates and permanently registers source, charged to the original caller.
+- `ctx.verify(publicKey, message, signature)`: verifies an Ed25519 signature over arbitrary UTF-8 text.
 
 All reducer calls in one transaction share a snapshot and commit atomically. Reducers called by a procedure see the procedure's original caller. Publication is permanent and is not rolled back if the publishing procedure later fails.
 
@@ -141,6 +142,8 @@ BOXOS ships immutable validation and publication procedures. Their hashes are re
 Invocation fuel is reserved before a worker starts. Successful execution refunds unused runtime fuel. Errors, timeouts, and worker crashes refund nothing.
 
 Creating state charges for its key and serialized JSON value. Replacing state repays the old entry and charges the new entry. Deleting state always repays the deleting caller. Failed and rolled-back transactions do not receive storage repayments.
+
+`GET /stats` also exposes the built-in identity reducer and procedure hashes. Signed application accounts, popup authorization, and arbitrary capability grants are documented at `/docs/accounts`.
 
 Current prices and limits are available from:
 
@@ -180,6 +183,10 @@ GET /state/<page-reducer-hash>/<page-id>
 
 Or request the page URL directly to render it.
 
+### Repository examples
+
+Every non-hidden file in `examples/` must be an HTML document. At startup BOXOS installs each file into the page reducer's public state using its normal content ID. The file `examples/my-demo.html` then appears at `/examples` and `/examples/my-demo` redirects to its immutable page origin. Adding an example requires only adding one HTML file; no server registry or route changes are needed. Removing a file removes it from the examples index but does not delete content already retained in persistent page state.
+
 ## Browser client
 
 The dependency-free ES module is served at:
@@ -193,6 +200,7 @@ Main methods:
 
 - `account()` and `balance()`
 - `stats()`
+- `authorize(capabilities, text)` and `verifyAuthorization(authorization)`
 - `validateCode(kind, code)` and `publishCode(kind, code)`
 - `registerReducer(code)` and `registerProcedure(code)`
 - `inspect(hash)`
@@ -209,7 +217,9 @@ By default the client creates a bearer identity in the current browser origin's 
 - `GET /`: project pitch.
 - `GET /docs`: this document.
 - `GET /proposal`: concise architecture whitepaper.
-- `GET /example`: persistent counter demo.
+- `GET /examples`: installed example pages.
+- `GET /examples/<name>`: redirect to a named example's content-addressed origin.
+- `GET /example`: compatibility redirect to the persistent counter example.
 - `GET /client.js`: browser client.
 - `GET /health`: health check.
 - `OPTIONS`: CORS preflight for API requests.

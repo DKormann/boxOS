@@ -1,7 +1,20 @@
+import { readdir } from "fs/promises";
 import { COUNTER_REDUCER_CODE, COUNTER_REDUCER_HASH } from "./counter.ts";
-import { procHash, sha256 } from "./hash.ts";
+import { pageHash, procHash, sha256 } from "./hash.ts";
+import {
+  IDENTITY_PROCEDURE_CODE,
+  IDENTITY_PROCEDURE_HASH,
+  IDENTITY_REDUCER_CODE,
+  IDENTITY_REDUCER_HASH,
+} from "./identity.ts";
 import { PAGE_MAX_BYTES, PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "./page.ts";
 import { ProcSyntaxError, validateProcCode } from "./parser.ts";
+import {
+  STATUS_PROCEDURE_CODE,
+  STATUS_PROCEDURE_HASH,
+  STATUS_REDUCER_CODE,
+  STATUS_REDUCER_HASH,
+} from "./status.ts";
 import {
   PUBLISH_PROCEDURE_CODE,
   PUBLISH_PROCEDURE_HASH,
@@ -30,17 +43,36 @@ const storage = new Storage(DATABASE);
 const reducerNames = ["ctx", "input", "JSON", "Math", "String"];
 validateProcCode(PAGE_REDUCER_CODE, reducerNames);
 validateProcCode(COUNTER_REDUCER_CODE, reducerNames);
+validateProcCode(IDENTITY_REDUCER_CODE, reducerNames);
+validateProcCode(IDENTITY_PROCEDURE_CODE, reducerNames, true);
+validateProcCode(STATUS_REDUCER_CODE, reducerNames);
+validateProcCode(STATUS_PROCEDURE_CODE, reducerNames, true);
 validateProcCode(VALIDATE_PROCEDURE_CODE, reducerNames, true);
 validateProcCode(PUBLISH_PROCEDURE_CODE, reducerNames, true);
 storage.putSystemCode(PAGE_REDUCER_HASH, "reducer", PAGE_REDUCER_CODE);
 storage.putSystemCode(COUNTER_REDUCER_HASH, "reducer", COUNTER_REDUCER_CODE);
+storage.putSystemCode(IDENTITY_REDUCER_HASH, "reducer", IDENTITY_REDUCER_CODE);
+storage.putSystemCode(IDENTITY_PROCEDURE_HASH, "procedure", IDENTITY_PROCEDURE_CODE);
+storage.putSystemCode(STATUS_REDUCER_HASH, "reducer", STATUS_REDUCER_CODE);
+storage.putSystemCode(STATUS_PROCEDURE_HASH, "procedure", STATUS_PROCEDURE_CODE);
 storage.putSystemCode(VALIDATE_PROCEDURE_HASH, "procedure", VALIDATE_PROCEDURE_CODE);
 storage.putSystemCode(PUBLISH_PROCEDURE_HASH, "procedure", PUBLISH_PROCEDURE_CODE);
+
+const examplesDirectory = new URL("../examples/", import.meta.url);
+const examples = await Promise.all((await readdir(examplesDirectory)).filter(name => !name.startsWith(".")).sort().map(async file => {
+  if (!file.endsWith(".html")) throw new Error(`Example files must be HTML: ${file}`);
+  const html = await Bun.file(new URL(file, examplesDirectory)).text();
+  if (new TextEncoder().encode(html).byteLength > PAGE_MAX_BYTES) throw new Error(`Example is too large: ${file}`);
+  const id = pageHash(html);
+  storage.putSystemPublicValue(PAGE_REDUCER_HASH, id, html);
+  return { name: file.slice(0, -5), file, id };
+}));
+
 const proposalText = await Bun.file(new URL("../docs/proposal.md", import.meta.url)).text();
 const docsText = await Bun.file(new URL("../docs/api.md", import.meta.url)).text();
+const accountsText = await Bun.file(new URL("../docs/accounts.md", import.meta.url)).text();
 const clientJavaScript = await Bun.file(new URL("../public/client.js", import.meta.url)).text();
 const pitchHtml = await Bun.file(new URL("../public/index.html", import.meta.url)).text();
-const exampleHtml = await Bun.file(new URL("../examples/persistent-counter.html", import.meta.url)).text();
 const docsHtml = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -51,6 +83,11 @@ const proposalHtml = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BOXOS architecture proposal</title>
 <main><p><a href="/docs">Documentation</a></p><pre>${escapeHtml(proposalText)}</pre></main>`;
+const accountsHtml = `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS signed accounts</title>
+<main><p><a href="/docs">Documentation</a></p><pre>${escapeHtml(accountsText)}</pre></main>`;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -137,6 +174,12 @@ type WorkerRequest =
 function pageIdFromHostname(hostname: string): string | undefined {
   const label = hostname.split(".")[0];
   return label && /^[a-z2-7]{16}$/.test(label) && hostname.includes(".") ? label : undefined;
+}
+
+function pageUrlTemplate(request: Request, url: URL, pageId?: string): string {
+  const scheme = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1);
+  const baseHost = Bun.env.PAGE_BASE_DOMAIN ?? (pageId ? url.host.slice(pageId.length + 1) : url.host);
+  return `${scheme}://{id}.${baseHost}/`;
 }
 
 function servePage(request: Request, url: URL, pageId: string): Response {
@@ -286,13 +329,38 @@ Bun.serve({
         headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
       });
     }
-    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/example") {
-      return new Response(request.method === "HEAD" ? null : exampleHtml, {
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/examples") {
+      const template = pageUrlTemplate(request, url, pageId);
+      const links = examples.map(example =>
+        `<li><a href="${template.replace("{id}", example.id)}">${escapeHtml(example.name)}</a> <code>${example.id}</code></li>`,
+      ).join("");
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>BOXOS examples</title><h1>BOXOS examples</h1><ul>${links}</ul><p><a href="/docs">Documentation</a></p>`;
+      return new Response(request.method === "HEAD" ? null : html, {
         headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
       });
     }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/examples/")) {
+      const name = decodeURIComponent(url.pathname.slice(10));
+      const example = examples.find(item => item.name === name);
+      if (!example) return failure("Example not found", 404);
+      return Response.redirect(pageUrlTemplate(request, url, pageId).replace("{id}", example.id), 302);
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/example") {
+      const example = examples.find(item => item.name === "persistent-counter") ?? examples[0];
+      if (!example) return failure("No examples installed", 404);
+      return Response.redirect(pageUrlTemplate(request, url, pageId).replace("{id}", example.id), 302);
+    }
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/docs") {
       return new Response(request.method === "HEAD" ? null : docsHtml, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "default-src 'none'; base-uri 'none'",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/docs/accounts") {
+      return new Response(request.method === "HEAD" ? null : accountsHtml, {
         headers: {
           "content-type": "text/html; charset=utf-8",
           "content-security-policy": "default-src 'none'; base-uri 'none'",
@@ -331,13 +399,12 @@ Bun.serve({
         storage: { fuelPerByte: STORAGE_FUEL_PER_BYTE, maximumValueBytes: MAX_STATE_VALUE_BYTES },
         pages: { reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES },
         procedures: { validate: VALIDATE_PROCEDURE_HASH, publish: PUBLISH_PROCEDURE_HASH },
+        identities: { reducer: IDENTITY_REDUCER_HASH, procedure: IDENTITY_PROCEDURE_HASH },
+        applications: { status: { reducer: STATUS_REDUCER_HASH, procedure: STATUS_PROCEDURE_HASH } },
       });
     }
     if (request.method === "GET" && url.pathname === "/page") {
-      const scheme = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1);
-      const baseHost = Bun.env.PAGE_BASE_DOMAIN ?? (pageId ? url.host.slice(pageId.length + 1) : url.host);
-      const urlTemplate = `${scheme}://{id}.${baseHost}/`;
-      return json({ reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES, urlTemplate });
+      return json({ reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES, urlTemplate: pageUrlTemplate(request, url, pageId) });
     }
     if (request.method === "POST" && url.pathname === "/code") return register(request);
     if (request.method === "POST" && url.pathname === "/reducers") return register(request, "reducer");
