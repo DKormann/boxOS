@@ -1,10 +1,16 @@
 import { expect, test } from "bun:test";
-import { COUNTER_REDUCER_CODE, COUNTER_REDUCER_HASH } from "./counter.ts";
+import { COUNTER_REDUCER_CODE, COUNTER_REDUCER_HASH } from "../src/counter.ts";
 import { rm } from "fs/promises";
-import { procHash } from "./hash.ts";
-import { PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "./page.ts";
-import { isValidProcCode, validateProcCode } from "./parser.ts";
-import { INITIAL_USER_FUEL, Storage } from "./storage.ts";
+import { procHash } from "../src/hash.ts";
+import { PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "../src/page.ts";
+import { analyzeProcCode, isValidProcCode, validateProcCode } from "../src/parser.ts";
+import { INITIAL_USER_FUEL, Storage } from "../src/storage.ts";
+import {
+  PUBLISH_PROCEDURE_CODE,
+  PUBLISH_PROCEDURE_HASH,
+  VALIDATE_PROCEDURE_CODE,
+  VALIDATE_PROCEDURE_HASH,
+} from "../src/system-procedures.ts";
 
 test("code addresses are SHA-256 digests", () => {
   expect(procHash("return input;")).toBe("4d3a5625145171d40ee827df41e201e99e24e3cf7a30adea9e36d84038dd310b");
@@ -12,6 +18,11 @@ test("code addresses are SHA-256 digests", () => {
 
 test("the demo counter has a stable content address", () => {
   expect(COUNTER_REDUCER_HASH).toBe(procHash(COUNTER_REDUCER_CODE));
+});
+
+test("system procedures have stable content addresses", () => {
+  expect(VALIDATE_PROCEDURE_HASH).toBe(procHash(VALIDATE_PROCEDURE_CODE));
+  expect(PUBLISH_PROCEDURE_HASH).toBe(procHash(PUBLISH_PROCEDURE_CODE));
 });
 
 test("the page reducer has a stable content address", () => {
@@ -36,6 +47,13 @@ test("fuel is charged, refunded, and repaid to the deleting caller", async () =>
   expect(deleted.balance).toBe(INITIAL_USER_FUEL + written.charged);
   storage.close();
   await rm(path, { force: true });
+});
+
+test("the parser finds literal code-hash references", () => {
+  const hash = "4d3a5625145171d40ee827df41e201e99e24e3cf7a30adea9e36d84038dd310b";
+  const analysis = analyzeProcCode(`// ${"a".repeat(64)}\nreturn ctx.invoke("${hash}", input);`, ["ctx", "input"]);
+  expect(analysis.references[0]).toBe(hash);
+  expect(analysis.references.length).toBe(1);
 });
 
 test("the restricted language separates reducer and procedure capabilities", () => {

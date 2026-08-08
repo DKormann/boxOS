@@ -19,15 +19,15 @@
   <small>Reducer: 22b2e192642c1098fc5a59222ada9233decbe93294f91f6d068d6e63e63d63c0</small>
 </main>
 <script type="module">
-  import { BoxOSClient } from "http://localhost:4000/client.js";
+  import { BoxOSClient } from "/client.js";
 
   const reducer = "22b2e192642c1098fc5a59222ada9233decbe93294f91f6d068d6e63e63d63c0";
-  const boxos = new BoxOSClient("http://localhost:4000");
+  const boxos = new BoxOSClient();
   const count = document.querySelector("#count");
   const button = document.querySelector("#increment");
 
   async function read() {
-    const response = await fetch(`http://localhost:4000/state/${reducer}/count`);
+    const response = await fetch(`/state/${reducer}/count`);
     count.value = response.ok ? (await response.json()).value : 0;
   }
 

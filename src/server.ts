@@ -3,6 +3,12 @@ import { procHash, sha256 } from "./hash.ts";
 import { PAGE_MAX_BYTES, PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "./page.ts";
 import { ProcSyntaxError, validateProcCode } from "./parser.ts";
 import {
+  PUBLISH_PROCEDURE_CODE,
+  PUBLISH_PROCEDURE_HASH,
+  VALIDATE_PROCEDURE_CODE,
+  VALIDATE_PROCEDURE_HASH,
+} from "./system-procedures.ts";
+import {
   INITIAL_USER_FUEL,
   InsufficientFuelError,
   STORAGE_FUEL_PER_BYTE,
@@ -24,17 +30,27 @@ const storage = new Storage(DATABASE);
 const reducerNames = ["ctx", "input", "JSON", "Math", "String"];
 validateProcCode(PAGE_REDUCER_CODE, reducerNames);
 validateProcCode(COUNTER_REDUCER_CODE, reducerNames);
+validateProcCode(VALIDATE_PROCEDURE_CODE, reducerNames, true);
+validateProcCode(PUBLISH_PROCEDURE_CODE, reducerNames, true);
 storage.putSystemCode(PAGE_REDUCER_HASH, "reducer", PAGE_REDUCER_CODE);
 storage.putSystemCode(COUNTER_REDUCER_HASH, "reducer", COUNTER_REDUCER_CODE);
-const proposalText = await Bun.file(new URL("./proposal.md", import.meta.url)).text();
-const clientJavaScript = await Bun.file(new URL("./client.js", import.meta.url)).text();
-const pitchHtml = await Bun.file(new URL("./pitch.html", import.meta.url)).text();
-const exampleHtml = await Bun.file(new URL("./example.html", import.meta.url)).text();
+storage.putSystemCode(VALIDATE_PROCEDURE_HASH, "procedure", VALIDATE_PROCEDURE_CODE);
+storage.putSystemCode(PUBLISH_PROCEDURE_HASH, "procedure", PUBLISH_PROCEDURE_CODE);
+const proposalText = await Bun.file(new URL("../docs/proposal.md", import.meta.url)).text();
+const docsText = await Bun.file(new URL("../docs/api.md", import.meta.url)).text();
+const clientJavaScript = await Bun.file(new URL("../public/client.js", import.meta.url)).text();
+const pitchHtml = await Bun.file(new URL("../public/index.html", import.meta.url)).text();
+const exampleHtml = await Bun.file(new URL("../examples/persistent-counter.html", import.meta.url)).text();
 const docsHtml = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BOXOS proposal</title>
-<main><h1>BOXOS</h1><p><a href="/client.js">Example JavaScript client</a></p><pre>${escapeHtml(proposalText)}</pre></main>`;
+<title>BOXOS documentation</title>
+<main><h1>BOXOS documentation</h1><p><a href="/proposal">Architecture proposal</a> · <a href="/client.js">JavaScript client</a></p><pre>${escapeHtml(docsText)}</pre></main>`;
+const proposalHtml = `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS architecture proposal</title>
+<main><p><a href="/docs">Documentation</a></p><pre>${escapeHtml(proposalText)}</pre></main>`;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -78,16 +94,19 @@ function callerId(request: Request): string {
   return sha256(match[1]!);
 }
 
+function validateSubmission(kind: CodeKind, code: string): string {
+  if (new TextEncoder().encode(code).byteLength > MAX_CODE_BYTES) throw new Error("Code is too large");
+  validateProcCode(code, ["ctx", "input", "JSON", "Math", "String"], kind === "procedure");
+  return procHash(code);
+}
+
 async function register(request: Request, fixedKind?: CodeKind): Promise<Response> {
   try {
     const caller = callerId(request);
     const value = await body(request);
     const kind = fixedKind ?? codeKind(value.kind);
     if (typeof value.code !== "string") throw new TypeError("code must be a string");
-    if (new TextEncoder().encode(value.code).byteLength > MAX_CODE_BYTES) throw new Error("Code is too large");
-    const names = ["ctx", "input", "JSON", "Math", "String"];
-    validateProcCode(value.code, names, kind === "procedure");
-    const hash = procHash(value.code);
+    const hash = validateSubmission(kind, value.code);
     const registration = storage.registerCode(caller, hash, kind, value.code);
     return json({ hash, kind, ...registration }, registration.created ? 201 : 200);
   } catch (error) {
@@ -111,6 +130,7 @@ type WorkerRequest =
   | { type: "transaction-start"; id: number }
   | { type: "transaction-commit"; id: number; state: StateSnapshot }
   | { type: "transaction-abort"; id: number }
+  | { type: "publish"; id: number; kind: CodeKind; code: string }
   | { type: "result"; result: unknown }
   | { type: "error"; error: string };
 
@@ -224,6 +244,17 @@ async function invoke(hash: string, input: unknown, fuel: number, caller: string
       } else if (message.type === "transaction-abort") {
         const lease = leases.get(message.id);
         if (lease) { leases.delete(message.id); lease.release(); }
+      } else if (message.type === "publish") {
+        try {
+          const hash = validateSubmission(message.kind, message.code);
+          const registration = storage.registerCode(caller, hash, message.kind, message.code);
+          worker.postMessage({
+            type: "publish-result", id: message.id, ok: true,
+            result: { hash, kind: message.kind, ...registration },
+          });
+        } catch (error) {
+          worker.postMessage({ type: "publish-result", id: message.id, ok: false, error: String(error) });
+        }
       } else if (message.type === "result") {
         const used = Math.min(fuel, Math.max(1, Math.ceil(performance.now() - started)));
         const refunded = fuel - used;
@@ -247,7 +278,7 @@ Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     const pageId = pageIdFromHostname(url.hostname);
-    if (pageId) return servePage(request, url, pageId);
+    if (pageId && url.pathname === "/") return servePage(request, url, pageId);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/health") return new Response("OK");
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/") {
@@ -262,6 +293,15 @@ Bun.serve({
     }
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/docs") {
       return new Response(request.method === "HEAD" ? null : docsHtml, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "default-src 'none'; base-uri 'none'",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/proposal") {
+      return new Response(request.method === "HEAD" ? null : proposalHtml, {
         headers: {
           "content-type": "text/html; charset=utf-8",
           "content-security-policy": "default-src 'none'; base-uri 'none'",
@@ -290,10 +330,13 @@ Bun.serve({
         fuel: { initialUserFuel: INITIAL_USER_FUEL, runtimeFuelPerMillisecond: 1, maximumInvocation: MAX_FUEL },
         storage: { fuelPerByte: STORAGE_FUEL_PER_BYTE, maximumValueBytes: MAX_STATE_VALUE_BYTES },
         pages: { reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES },
+        procedures: { validate: VALIDATE_PROCEDURE_HASH, publish: PUBLISH_PROCEDURE_HASH },
       });
     }
     if (request.method === "GET" && url.pathname === "/page") {
-      const urlTemplate = `${url.protocol}//{id}.${url.host}/`;
+      const scheme = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1);
+      const baseHost = Bun.env.PAGE_BASE_DOMAIN ?? (pageId ? url.host.slice(pageId.length + 1) : url.host);
+      const urlTemplate = `${scheme}://{id}.${baseHost}/`;
       return json({ reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES, urlTemplate });
     }
     if (request.method === "POST" && url.pathname === "/code") return register(request);

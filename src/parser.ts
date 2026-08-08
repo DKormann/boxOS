@@ -175,6 +175,7 @@ type Expression = { assignable: boolean; numericLiteral: boolean };
 const VALUE: Expression = { assignable: false, numericLiteral: false };
 
 class Parser {
+  readonly references = new Set<string>();
   private current: Token;
   private previous: Token;
   private readonly scopes: Set<string>[];
@@ -425,7 +426,12 @@ class Parser {
       this.advance();
       return { assignable: false, numericLiteral: true };
     }
-    if (this.current.kind === "string" || ["true", "false", "null"].includes(this.current.value)) {
+    if (this.current.kind === "string") {
+      if (/^[a-f0-9]{64}$/.test(this.current.value)) this.references.add(this.current.value);
+      this.advance();
+      return VALUE;
+    }
+    if (["true", "false", "null"].includes(this.current.value)) {
       this.advance();
       return VALUE;
     }
@@ -569,13 +575,23 @@ function isIdentifierName(value: string): boolean {
  * The only names initially in scope are `argumentNames`; all others must be declared locally.
  * Throws ProcSyntaxError when the source is outside the subset.
  */
+export function analyzeProcCode(
+  source: string,
+  argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math", "String"],
+  allowAwait = false,
+): { references: string[] } {
+  if (typeof source !== "string") throw new TypeError("Procedure code must be a string");
+  const parser = new Parser(source, argumentNames, allowAwait);
+  parser.parse();
+  return { references: [...parser.references] };
+}
+
 export function validateProcCode(
   source: string,
   argumentNames: readonly string[] = ["ctx", "arg", "JSON", "Math", "String"],
   allowAwait = false,
 ): void {
-  if (typeof source !== "string") throw new TypeError("Procedure code must be a string");
-  new Parser(source, argumentNames, allowAwait).parse();
+  analyzeProcCode(source, argumentNames, allowAwait);
 }
 
 export function isValidProcCode(

@@ -1,10 +1,12 @@
-import { pageHash, sha256 } from "./hash.ts";
+import { pageHash, procHash, sha256 } from "./hash.ts";
+import { analyzeProcCode, validateProcCode } from "./parser.ts";
 import type { CodeKind, StateSnapshot, StoredCode } from "./storage.ts";
 
 type Start = { type: "start"; hash: string; kind: CodeKind; code: string; input: unknown; caller: string };
 type TransactionData = { type: "transaction-data"; id: number; reducers: StoredCode[]; state: StateSnapshot };
 type CommitResult = { type: "commit-result"; id: number; ok: boolean; error?: string };
-type ParentMessage = Start | TransactionData | CommitResult;
+type PublishResult = { type: "publish-result"; id: number; ok: boolean; result?: unknown; error?: string };
+type ParentMessage = Start | TransactionData | CommitResult | PublishResult;
 
 type Transaction = {
   id: number;
@@ -17,6 +19,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as
 let nextId = 1;
 const waitingData = new Map<number, Transaction>();
 const waitingCommit = new Map<number, Transaction>();
+const waitingPublish = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 let transactionOpen = false;
 let activeCaller = "";
 
@@ -111,6 +114,32 @@ const MATH_CAP = Object.freeze({
   min: Math.min, max: Math.max, pow: Math.pow, sqrt: Math.sqrt,
 });
 
+function checkedCode(kind: unknown, code: unknown): { kind: CodeKind; code: string; hash: string } {
+  if (kind !== "reducer" && kind !== "procedure") throw new TypeError("kind must be 'reducer' or 'procedure'");
+  if (typeof code !== "string") throw new TypeError("code must be a string");
+  validateProcCode(code, ["ctx", "input", "JSON", "Math", "String"], kind === "procedure");
+  return { kind, code, hash: procHash(code) };
+}
+
+function validateCode(kind: unknown, code: unknown): unknown {
+  const valid = checkedCode(kind, code);
+  const analysis = analyzeProcCode(
+    valid.code,
+    ["ctx", "input", "JSON", "Math", "String"],
+    valid.kind === "procedure",
+  );
+  return { kind: valid.kind, hash: valid.hash, references: analysis.references };
+}
+
+async function publishCode(kind: unknown, code: unknown): Promise<unknown> {
+  const valid = checkedCode(kind, code);
+  const id = nextId++;
+  return await new Promise((resolve, reject) => {
+    waitingPublish.set(id, { resolve, reject });
+    message({ type: "publish", id, kind: valid.kind, code: valid.code });
+  });
+}
+
 async function safeFetch(resource: unknown, options?: unknown): Promise<unknown> {
   if (typeof resource !== "string") throw new TypeError("fetch URL must be a string");
   const response = await fetch(resource, cloneJson(options ?? {}, "fetch options") as RequestInit);
@@ -126,7 +155,13 @@ async function run(start: Start): Promise<void> {
     if (start.kind === "reducer") {
       result = await transaction((tx: { invoke(hash: unknown, input: unknown): unknown }) => tx.invoke(start.hash, start.input));
     } else {
-      const ctx = Object.freeze({ caller: start.caller, transaction, fetch: safeFetch });
+      const ctx = Object.freeze({
+        caller: start.caller,
+        transaction,
+        fetch: safeFetch,
+        validate: validateCode,
+        publish: publishCode,
+      });
       const fn = new AsyncFunction("ctx", "input", "JSON", "Math", "String", `"use strict";\n${start.code}`);
       result = await fn(ctx, cloneJson(start.input, "Procedure input"), JSON_CAP, MATH_CAP, String);
     }
@@ -148,6 +183,13 @@ onmessage = (event: MessageEvent<ParentMessage>) => {
       waitingCommit.delete(data.id);
       if (data.ok) pending.resolve({ type: "transaction-data", id: data.id, reducers: [], state: {} });
       else pending.reject(new Error(data.error ?? "Transaction commit failed"));
+    }
+  } else if (data.type === "publish-result") {
+    const pending = waitingPublish.get(data.id);
+    if (pending) {
+      waitingPublish.delete(data.id);
+      if (data.ok) pending.resolve(data.result);
+      else pending.reject(new Error(data.error ?? "Publication failed"));
     }
   }
 };

@@ -19,10 +19,10 @@
   <button id="increment">increment shared value</button>
 </main>
 <script type="module">
-  import { BoxOSClient } from "http://localhost:4000/client.js";
+  import { BoxOSClient } from "/client.js";
 
   const reducer = "22b2e192642c1098fc5a59222ada9233decbe93294f91f6d068d6e63e63d63c0";
-  const boxos = new BoxOSClient("http://localhost:4000", { storageKey: "boxos.shared-counter.identity" });
+  const boxos = new BoxOSClient();
   const output = document.querySelector("#count");
   const button = document.querySelector("button");
 

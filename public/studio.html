@@ -1,0 +1,221 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS Studio</title>
+<style>
+  body{font:15px/1.4 sans-serif;margin:0}header{display:flex;gap:.5rem;align-items:center;padding:.7rem;border-bottom:1px solid}header input{flex:1}section{display:grid;grid-template-columns:14rem 1fr;min-height:calc(100vh - 3.5rem)}aside{padding:.7rem;border-right:1px solid}main{padding:1rem;max-width:70rem}button,input,select,textarea{font:inherit}button{margin:.2rem}input,select{padding:.35rem}textarea{width:100%;min-height:45vh;box-sizing:border-box;font:14px/1.4 monospace}#input{min-height:5rem;height:5rem}label{display:block;margin:.7rem 0}pre{padding:.7rem;background:#eee;white-space:pre-wrap;overflow:auto}ul{padding-left:1.2rem}.node{display:block;width:100%;text-align:left}.row{display:flex;gap:.5rem;align-items:center}.row input{flex:1}@media(max-width:700px){section{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid}textarea{min-height:35vh}#input{min-height:5rem}}
+</style>
+<header>
+  <strong>BOXOS Studio</strong>
+  <input id="openHash" placeholder="Open a code hash or page ID">
+  <button id="open">Open</button>
+  <span id="balance"></span>
+  <a id="docs" href="/docs">Docs</a>
+</header>
+<section>
+  <aside>
+    <button id="new">New</button>
+    <button id="export">Export</button>
+    <button id="import">Import</button>
+    <input id="importFile" type="file" accept="application/json" hidden>
+    <ul id="nodes"></ul>
+  </aside>
+  <main>
+    <div class="row">
+      <input id="name" placeholder="Name">
+      <select id="kind"><option>reducer</option><option>procedure</option><option>page</option></select>
+    </div>
+    <label>Source<textarea id="source" spellcheck="false"></textarea></label>
+    <div>
+      <button id="check">Check</button>
+      <button id="run">Run</button>
+      <button id="publish">Publish</button>
+      <button id="fork">Fork</button>
+    </div>
+    <p id="identity"></p>
+    <div class="row">
+      <input id="stateKey" placeholder="Public state key">
+      <button id="readState">Read state</button>
+    </div>
+    <label>Invocation input<textarea id="input" spellcheck="false">null</textarea></label>
+    <h3>References</h3><ul id="references"></ul>
+    <h3>Result</h3><pre id="result">Ready.</pre>
+  </main>
+</section>
+<script type="module">
+import { BoxOSClient } from "/client.js";
+const boxos = new BoxOSClient();
+const $ = id => document.querySelector(`#${id}`);
+const storeKey = "boxos.studio.workspace.v2";
+let workspace = load();
+let selected = workspace.selected;
+if (!workspace.nodes.length) await seedExamples();
+if (!workspace.nodes.length) newNode();
+if (!workspace.nodes.some(node => node.id === selected)) selected = workspace.nodes[0].id;
+render();
+void refreshAccount();
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(storeKey)) || { nodes: [], selected: "" }; }
+  catch { return { nodes: [], selected: "" }; }
+}
+function save() {
+  workspace.selected = selected;
+  localStorage.setItem(storeKey, JSON.stringify(workspace));
+}
+function current() { return workspace.nodes.find(node => node.id === selected); }
+async function seedExamples() {
+  try {
+    const pageSource = await fetch("/example").then(response => response.text());
+    const references = pageReferences(pageSource);
+    const counter = await boxos.inspect(references[0]);
+    workspace.nodes.push({
+      id: crypto.randomUUID(), name: "Global counter", kind: counter.kind,
+      source: counter.code, hash: counter.hash, url: "", references: [],
+    });
+    const page = {
+      id: crypto.randomUUID(), name: "Counter page", kind: "page",
+      source: pageSource, hash: "", url: "", references,
+    };
+    workspace.nodes.push(page); selected = page.id; save();
+  } catch { /* fall back to an empty draft */ }
+}
+function newNode(copy) {
+  const node = {
+    id: crypto.randomUUID(), name: copy?.name ? `${copy.name} copy` : "Untitled",
+    kind: copy?.kind || "reducer", source: copy?.source || "return input;",
+    hash: "", url: "", references: copy?.references || [],
+  };
+  workspace.nodes.push(node); selected = node.id; save(); return node;
+}
+function render() {
+  const node = current();
+  if (!node) return;
+  $("name").value = node.name;
+  $("kind").value = node.kind;
+  $("kind").disabled = !!node.hash;
+  $("source").value = node.source;
+  $("source").readOnly = !!node.hash;
+  $("identity").textContent = node.hash ? `Published: ${node.hash}${node.url ? ` — ${node.url}` : ""}` : "Draft";
+  $("run").disabled = node.kind === "page" || !node.hash;
+  $("readState").disabled = node.kind !== "reducer" || !node.hash;
+  $("fork").disabled = !node.hash;
+  const list = $("nodes"); list.textContent = "";
+  for (const item of workspace.nodes) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.className = "node"; button.textContent = `${item.kind}: ${item.name}${item.hash ? " ✓" : ""}`;
+    button.onclick = () => { selected = item.id; save(); render(); };
+    li.append(button); list.append(li);
+  }
+  renderReferences(node.references || []);
+}
+function changed() {
+  const node = current();
+  node.name = $("name").value;
+  node.kind = $("kind").value;
+  node.source = $("source").value;
+  node.hash = ""; node.url = ""; node.references = [];
+  save();
+  $("identity").textContent = "Draft";
+  $("run").disabled = true;
+  $("readState").disabled = true;
+  $("fork").disabled = true;
+  renderReferences([]);
+}
+function renderReferences(hashes) {
+  const list = $("references"); list.textContent = "";
+  for (const hash of hashes) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.textContent = hash; button.onclick = () => openCode(hash);
+    li.append(button); list.append(li);
+  }
+  if (!hashes.length) list.textContent = "None found.";
+}
+function pageReferences(source) {
+  return [...new Set(source.match(/\b[a-f0-9]{64}\b/g) || [])];
+}
+function show(value) { $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); }
+function fail(error) { show(error instanceof Error ? `${error.name}: ${error.message}` : String(error)); }
+async function refreshAccount() {
+  try { const account = await boxos.account(); $("balance").textContent = `${account.balance} fuel`; }
+  catch (error) { fail(error); }
+}
+async function openCode(hash) {
+  try {
+    hash = hash.trim();
+    let found;
+    if (/^[a-z2-7]{16}$/.test(hash)) {
+      const info = await boxos.pageInfo();
+      const stored = await boxos.publicState(info.reducer, hash);
+      found = {
+        hash, kind: "page", code: stored.value,
+        url: info.urlTemplate.replace("{id}", hash),
+        references: pageReferences(stored.value),
+      };
+    } else {
+      const code = await boxos.inspect(hash);
+      found = { hash: code.hash, kind: code.kind, code: code.code, url: "", references: [] };
+    }
+    let node = workspace.nodes.find(item => item.hash === found.hash);
+    if (!node) {
+      node = {
+        id: crypto.randomUUID(), name: found.hash.slice(0, 8), kind: found.kind,
+        source: found.code, hash: found.hash, url: found.url, references: found.references,
+      };
+      workspace.nodes.push(node);
+    }
+    selected = node.id; save(); render(); show(found);
+  } catch (error) { fail(error); }
+}
+
+$("name").addEventListener("input", () => { current().name = $("name").value; save(); });
+for (const id of ["kind", "source"]) $(id).addEventListener("input", changed);
+$("new").onclick = () => { newNode(); render(); };
+$("fork").onclick = () => { newNode(current()); render(); };
+$("open").onclick = () => openCode($("openHash").value);
+$("check").onclick = async () => {
+  const node = current();
+  try {
+    if (node.kind === "page") {
+      node.references = pageReferences(node.source); save(); render(); show({ ok: "HTML ready", references: node.references });
+    } else {
+      const receipt = await boxos.validateCode(node.kind, node.source);
+      node.references = receipt.ok.references; save(); render(); show(receipt);
+      await refreshAccount();
+    }
+  } catch (error) { fail(error); }
+};
+$("publish").onclick = async () => {
+  const node = current();
+  try {
+    if (node.kind === "page") {
+      const receipt = await boxos.publishPage(node.source);
+      node.hash = receipt.hash; node.url = receipt.url; node.references = pageReferences(node.source); show(receipt);
+    } else {
+      const receipt = await boxos.publishCode(node.kind, node.source);
+      node.hash = receipt.ok.hash; show(receipt);
+    }
+    save(); render(); await refreshAccount();
+  } catch (error) { fail(error); }
+};
+$("run").onclick = async () => {
+  try { show(await boxos.invoke(current().hash, JSON.parse($("input").value))); await refreshAccount(); }
+  catch (error) { fail(error); }
+};
+$("readState").onclick = async () => {
+  try { show(await boxos.publicState(current().hash, $("stateKey").value)); }
+  catch (error) { fail(error); }
+};
+$("export").onclick = () => {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(workspace, null, 2)], { type: "application/json" }));
+  link.download = "boxos-workspace.json"; link.click(); URL.revokeObjectURL(link.href);
+};
+$("import").onclick = () => $("importFile").click();
+$("importFile").onchange = async event => {
+  try { workspace = JSON.parse(await event.target.files[0].text()); selected = workspace.selected; save(); render(); }
+  catch (error) { fail(error); }
+};
+</script>

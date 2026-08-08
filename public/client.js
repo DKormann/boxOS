@@ -18,6 +18,16 @@ export class BoxOSClient {
     return this.request("/stats", {}, false);
   }
 
+  async validateCode(kind, code, options = {}) {
+    const stats = await this.stats();
+    return this.invoke(stats.procedures.validate, { kind, code }, options);
+  }
+
+  async publishCode(kind, code, options = {}) {
+    const stats = await this.stats();
+    return this.invoke(stats.procedures.publish, { kind, code }, options);
+  }
+
   registerReducer(code) {
     return this.register("reducers", code);
   }
