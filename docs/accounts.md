@@ -1,131 +1,103 @@
-# BOXOS signed accounts
+# BOXOS signed accounts and capabilities
 
-## Model
+## Accounts and profiles
 
-Signed accounts are application identities, separate from BOXOS fuel accounts. A fuel account pays for an invocation through its bearer credential. A signed account proves control of an Ed25519 private key and can be interpreted by applications however they choose.
+A BOXOS invocation has two independent identities:
 
-The private key stays in the account page's IndexedDB. BOXOS stores only the raw public key in a public identity reducer. The account ID is the SHA-256 hash of the Base64URL public-key string.
+- The bearer fuel account pays for runtime and storage and is exposed as `ctx.caller`.
+- A browser-owned Ed25519 account grants application capabilities and is exposed as `ctx.authorization`.
 
-The account manager is an ordinary immutable example page:
+The immutable account manager stores only this private browser record:
 
-```text
-/examples/accounts
+```js
+{ id, publicKey, privateKey }
 ```
 
-Its origin is the key vault. The page should remain immutable because publishing changed source creates a new origin with separate IndexedDB storage.
+It never stores a name. Creating or restoring an account registers its public key and immediately writes the chosen display name to the canonical profile reducer using a signed `profile:write` grant. Account creation does not complete unless that profile write succeeds.
 
-## Capability grants
+The account chooser reads current names from public profile state. Applications do the same, so the profile reducer is the only source of display names.
 
-An application asks for arbitrary text capabilities such as:
+## Granting an application access
 
-```text
-read messages
-write messages
-```
-
-The account manager signs a canonical JSON grant:
-
-```json
-{
-  "version": 1,
-  "domain": "boxos-capability",
-  "account": "<account-id>",
-  "name": "<local account name>",
-  "audience": "<requesting-origin>",
-  "resource": "<target reducer or application ID>",
-  "capabilities": ["read messages", "write messages"],
-  "text": "optional arbitrary text",
-  "nonce": "<one-time random value>"
-}
-```
-
-Capabilities have no global semantics. The receiving application decides what each string means. It must check the audience, required capabilities, and nonce in addition to verifying the signature.
-
-Capabilities are sorted and duplicate values are removed before signing. The grant uses recursively key-sorted canonical JSON. The signature covers that exact UTF-8 message.
-
-## Popup authorization
-
-A page can request authorization through the browser client:
+An application asks for a narrow capability on one reducer:
 
 ```js
 const authorization = await boxos.authorize(
-  ["read messages", "write messages"],
-  "Access the shared inbox",
-  targetReducerHash,
+  ["todo:manage"],
+  "View and change your private todos",
+  todoReducerHash,
 );
 ```
 
-The client opens `/examples/accounts` in a popup. The account page displays the requesting browser origin, capabilities, text, and a simple account-name chooser. After the user selects an account and approves, the popup returns the signed grant with `postMessage` to that exact origin. It never returns a private key.
-
-The request contains a random nonce and request ID. The account manager ignores any claimed audience and uses the browser-provided `event.origin` as the signed audience.
-
-## Verification
-
-The client can invoke the built-in identity procedure:
-
-```js
-const receipt = await boxos.verifyAuthorization(authorization);
-if (!receipt.ok.valid) throw new Error("Invalid signature");
-```
-
-Applications must then enforce policy themselves:
-
-```js
-const grant = authorization.grant;
-if (grant.audience !== location.origin) throw new Error("Wrong audience");
-if (grant.resource !== targetReducerHash) throw new Error("Wrong resource");
-if (!grant.capabilities.includes("write messages")) throw new Error("Not allowed");
-```
-
-A signature proves that the account signed the text. It does not prove that a nonce is fresh. An application that accepts a grant more than once must use its own reducer to record or issue nonces and reject replay.
-
-## Identity functions
-
-`GET /stats` returns:
+The account manager shows the immutable requesting origin, purpose, resource, and capabilities. After approval it returns a canonical signed version 2 grant:
 
 ```json
 {
-  "identities": {
-    "reducer": "<identity-reducer-hash>",
-    "procedure": "<identity-procedure-hash>"
-  }
+  "version": 2,
+  "domain": "boxos-capability",
+  "account": "<account-id>",
+  "audience": "https://<page-id>.pages.boxos.org",
+  "resource": "<reducer-hash>",
+  "capabilities": ["todo:manage"],
+  "purpose": "View and change your private todos",
+  "grantId": "<random grant-id>"
 }
 ```
 
-The identity procedure accepts:
+The authorization envelope also carries the public key, exact canonical message, and signature. It carries no profile information.
 
-```json
-{"action":"register","publicKey":"<Base64URL Ed25519 public key>"}
+A grant is a durable delegated capability, not a signature over one operation. An application can keep it in its isolated `localStorage` and reuse it until the user signs out.
+
+## Invoking with a capability
+
+Authorization is invocation metadata, not reducer input:
+
+```js
+await boxos.invoke(todoReducerHash, { action: "add", id, text }, {
+  authorization,
+});
 ```
 
-and:
+Before any application code runs, BOXOS:
+
+1. reconstructs the canonical grant;
+2. derives the account ID from the supplied public key;
+3. verifies the Ed25519 signature;
+4. checks the requesting browser origin against `audience`; and
+5. makes the verified grant available only to the reducer named by `resource`.
+
+The reducer checks the capability and derives ownership from trusted context. It never accepts an account ID from input for an authenticated write. Direct reducer calls and newly published procedures cannot fabricate `ctx.authorization`.
+
+Procedures receive the same verified authorization and pass it implicitly into transactions. Only a reducer whose hash equals the grant resource sees it.
+
+## Canonical profile reducer
+
+`GET /stats` exposes one built-in profile reducer under `profiles.reducer`. It stores one public document per account:
 
 ```json
 {
-  "action":"verify",
-  "account":"<account-id>",
-  "message":"<exact canonical text>",
-  "signature":"<Base64URL Ed25519 signature>"
+  "account": "<account-id>",
+  "name": "Display name",
+  "bio": "Optional biography",
+  "revision": 1
 }
 ```
 
-Procedures may also call the trusted asynchronous capability directly:
+Names are not unique. `set` and `delete` require a grant for the profile reducer containing `profile:write`; ownership always comes from `ctx.authorization.account`. `get` is public, as is direct access to the `profile:<account-id>` public-state key.
 
-```js
-return await ctx.verify(publicKey, message, signature);
-```
+`/examples/profile?account=<account-id>` displays a linkable public profile. The same page lets an account owner edit or delete their profile.
 
-The capability accepts a 32-byte Ed25519 public key, arbitrary UTF-8 text, and a 64-byte signature, all binary values encoded as unpadded Base64URL where applicable.
+## Deployment identity
 
-## Status example
+On first startup BOXOS generates a deployment identity and saves its recovery key beside the database as `<database>.system-key` with owner-only permissions. Keep this file secret and persist it with the database. `BOXOS_SYSTEM_KEY_PATH` can select another path, or `BOXOS_SYSTEM_RECOVERY_KEY` can provide a dedicated `boxos1.<private-key>.<public-key>` value directly.
 
-`/examples/status` demonstrates the complete flow. It requests the `set status` capability with the status text as the signed arbitrary text and binds the grant to the status reducer. Its procedure verifies the signature and capability before updating state. The reducer rejects reused nonces, stores each account's latest status, indexes account names, and exposes the ten most recent updates.
+At startup BOXOS registers that identity, creates its canonical `BOXOS` profile, and publishes every repository example under a deterministic app ID. When an example's immutable page changes, startup appends a release owned by the same identity rather than creating another app.
 
-## Security boundaries
+## Security properties and limits
 
-- Never send a private key to an application page or procedure.
-- Treat the account-manager page origin as a permanent key vault.
-- Verification does not assign meaning to capability strings.
-- Audience checks prevent grants from being moved between applications.
-- Application reducers remain responsible for replay protection.
-- Signed accounts do not currently replace `ctx.caller` or pay fuel.
+- Grants are bound to one immutable browser origin and one immutable reducer.
+- Capability strings are interpreted by the target reducer.
+- Account IDs and authorization-shaped JSON in ordinary reducer input carry no authority.
+- A copied grant is a bearer capability for its stated audience, resource, and capabilities.
+- Grants currently have no expiry or server-side revocation. `grantId` allows a runtime-enforced revocation registry to be added without changing application reducers.
+- Signed accounts do not currently pay fuel; the invoking bearer account does.

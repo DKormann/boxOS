@@ -287,6 +287,7 @@ declare module "bun:sqlite" {
 }
 
 declare module "fs/promises" {
+  export function chmod(path: string | URL, mode: number): Promise<void>;
   export function readFile(path: string | URL): Promise<Uint8Array>;
   export function readFile(
     path: string | URL,

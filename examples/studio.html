@@ -53,6 +53,8 @@ if (!workspace.nodes.length) await seedExamples();
 if (!workspace.nodes.length) newNode();
 if (!workspace.nodes.some(node => node.id === selected)) selected = workspace.nodes[0].id;
 render();
+const requested = new URLSearchParams(location.search).get("open");
+if (requested) await openCode(requested);
 void refreshAccount();
 
 function load() {

@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS Profile</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f5f5f7}*{box-sizing:border-box}main{width:min(38rem,calc(100% - 2rem));margin:8vh auto}.card{background:white;border:1px solid #ddd;border-radius:1rem;padding:1.4rem}h1{margin:.1rem 0;font-size:2.2rem}.avatar{display:grid;place-items:center;width:4rem;height:4rem;border-radius:50%;background:#4f46d8;color:white;font-size:1.7rem;font-weight:700}.header{display:flex;align-items:center;gap:1rem}.muted,#message{color:#707078}.account{font:12px/1.4 monospace;overflow-wrap:anywhere}button{padding:.7rem .9rem;border:0;border-radius:.5rem;background:#4f46d8;color:white;font-weight:600;cursor:pointer}.secondary{background:#e7e7ec;color:#333}nav{display:flex;gap:.6rem;flex-wrap:wrap;margin:1rem 0}a{color:#4f46d8}label{display:block;margin:.8rem 0}input,textarea{display:block;width:100%;margin-top:.3rem;padding:.75rem;border:1px solid #ccc;border-radius:.5rem;font:inherit}textarea{min-height:7rem;resize:vertical}[hidden]{display:none!important}
+</style>
+<main>
+  <section id="profile" class="card" hidden>
+    <div class="header"><div id="avatar" class="avatar">?</div><div><h1 id="name"></h1><div id="account" class="account"></div></div></div>
+    <p id="bio"></p>
+  </section>
+  <section id="empty" class="card" hidden><h1>Profile</h1><p class="muted">No public profile has been created for this account.</p></section>
+  <nav id="profile-actions" hidden><button id="follow">Follow</button><a id="friends">Open in Friends</a><button id="share" class="secondary">Copy profile link</button></nav>
+  <p><button id="edit">Edit my profile</button> <button id="switch" class="secondary" hidden>Use another account</button></p>
+  <form id="form" class="card" hidden>
+    <h2>Edit profile</h2>
+    <label>Display name<input id="edit-name" maxlength="80" required></label>
+    <label>Bio<textarea id="edit-bio" maxlength="500"></textarea></label>
+    <button>Save profile</button> <button id="cancel" type="button" class="secondary">Cancel</button> <button id="delete" type="button" class="secondary">Delete profile</button>
+  </form>
+  <p id="message"></p>
+</main>
+<script type="module">
+import { BoxOSClient } from "/client.js";
+const boxos = new BoxOSClient();
+const stats = await boxos.stats();
+const profileReducer = stats.profiles.reducer;
+const friendsReducer = stats.applications.friends.reducer;
+const storageKey = "profile.authorization";
+const friendsStorageKey = "profile.friends.authorization";
+let authorization;
+let friendsAuthorization;
+try { authorization = JSON.parse(localStorage.getItem(storageKey) || "null"); }
+catch { localStorage.removeItem(storageKey); }
+try { friendsAuthorization = JSON.parse(localStorage.getItem(friendsStorageKey) || "null"); }
+catch { localStorage.removeItem(friendsStorageKey); }
+const $ = id => document.getElementById(id);
+const query = new URLSearchParams(location.search);
+let viewedAccount = query.get("account") || query.get("u") || authorization?.grant?.account || "";
+
+function validAccount(value) { return /^[a-f0-9]{64}$/.test(value); }
+function message(value) { $("message").textContent = value; }
+async function readProfile(account) {
+  try { return (await boxos.publicState(profileReducer, `profile:${account}`)).value; }
+  catch { return null; }
+}
+function profileUrl(account) {
+  const url = new URL(location.href); url.search = ""; url.searchParams.set("account", account); return url.href;
+}
+async function friendsInvoke(input) {
+  return (await boxos.invoke(friendsReducer, input, { authorization: friendsAuthorization })).ok;
+}
+async function renderRelationship() {
+  $("follow").hidden = false;
+  if (!friendsAuthorization) { $("follow").textContent = "Follow"; return; }
+  if (friendsAuthorization.grant.account === viewedAccount) { $("follow").hidden = true; return; }
+  try {
+    const lists = await friendsInvoke({ action: "list" });
+    $("follow").textContent = lists.following.includes(viewedAccount) ? "Unfollow" : "Follow";
+  } catch {
+    friendsAuthorization = null; localStorage.removeItem(friendsStorageKey); $("follow").textContent = "Follow";
+  }
+}
+async function render() {
+  $("profile").hidden = true; $("empty").hidden = true; $("profile-actions").hidden = true;
+  if (!validAccount(viewedAccount)) return message("Edit your profile or open a link containing an account ID.");
+  $("friends").href = `/examples/friends?account=${encodeURIComponent(viewedAccount)}`;
+  $("profile-actions").hidden = false;
+  await renderRelationship();
+  const profile = await readProfile(viewedAccount);
+  if (!profile) { $("empty").hidden = false; return message(""); }
+  $("avatar").textContent = profile.name.trim()[0]?.toUpperCase() || "?";
+  $("name").textContent = profile.name; $("bio").textContent = profile.bio || ""; $("account").textContent = profile.account;
+  $("profile").hidden = false; message("");
+}
+async function beginEdit() {
+  try {
+    if (!authorization) {
+      authorization = await boxos.authorize(["profile:write"], "Edit your public profile", profileReducer);
+      localStorage.setItem(storageKey, JSON.stringify(authorization));
+    }
+    viewedAccount = authorization.grant.account;
+    history.replaceState(null, "", new URL(profileUrl(viewedAccount)).pathname + new URL(profileUrl(viewedAccount)).search);
+    const profile = await readProfile(viewedAccount);
+    $("edit-name").value = profile?.name || "";
+    $("edit-bio").value = profile?.bio || "";
+    $("form").hidden = false; $("switch").hidden = false; await render();
+  } catch (error) { message(error.message); }
+}
+$("edit").onclick = beginEdit;
+$("follow").onclick = async () => {
+  try {
+    if (!friendsAuthorization) {
+      friendsAuthorization = await boxos.authorize(["friends:manage"], "Follow accounts from profile pages", friendsReducer);
+      localStorage.setItem(friendsStorageKey, JSON.stringify(friendsAuthorization));
+    }
+    if (friendsAuthorization.grant.account === viewedAccount) {
+      friendsAuthorization = null; localStorage.removeItem(friendsStorageKey);
+      return message("Choose a different account to follow this profile.");
+    }
+    const lists = await friendsInvoke({ action: "list" });
+    const enabled = !lists.following.includes(viewedAccount);
+    await friendsInvoke({ action: "change", relation: "follow", target: viewedAccount, enabled });
+    await renderRelationship(); message(enabled ? "Followed." : "Unfollowed.");
+  } catch (error) { message(error.message); }
+};
+$("switch").hidden = !authorization;
+$("switch").onclick = async () => { authorization = null; localStorage.removeItem(storageKey); await beginEdit(); };
+$("cancel").onclick = () => { $("form").hidden = true; };
+$("share").onclick = async () => {
+  try { await navigator.clipboard.writeText(profileUrl(viewedAccount)); $("share").textContent = "Copied"; }
+  catch (error) { message(error.message); }
+};
+$("form").onsubmit = async event => {
+  event.preventDefault();
+  try {
+    await boxos.invoke(profileReducer, { action: "set", name: $("edit-name").value.trim(), bio: $("edit-bio").value.trim() }, { authorization });
+    $("form").hidden = true; message("Profile saved."); await render();
+  } catch (error) { message(error.message); }
+};
+$("delete").onclick = async () => {
+  if (!confirm("Delete your public profile?")) return;
+  try { await boxos.invoke(profileReducer, { action: "delete" }, { authorization }); $("form").hidden = true; message("Profile deleted."); await render(); }
+  catch (error) { message(error.message); }
+};
+await render();
+</script>

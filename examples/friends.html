@@ -1,720 +1,129 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>boxOS Friends</title>
-  <style>
-:root {
-  font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  color: #24252a;
-  background: #f4f5f8;
-  color-scheme: light;
-}
-* { box-sizing: border-box; }
-[hidden] { display: none !important; }
-body { margin: 0; min-height: 100vh; }
-main { width: min(44rem, calc(100% - 2rem)); margin: 4vh auto; }
-
-header { margin-bottom: 1.2rem; }
-h1 { font-size: 1.8rem; margin: 0 0 .2rem; }
-h1 .brand { color: #5149d8; text-decoration: none; }
-h1 .brand:hover { text-decoration: underline; }
-.muted { color: #6b6d76; margin: 0 0 1rem; }
-
-.account-bar {
-  display: inline-flex; align-items: center; gap: .8rem;
-  background: #eef0ff; border: 1px solid #d8dbf5; border-radius: .6rem; padding: .55rem 1rem;
-}
-.account-bar strong { color: #3a34a0; }
-
-.find-form { display: flex; gap: .5rem; margin: 1rem 0 1.2rem; }
-.find-form input { flex: 1; padding: .7rem; border: 1px solid #c9cad1; border-radius: .6rem; font: inherit; background: #fff; }
-
-.profile-header {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
-  background: #fff; border: 1px solid #dedfe5; border-radius: .75rem; padding: 1.2rem; margin-bottom: 1.2rem;
-}
-.profile-info { flex: 1; min-width: 12rem; }
-.profile-name { font-size: 1.25rem; font-weight: 650; }
-.profile-id { font-family: ui-monospace, monospace; font-size: .78rem; color: #888; word-break: break-all; }
-.profile-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
-.share-row { display: flex; gap: .4rem; width: 100%; margin-top: .4rem; }
-.share-row .url { flex: 1; padding: .5rem; border: 1px solid #c9cad1; border-radius: .5rem; font: .8rem ui-monospace, monospace; }
-
-.avatar {
-  display: grid; place-items: center; width: 3rem; height: 3rem; border-radius: 50%;
-  background: #5149d8; color: #fff; font-weight: 700; font-size: 1.3rem; flex: none;
-}
-.avatar.sm { width: 2.2rem; height: 2.2rem; font-size: 1rem; }
-
-.tabs { display: flex; gap: .3rem; border-bottom: 1px solid #dedfe5; margin-bottom: 1rem; }
-.tab {
-  padding: .65rem 1rem; border: 0; background: transparent; color: #6b6d76;
-  font: 600 15px system-ui; cursor: pointer; border-bottom: 2px solid transparent; border-radius: 0;
-}
-.tab.active { color: #5149d8; border-bottom-color: #5149d8; }
-
-.list { display: grid; gap: .5rem; }
-.person {
-  display: flex; align-items: center; gap: .8rem; background: #fff;
-  border: 1px solid #dedfe5; border-radius: .65rem; padding: .8rem 1rem;
-}
-.person-info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.person-name { font-weight: 600; overflow-wrap: anywhere; color: #5149d8; text-decoration: none; }
-.person-name:hover { text-decoration: underline; }
-.profile-page-link { display: block; width: 100%; margin-top: .3rem; color: #5149d8; text-decoration: none; font-size: .88rem; }
-.profile-page-link:hover { text-decoration: underline; }
-.person-id { font-family: ui-monospace, monospace; font-size: .75rem; color: #999; }
-
-button { padding: .55rem .9rem; border: 0; border-radius: .5rem; background: #5149d8; color: #fff; font: 600 14px system-ui; cursor: pointer; }
-button:disabled { opacity: .5; }
-button.secondary { background: #e9e8f3; color: #4a45a8; }
-button.secondary.active { background: #5149d8; color: #fff; }
-button.danger { background: #fdecea; color: #b3261e; }
-.profile-actions input { padding: .55rem .7rem; border: 1px solid #c9cad1; border-radius: .5rem; font: inherit; min-width: 12rem; }
-
-.empty { padding: 1.5rem 0; color: #888; text-align: center; }
-.message { min-height: 1.4rem; color: #666; margin: .6rem 0; }
-.message.error { color: #b3261e; }
-
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS Friends</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f5f5f7}*{box-sizing:border-box}main{width:min(46rem,calc(100% - 2rem));margin:6vh auto}h1{font-size:2.5rem;margin:0}.muted,#message{color:#707078}.bar,.actions{display:flex;gap:.55rem;flex-wrap:wrap}input{flex:1;min-width:15rem;padding:.75rem;border:1px solid #ccc;border-radius:.5rem;font:inherit}button{padding:.7rem .9rem;border:0;border-radius:.5rem;background:#4f46d8;color:white;font-weight:600;cursor:pointer}.secondary{background:#e7e7ec;color:#333}.card{margin:1rem 0;padding:1rem;background:white;border:1px solid #ddd;border-radius:.75rem}.person{display:flex;align-items:center;gap:.7rem;padding:.65rem 0;border-bottom:1px solid #eee;flex-wrap:wrap}.person:last-child{border:0}.person a{flex:1;min-width:10rem;color:#333;text-decoration:none;font-weight:600}.person code{display:block;color:#888;font-size:.72rem;font-weight:400}.person-actions{display:flex;gap:.3rem}.person-actions button{padding:.35rem .5rem;font-size:.72rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem}.grid .card{margin:0}h2{font-size:1.15rem}a{color:#4f46d8}[hidden]{display:none!important}
 </style>
-</head>
-<body>
 <main>
-  <header>
-    <h1><a class="brand" href="https://boxos.org/">boxOS</a> Friends</h1>
-    <p class="muted">Follow, mute, and block people on boxOS.</p>
-    <div id="signed-out"><button id="sign-in" type="button">Sign in with boxOS account</button></div>
-    <div id="signed-in" class="account-bar" hidden>
-      <span>Signed in as <strong id="account-name"></strong></span>
-      <button id="sign-out" type="button" class="secondary">Sign out</button>
+  <h1>Friends</h1>
+  <p class="muted">Follow, mute, or block accounts. These lists have no wider effect yet.</p>
+  <p><button id="sign-in">Choose account</button><span id="signed" hidden>Signed in as <strong id="account-name"></strong> · <a id="my-profile">My profile</a> · <button id="sign-out" class="secondary">Sign out</button></span></p>
+  <form id="find" class="bar"><input id="find-account" placeholder="Account ID or profile link"><button>View account</button></form>
+  <section id="view" class="card" hidden>
+    <h2 id="view-name"></h2><code id="view-id"></code>
+    <p><a id="view-profile">View profile</a></p>
+    <div id="actions" class="actions" hidden>
+      <button id="follow"></button><button id="mute" class="secondary"></button><button id="block" class="secondary"></button>
     </div>
-  </header>
-
-  <form id="find-form" class="find-form">
-    <input id="find-id" type="text" placeholder="Paste an account ID or profile link to view someone">
-    <button type="submit">View</button>
-  </form>
-
-  <section id="profile-header" class="profile-header"></section>
-
-  <nav class="tabs">
-    <button id="tab-following" type="button" class="tab active">Following</button>
-    <button id="tab-followers" type="button" class="tab">Followers</button>
-    <button id="tab-muted" type="button" class="tab" hidden>Muted</button>
-    <button id="tab-blocked" type="button" class="tab" hidden>Blocked</button>
-  </nav>
-
-  <div id="list" class="list"></div>
-  <p id="empty" class="empty" hidden>Nothing here yet.</p>
-  <p id="message" class="message"></p>
+  </section>
+  <section id="lists" class="grid" hidden>
+    <div class="card"><h2>Following</h2><div id="following"></div></div>
+    <div class="card"><h2>Followers</h2><div id="followers"></div></div>
+    <div class="card"><h2>Muted</h2><div id="muted"></div></div>
+    <div class="card"><h2>Blocked</h2><div id="blocked"></div></div>
+  </section>
+  <p id="message"></p>
 </main>
 <script type="module">
-// --- boxos-client.js ---
-
-// Minimal browser client for BOXOS. No build step or dependencies required.
-class BoxOSClient {
-  constructor(baseUrl = globalThis.location?.origin, options = {}) {
-    if (!baseUrl) throw new TypeError("A BOXOS base URL is required");
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.identity = options.identity || loadIdentity(options.storageKey || "boxos.identity");
-  }
-
-  async account() {
-    return this.request("/account");
-  }
-
-  async balance() {
-    return (await this.account()).balance;
-  }
-
-  stats() {
-    return this.request("/stats", {}, false);
-  }
-
-  async authorize(capabilities, text = "", resource = "") {
-    if (!Array.isArray(capabilities) || capabilities.some(value => typeof value !== "string")) {
-      throw new TypeError("Capabilities must be an array of strings");
-    }
-    const expectedCapabilities = [...new Set(capabilities)].sort();
-    const popup = globalThis.open(`${this.baseUrl}/examples/accounts`, "boxos-accounts", "popup,width=560,height=720");
-    if (!popup) throw new BoxOSError("The account popup was blocked");
-    const requestId = crypto.randomUUID();
-    const nonce = crypto.randomUUID();
-    const request = { boxos: "authorize", requestId, nonce, capabilities, text, resource };
-    return await new Promise((resolve, reject) => {
-      const send = setInterval(() => { if (!popup.closed) popup.postMessage(request, "*"); }, 300);
-      const timeout = setTimeout(() => finish(new BoxOSError("Authorization timed out")), 5 * 60 * 1000);
-      const receive = event => {
-        if (event.source !== popup || event.data?.requestId !== requestId) return;
-        if (event.data.boxos === "authorization-denied") return finish(new BoxOSError("Authorization denied"));
-        if (event.data.boxos !== "authorization") return;
-        const authorization = event.data;
-        if (authorization.grant?.audience !== globalThis.location.origin || authorization.grant?.nonce !== nonce
-          || authorization.grant?.text !== text || authorization.grant?.resource !== resource
-          || JSON.stringify(authorization.grant?.capabilities) !== JSON.stringify(expectedCapabilities)) {
-          return finish(new BoxOSError("Invalid authorization response"));
-        }
-        if (authorization.message !== canonicalJson(authorization.grant)) {
-          return finish(new BoxOSError("Authorization message is not canonical"));
-        }
-        finish(undefined, authorization);
-      };
-      const finish = (error, value) => {
-        clearInterval(send); clearTimeout(timeout); removeEventListener("message", receive); popup.close();
-        if (error) reject(error); else resolve(value);
-      };
-      addEventListener("message", receive);
-      popup.postMessage(request, "*");
-    });
-  }
-
-  async verifyAuthorization(authorization, options = {}) {
-    if (!authorization || authorization.message !== canonicalJson(authorization.grant)) {
-      throw new TypeError("Invalid authorization");
-    }
-    const stats = await this.stats();
-    return this.invoke(stats.identities.procedure, {
-      action: "verify",
-      account: authorization.grant.account,
-      message: authorization.message,
-      signature: authorization.signature,
-    }, options);
-  }
-
-  async validateCode(kind, code, options = {}) {
-    const stats = await this.stats();
-    return this.invoke(stats.procedures.validate, { kind, code }, options);
-  }
-
-  async publishCode(kind, code, options = {}) {
-    const stats = await this.stats();
-    return this.invoke(stats.procedures.publish, { kind, code }, options);
-  }
-
-  registerReducer(code) {
-    return this.register("reducers", code);
-  }
-
-  registerProcedure(code) {
-    return this.register("procedures", code);
-  }
-
-  async register(kind, code) {
-    if (typeof code !== "string") throw new TypeError("Code must be a string");
-    return this.request(`/${kind}`, { method: "POST", body: JSON.stringify({ code }) });
-  }
-
-  inspect(hash) {
-    return this.request(`/code/${encodeURIComponent(hash)}`, {}, false);
-  }
-
-  publicState(hash, key) {
-    return this.request(`/state/${encodeURIComponent(hash)}/${encodeURIComponent(key)}`, {}, false);
-  }
-
-  pageInfo() {
-    return this.request("/page", {}, false);
-  }
-
-  async publishPage(html, options = {}) {
-    if (typeof html !== "string") throw new TypeError("Page must be a string");
-    const info = await this.pageInfo();
-    if (new TextEncoder().encode(html).byteLength > info.maximumBytes) throw new TypeError("Page is too large");
-    const invocation = await this.invoke(info.reducer, html, options);
-    return { hash: invocation.ok, url: info.urlTemplate.replace("{id}", invocation.ok), fuel: invocation.fuel };
-  }
-
-  invoke(hash, input = null, options = {}) {
-    return this.request(`/invoke/${encodeURIComponent(hash)}`, {
-      method: "POST",
-      body: JSON.stringify({ input, fuel: options.fuel || 1000 }),
-    });
-  }
-
-  async runReducer(code, input = null, options = {}) {
-    const registered = await this.registerReducer(code);
-    return this.invoke(registered.hash, input, options);
-  }
-
-  async runProcedure(code, input = null, options = {}) {
-    const registered = await this.registerProcedure(code);
-    return this.invoke(registered.hash, input, options);
-  }
-
-  async request(path, init = {}, authenticated = true) {
-    const headers = new Headers(init.headers);
-    if (init.body !== undefined) headers.set("content-type", "application/json");
-    if (authenticated) headers.set("authorization", `Bearer ${this.identity}`);
-    const response = await fetch(this.baseUrl + path, { ...init, headers });
-    const result = await response.json();
-    if (!response.ok) throw new BoxOSError(result.error || `HTTP ${response.status}`, response.status, result);
-    return result;
-  }
-}
-
-class BoxOSError extends Error {
-  constructor(message, status, response) {
-    super(message);
-    this.name = "BoxOSError";
-    this.status = status;
-    this.response = response;
-  }
-}
-
-function loadIdentity(storageKey) {
-  try {
-    const existing = globalThis.localStorage?.getItem(storageKey);
-    if (existing) return existing;
-    const identity = randomIdentity();
-    globalThis.localStorage?.setItem(storageKey, identity);
-    return identity;
-  } catch {
-    return randomIdentity();
-  }
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function randomIdentity() {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-
-// --- boxos-reducer.js ---
-
-// BOXOS friends reducer.
-//
-// Per-account social graph in PUBLIC state: following, followers, muted,
-// blocked. Browsing is free via GET /state/<hash>/<key>. Writes go through the
-// procedure, which verifies a reusable "manage friends" grant. The procedure
-// also syncs the name to the profile reducer (canonical name store).
-//
-// Keys:
-//   following:<account>  → [accountId, ...]
-//   followers:<account>  → [accountId, ...]  (reverse index)
-//   muted:<account>      → [accountId, ...]
-//   blocked:<account>    → [accountId, ...]
-//
-// Block also mutually unfollows. Following a target that has blocked you is
-// rejected.
-
-const FRIENDS_REDUCER_CODE = `function getList(key) { return ctx.state.public.get(key) || []; }
-function setList(key, list) { ctx.state.public.set(key, list); }
-function contains(list, id) {
-  for (let i = 0; i < list.length; i += 1) if (list[Number(i)] == id) return true;
-  return false;
-}
-function addUnique(list, id) {
-  if (contains(list, id)) return list;
-  let next = [];
-  for (let i = 0; i < list.length; i += 1) next[Number(next.length)] = list[Number(i)];
-  next[Number(next.length)] = id;
-  return next;
-}
-function drop(list, id) {
-  let next = [];
-  for (let i = 0; i < list.length; i += 1) if (list[Number(i)] != id) next[Number(next.length)] = list[Number(i)];
-  return next;
-}
-function validAccount(value) { return typeof value == "string" && value.length == 64; }
-if (input.action == "follow") {
-  if (!validAccount(input.account) || !validAccount(input.target)) throw "Invalid follow";
-  if (input.account == input.target) throw "Cannot follow yourself";
-  if (contains(getList("blocked:" + input.target), input.account)) throw "Blocked by target";
-  setList("following:" + input.account, addUnique(getList("following:" + input.account), input.target));
-  setList("followers:" + input.target, addUnique(getList("followers:" + input.target), input.account));
-  return true;
-}
-if (input.action == "unfollow") {
-  if (!validAccount(input.account) || !validAccount(input.target)) throw "Invalid unfollow";
-  setList("following:" + input.account, drop(getList("following:" + input.account), input.target));
-  setList("followers:" + input.target, drop(getList("followers:" + input.target), input.account));
-  return true;
-}
-if (input.action == "mute") {
-  if (!validAccount(input.account) || !validAccount(input.target)) throw "Invalid mute";
-  setList("muted:" + input.account, addUnique(getList("muted:" + input.account), input.target));
-  return true;
-}
-if (input.action == "unmute") {
-  if (!validAccount(input.account) || !validAccount(input.target)) throw "Invalid unmute";
-  setList("muted:" + input.account, drop(getList("muted:" + input.account), input.target));
-  return true;
-}
-if (input.action == "block") {
-  if (!validAccount(input.account) || !validAccount(input.target)) throw "Invalid block";
-  if (input.account == input.target) throw "Cannot block yourself";
-  setList("blocked:" + input.account, addUnique(getList("blocked:" + input.account), input.target));
-  setList("following:" + input.account, drop(getList("following:" + input.account), input.target));
-  setList("followers:" + input.account, drop(getList("followers:" + input.account), input.target));
-  setList("following:" + input.target, drop(getList("following:" + input.target), input.account));
-  setList("followers:" + input.target, drop(getList("followers:" + input.target), input.account));
-  return true;
-}
-if (input.action == "unblock") {
-  if (!validAccount(input.account) || !validAccount(input.target)) throw "Invalid unblock";
-  setList("blocked:" + input.account, drop(getList("blocked:" + input.account), input.target));
-  return true;
-}
-throw "Unknown action";`;
-
-
-// --- boxos-procedure.js ---
-
-// BOXOS friends procedure.
-// Verifies a reusable signed "manage friends" grant, applies the op to the
-// friends reducer, and syncs grant.name to the profile reducer on every call.
-
-function buildFriendsProcedureCode(reducerHash, identityReducerHash, profileReducerHash) {
-  return `if (input.action != "mutate") throw "Unknown action";
-if (typeof input.authorization != "object" || typeof input.authorization.message != "string" || typeof input.authorization.signature != "string") throw "Invalid authorization";
-let grant = JSON.parse(input.authorization.message);
-if (grant.version != 1 || grant.domain != "boxos-capability" || grant.resource != "${reducerHash}" || typeof grant.account != "string" || typeof grant.name != "string" || typeof grant.text != "string" || typeof grant.nonce != "string") throw "Invalid authorization";
-let allowed = false;
-for (let i = 0; i < grant.capabilities.length; i += 1) if (grant.capabilities[Number(i)] == "manage friends") allowed = true;
-if (!allowed) throw "Missing manage friends capability";
-function identity(tx) { return tx.invoke("${identityReducerHash}", { action: "lookup", account: grant.account }); }
-let publicKey = await ctx.transaction(identity);
-if (typeof publicKey != "string") throw "Unknown account";
-let valid = await ctx.verify(publicKey, input.authorization.message, input.authorization.signature);
-if (!valid) throw "Invalid signature";
-let op = input.op;
-function run(tx) {
-  tx.invoke("${profileReducerHash}", { action: "setName", account: grant.account, name: grant.name });
-  return tx.invoke("${reducerHash}", { action: op.type, account: grant.account, target: op.target, name: grant.name });
-}
-return await ctx.transaction(run);`;
-}
-
-
-// --- profile-reducer.js ---
-
-// BOXOS profile reducer — the canonical name store.
-//
-// Every app writes the signed-in user's name here on sign-in (using their
-// "set profile" capability grant), and reads everyone's name from here.
-// One source of truth, no fallbacks.
-//
-// Key:
-//   profile:<account> → string name
-
-const PROFILE_REDUCER_CODE = `if (input.action != "setName") throw "Unknown action";
-if (typeof input.account != "string" || typeof input.name != "string") throw "Invalid input";
-if (input.name.length < 1 || input.name.length > 80) throw "Invalid name";
-ctx.state.public.set("profile:" + input.account, input.name);
-return input.name;`;
-
-
-// --- app.js ---
-
-
-
-
-
+import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
-const $ = (id) => document.getElementById(id);
-const sha256Hex = async (text) => {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-};
+const stats = await boxos.stats();
+const friendsReducer = stats.applications.friends.reducer;
+const profileReducer = stats.profiles.reducer;
+const storageKey = "friends.authorization";
+let authorization;
+try { authorization = JSON.parse(localStorage.getItem(storageKey) || "null"); }
+catch { localStorage.removeItem(storageKey); }
+let lists = { following: [], followers: [], muted: [], blocked: [] };
+let viewedAccount = new URLSearchParams(location.search).get("account") || "";
+const $ = id => document.getElementById(id);
 
-const CAPABILITY = "manage friends";
-const GRANT_TEXT = "Manage your friends and blocks";
-const PROFILE_URL = "https://pzzizqwdhoefinsp.pages.boxos.org/";
-const AUTH_KEY = "friends.authorization";
-
-let reducerHash = null;
-let procedureHash = null;
-let profileReducerHash = null;
-let authorization = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-let myAccount = authorization?.grant?.account || null;
-let myName = authorization?.grant?.name || null;
-let following = new Set();
-let muted = new Set();
-let blocked = new Set();
-let viewAccount = null; // account currently being viewed
-let busy = false;
-
-function setMessage(text, isError = false) {
-  $("message").textContent = text;
-  $("message").classList.toggle("error", isError);
+function message(value) { $("message").textContent = value; }
+function includes(items, account) { return items.includes(account); }
+function listName(relation) {
+  if (relation === "follow") return "following";
+  if (relation === "mute") return "muted";
+  return "blocked";
 }
-const shortId = (id) => id ? id.slice(0, 8) + "…" : "";
-
-async function ensureRegistered() {
-  if (reducerHash && procedureHash) return;
-  reducerHash = await sha256Hex(FRIENDS_REDUCER_CODE);
-  profileReducerHash = await sha256Hex(PROFILE_REDUCER_CODE);
-  const stats = await boxos.stats();
-  const procCode = buildFriendsProcedureCode(reducerHash, stats.identities.reducer, profileReducerHash);
-  procedureHash = await sha256Hex(procCode);
-  await boxos.registerReducer(FRIENDS_REDUCER_CODE);
-  await boxos.registerProcedure(procCode);
-  await boxos.registerReducer(PROFILE_REDUCER_CODE);
+function profileLink(account) { return `/examples/profile?account=${encodeURIComponent(account)}`; }
+async function profile(account) {
+  try { return (await boxos.publicState(profileReducer, `profile:${account}`)).value; }
+  catch { return null; }
 }
-
-// free public-state reads
-async function readKey(key) {
-  await ensureRegistered();
-  const res = await fetch(`/state/${reducerHash}/${encodeURIComponent(key)}`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.value;
+async function invoke(input) {
+  return (await boxos.invoke(friendsReducer, input, { authorization })).ok;
 }
-const readList = (key) => readKey(key).then((v) => (Array.isArray(v) ? v : []));
-async function readName(account) {
-  if (!profileReducerHash) await ensureRegistered();
-  const res = await fetch(`/state/${profileReducerHash}/profile:${encodeURIComponent(account)}`);
-  if (!res.ok) return "";
-  const v = (await res.json()).value;
-  return typeof v === "string" ? v : "";
+async function renderPeople(target, accounts) {
+  const container = $(target); container.textContent = "";
+  if (!accounts.length) { container.textContent = "None"; container.className = "muted"; return; }
+  container.className = "";
+  const profiles = await Promise.all(accounts.map(profile));
+  accounts.forEach((account, index) => {
+    const row = document.createElement("div"); row.className = "person";
+    const link = document.createElement("a"); link.href = profileLink(account); link.textContent = profiles[index]?.name || "Unnamed account";
+    const id = document.createElement("code"); id.textContent = account.slice(0, 12) + "…"; link.append(id);
+    const actions = document.createElement("span"); actions.className = "person-actions";
+    for (const relation of ["follow", "mute", "block"]) {
+      const active = includes(lists[listName(relation)], account);
+      const button = document.createElement("button"); button.className = "secondary";
+      button.textContent = active ? `Un${relation}` : relation[0].toUpperCase() + relation.slice(1);
+      button.onclick = () => change(relation, account);
+      actions.append(button);
+    }
+    row.append(link, actions); container.append(row);
+  });
 }
-
-async function loadMySets() {
-  if (!myAccount) { following = new Set(); muted = new Set(); blocked = new Set(); return; }
-  const [f, m, b] = await Promise.all([
-    readList("following:" + myAccount),
-    readList("muted:" + myAccount),
-    readList("blocked:" + myAccount),
-  ]);
-  following = new Set(f);
-  muted = new Set(m);
-  blocked = new Set(b);
+async function renderLists() {
+  $("lists").hidden = !authorization;
+  if (!authorization) return;
+  await Promise.all(Object.keys(lists).map(name => renderPeople(name, lists[name])));
 }
-
-async function mutate(op) {
-  if (!authorization) throw new Error("Sign in first");
-  await ensureRegistered();
-  const receipt = await boxos.invoke(procedureHash, { action: "mutate", authorization, op }, { fuel: 1000 });
-  return receipt.ok;
+async function renderViewed() {
+  if (!/^[a-f0-9]{64}$/.test(viewedAccount)) { $("view").hidden = true; return; }
+  const found = await profile(viewedAccount);
+  $("view-name").textContent = found?.name || "Unnamed account"; $("view-id").textContent = viewedAccount;
+  $("view-profile").href = profileLink(viewedAccount); $("view").hidden = false;
+  const self = viewedAccount === authorization?.grant?.account;
+  $("actions").hidden = !authorization || self;
+  $("follow").textContent = includes(lists.following, viewedAccount) ? "Unfollow" : "Follow";
+  $("mute").textContent = includes(lists.muted, viewedAccount) ? "Unmute" : "Mute";
+  $("block").textContent = includes(lists.blocked, viewedAccount) ? "Unblock" : "Block";
 }
-
-async function signIn() {
-  try {
-    setMessage("Choose an account in the popup…");
-    await ensureRegistered();
-    const auth = await boxos.authorize([CAPABILITY], GRANT_TEXT, reducerHash);
-    authorization = auth;
-    myAccount = auth.grant.account;
-    myName = auth.grant.name;
-    localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
-    setMessage("");
-    updateAuthUi();
-    await loadMySets();
-    viewAccount = myAccount;
-    await renderView();
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-  }
-}
-
-function signOut() {
-  localStorage.removeItem(AUTH_KEY);
-  authorization = null; myAccount = null; myName = null;
-  following = new Set(); muted = new Set(); blocked = new Set();
-  updateAuthUi();
-  viewAccount = null;
-  renderView();
-}
-
-// ----- navigation -----
-function navigateTo(account) {
-  const url = new URL(location.href);
-  url.searchParams.set("u", account);
-  history.pushState({}, "", url);
-  viewAccount = account;
-  renderView();
-}
-addEventListener("popstate", () => { initView(); renderView(); });
-
-function initView() {
-  const u = new URLSearchParams(location.search).get("u");
-  viewAccount = (u && /^[a-f0-9]{64}$/.test(u)) ? u : myAccount;
-}
-
-// ----- rendering -----
-async function renderView() {
-  setMessage("");
-  const isSelf = myAccount && viewAccount === myAccount;
-  let profileName = "";
-  if (viewAccount) profileName = await readName(viewAccount);
-  renderProfile(profileName, isSelf);
-
-  // tabs: profile always; following/followers for everyone; muted/blocked only for self
-  const showPrivate = isSelf;
-  $("tab-muted").hidden = !showPrivate;
-  $("tab-blocked").hidden = !showPrivate;
-  const tab = currentTab;
-  if ((tab === "muted" || tab === "blocked") && !showPrivate) { setTab("following"); return; }
-  await renderTab();
-}
-
-function renderProfile(name, isSelf) {
-  const header = $("profile-header");
-  header.textContent = "";
-  if (!viewAccount) {
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = "Sign in to see your profile, or paste an account ID below.";
-    header.append(p);
-    return;
-  }
-  const avatar = document.createElement("div");
-  avatar.className = "avatar";
-  avatar.textContent = (name || "?").trim()[0]?.toUpperCase() || "?";
-  const info = document.createElement("div");
-  info.className = "profile-info";
-  const nameEl = document.createElement("div");
-  nameEl.className = "profile-name";
-  nameEl.textContent = name || "(no name set)";
-  const idEl = document.createElement("div");
-  idEl.className = "profile-id";
-  idEl.textContent = viewAccount;
-  info.append(nameEl, idEl);
-  header.append(avatar, info);
-
-  const actions = document.createElement("div");
-  actions.className = "profile-actions";
-  if (isSelf) {
-    const hint = document.createElement("span");
-    hint.className = "muted";
-    hint.textContent = "Name comes from your account manager.";
-    actions.append(hint);
-  } else if (myAccount) {
-    actions.append(relationButton("follow", viewAccount, following.has(viewAccount), "Follow", "Following"));
-    actions.append(relationButton("mute", viewAccount, muted.has(viewAccount), "Mute", "Muted"));
-    actions.append(relationButton("block", viewAccount, blocked.has(viewAccount), "Block", "Blocked", true));
-  }
-  header.append(actions);
-
-  // link to standalone profile page
-  const profileLink = document.createElement("a");
-  profileLink.className = "profile-page-link";
-  profileLink.href = PROFILE_URL + "?u=" + encodeURIComponent(viewAccount);
-  profileLink.textContent = "View on profile page →";
-  header.append(profileLink);
-
-  // share link
-  const share = document.createElement("div");
-  share.className = "share-row";
-  const link = `${location.origin}${location.pathname}?u=${viewAccount}`;
-  share.innerHTML = `<input class="url" readonly value="${link}"><button type="button" class="secondary" data-copy="${link}">Copy</button>`;
-  header.append(share);
-  share.querySelector("[data-copy]").onclick = async (e) => {
-    try { await navigator.clipboard.writeText(e.target.dataset.copy); e.target.textContent = "Copied!"; setTimeout(() => e.target.textContent = "Copy", 1200); } catch {}
-  };
-}
-
-function relationButton(type, target, active, inactiveLabel, activeLabel, danger) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "secondary" + (danger ? " danger" : "");
-  btn.textContent = active ? activeLabel : inactiveLabel;
-  if (active && type === "follow") btn.classList.add("active");
-  btn.onclick = () => toggleRelation(type, target, active);
-  return btn;
-}
-
-async function renderTab() {
-  const grid = $("list");
-  grid.textContent = "";
-  $("empty").hidden = true;
-  if (!viewAccount) return;
-  let key;
-  if (currentTab === "following") key = "following:" + viewAccount;
-  else if (currentTab === "followers") key = "followers:" + viewAccount;
-  else if (currentTab === "muted") key = "muted:" + viewAccount;
-  else if (currentTab === "blocked") key = "blocked:" + viewAccount;
-  else return;
-  try {
-    const ids = await readList(key);
-    if (!ids.length) { $("empty").hidden = false; return; }
-    const names = await Promise.all(ids.map((id) => readName(id)));
-    for (let i = 0; i < ids.length; i += 1) grid.append(personRow(ids[Number(i)], names[Number(i)]));
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-  }
-}
-
-function personRow(id, name) {
-  const row = document.createElement("article");
-  row.className = "person";
-  const avatar = document.createElement("div");
-  avatar.className = "avatar sm";
-  avatar.textContent = (name || "?").trim()[0]?.toUpperCase() || "?";
-  const info = document.createElement("div");
-  info.className = "person-info";
-  const nm = document.createElement("a"); nm.className = "person-name"; nm.textContent = name || "(no name)"; nm.href = PROFILE_URL + "?u=" + encodeURIComponent(id);
-  const iid = document.createElement("span"); iid.className = "person-id"; iid.textContent = shortId(id);
-  info.append(nm, iid);
-  const open = document.createElement("button");
-  open.type = "button"; open.className = "secondary"; open.textContent = "View";
-  open.onclick = () => navigateTo(id);
-  row.append(avatar, info, open);
-  return row;
-}
-
-// ----- actions -----
-async function toggleRelation(type, target, active) {
-  if (busy) return; busy = true;
-  try {
-    const action = active ? "un" + type : type;
-    if (type === "block" && !active && !confirm("Block this person? They will be unfollowed and cannot follow you.")) { busy = false; return; }
-    await mutate({ type: action, target });
-    await loadMySets();
-    await renderView();
-  } catch (e) { setMessage(e.message, true); }
-  finally { busy = false; }
-}
-
-function setTab(tab) {
-  currentTab = tab;
-  for (const t of ["following", "followers", "muted", "blocked"]) {
-    $("tab-" + t).classList.toggle("active", t === tab);
-  }
-  renderTab();
-}
-
-function updateAuthUi() {
+async function refresh() {
   const signedIn = Boolean(authorization);
-  $("signed-out").hidden = signedIn;
-  $("signed-in").hidden = !signedIn;
-  $("account-name").textContent = myName || "";
+  $("sign-in").hidden = signedIn; $("signed").hidden = !signedIn;
+  if (signedIn) {
+    const ownProfile = await profile(authorization.grant.account);
+    $("account-name").textContent = ownProfile?.name || authorization.grant.account.slice(0, 12) + "…";
+    $("my-profile").href = profileLink(authorization.grant.account);
+    try { lists = await invoke({ action: "list" }); }
+    catch (error) {
+      authorization = null; localStorage.removeItem(storageKey); message(error.message);
+      return await refresh();
+    }
+  }
+  await Promise.all([renderLists(), renderViewed()]);
 }
-
-// find-by-id form
-$("find-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  let v = $("find-id").value.trim();
-  const m = v.match(/[a-f0-9]{64}/i);
-  if (!m) { setMessage("Paste a valid 64-character account ID or profile link.", true); return; }
-  $("find-id").value = "";
-  navigateTo(m[0].toLowerCase());
-});
-
-$("sign-in").addEventListener("click", signIn);
-$("sign-out").addEventListener("click", signOut);
-for (const t of ["following", "followers", "muted", "blocked"]) {
-  $("tab-" + t).addEventListener("click", () => setTab(t));
+async function change(relation, target = viewedAccount) {
+  const enabled = !includes(lists[listName(relation)], target);
+  try { lists = await invoke({ action: "change", relation, target, enabled }); await refresh(); }
+  catch (error) { message(error.message); }
 }
-
-let currentTab = "following";
-updateAuthUi();
-initView();
-await loadMySets();
-await renderView();
-
+$("sign-in").onclick = async () => {
+  try {
+    authorization = await boxos.authorize(["friends:manage"], "Manage your follow, mute, and block lists", friendsReducer);
+    localStorage.setItem(storageKey, JSON.stringify(authorization)); await refresh();
+  } catch (error) { message(error.message); }
+};
+$("sign-out").onclick = async () => { authorization = null; localStorage.removeItem(storageKey); lists = { following: [], followers: [], muted: [], blocked: [] }; await refresh(); };
+$("find").onsubmit = async event => {
+  event.preventDefault(); const match = $("find-account").value.match(/[a-f0-9]{64}/);
+  if (!match) return message("Enter a valid account ID or profile link.");
+  viewedAccount = match[0]; history.replaceState(null, "", `?account=${viewedAccount}`); message(""); await renderViewed();
+};
+$("follow").onclick = () => change("follow");
+$("mute").onclick = () => change("mute");
+$("block").onclick = () => change("block");
+await refresh();
 </script>
-</body>
-</html>

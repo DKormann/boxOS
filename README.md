@@ -14,6 +14,8 @@ Submit a function once. BOXOS hashes its exact source, stores it permanently, an
 
 Together they are enough for counters, shared documents, APIs, games, small databases, and full web applications.
 
+For user-owned application data, a browser account can sign a narrow capability for one reducer. BOXOS verifies its signature, immutable page origin, and resource before exposing the signed account as trusted reducer context; an account ID in ordinary input has no authority.
+
 ## Content-addressed web pages
 
 BOXOS includes a permanent page reducer. Give it an HTML string and it stores the page under a short, collision-checked ID derived from SHA-256:

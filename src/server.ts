@@ -1,5 +1,8 @@
-import { readdir } from "fs/promises";
+import { chmod, readFile, readdir, writeFile } from "fs/promises";
+import { APP_INSTALLS_REDUCER_CODE, APP_INSTALLS_REDUCER_HASH } from "./app-installs.ts";
+import { APP_PUBLISHER_REDUCER_CODE, APP_PUBLISHER_REDUCER_HASH } from "./app-publisher.ts";
 import { COUNTER_REDUCER_CODE, COUNTER_REDUCER_HASH } from "./counter.ts";
+import { FRIENDS_REDUCER_CODE, FRIENDS_REDUCER_HASH } from "./friends.ts";
 import { pageHash, procHash, sha256 } from "./hash.ts";
 import {
   IDENTITY_PROCEDURE_CODE,
@@ -9,12 +12,7 @@ import {
 } from "./identity.ts";
 import { PAGE_MAX_BYTES, PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "./page.ts";
 import { ProcSyntaxError, validateProcCode } from "./parser.ts";
-import {
-  STATUS_PROCEDURE_CODE,
-  STATUS_PROCEDURE_HASH,
-  STATUS_REDUCER_CODE,
-  STATUS_REDUCER_HASH,
-} from "./status.ts";
+import { PROFILE_REDUCER_CODE, PROFILE_REDUCER_HASH } from "./profile.ts";
 import {
   PUBLISH_PROCEDURE_CODE,
   PUBLISH_PROCEDURE_HASH,
@@ -29,6 +27,7 @@ import {
   type CodeKind,
   type StateSnapshot,
 } from "./storage.ts";
+import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "./todo.ts";
 
 const HOST = Bun.env.HOST ?? "127.0.0.1";
 const PORT = Number(Bun.env.PORT ?? 4000);
@@ -42,19 +41,25 @@ const MAX_STATE_VALUE_BYTES = 256 * 1024;
 const storage = new Storage(DATABASE);
 const reducerNames = ["ctx", "input", "JSON", "Math", "String"];
 validateProcCode(PAGE_REDUCER_CODE, reducerNames);
+validateProcCode(APP_INSTALLS_REDUCER_CODE, reducerNames);
+validateProcCode(APP_PUBLISHER_REDUCER_CODE, reducerNames);
 validateProcCode(COUNTER_REDUCER_CODE, reducerNames);
+validateProcCode(FRIENDS_REDUCER_CODE, reducerNames);
 validateProcCode(IDENTITY_REDUCER_CODE, reducerNames);
 validateProcCode(IDENTITY_PROCEDURE_CODE, reducerNames, true);
-validateProcCode(STATUS_REDUCER_CODE, reducerNames);
-validateProcCode(STATUS_PROCEDURE_CODE, reducerNames, true);
+validateProcCode(PROFILE_REDUCER_CODE, reducerNames);
+validateProcCode(TODO_REDUCER_CODE, reducerNames);
 validateProcCode(VALIDATE_PROCEDURE_CODE, reducerNames, true);
 validateProcCode(PUBLISH_PROCEDURE_CODE, reducerNames, true);
 storage.putSystemCode(PAGE_REDUCER_HASH, "reducer", PAGE_REDUCER_CODE);
+storage.putSystemCode(APP_INSTALLS_REDUCER_HASH, "reducer", APP_INSTALLS_REDUCER_CODE);
+storage.putSystemCode(APP_PUBLISHER_REDUCER_HASH, "reducer", APP_PUBLISHER_REDUCER_CODE);
 storage.putSystemCode(COUNTER_REDUCER_HASH, "reducer", COUNTER_REDUCER_CODE);
+storage.putSystemCode(FRIENDS_REDUCER_HASH, "reducer", FRIENDS_REDUCER_CODE);
 storage.putSystemCode(IDENTITY_REDUCER_HASH, "reducer", IDENTITY_REDUCER_CODE);
 storage.putSystemCode(IDENTITY_PROCEDURE_HASH, "procedure", IDENTITY_PROCEDURE_CODE);
-storage.putSystemCode(STATUS_REDUCER_HASH, "reducer", STATUS_REDUCER_CODE);
-storage.putSystemCode(STATUS_PROCEDURE_HASH, "procedure", STATUS_PROCEDURE_CODE);
+storage.putSystemCode(PROFILE_REDUCER_HASH, "reducer", PROFILE_REDUCER_CODE);
+storage.putSystemCode(TODO_REDUCER_HASH, "reducer", TODO_REDUCER_CODE);
 storage.putSystemCode(VALIDATE_PROCEDURE_HASH, "procedure", VALIDATE_PROCEDURE_CODE);
 storage.putSystemCode(PUBLISH_PROCEDURE_HASH, "procedure", PUBLISH_PROCEDURE_CODE);
 
@@ -64,8 +69,9 @@ const examples = await Promise.all((await readdir(examplesDirectory)).filter(nam
   const html = await Bun.file(new URL(file, examplesDirectory)).text();
   if (new TextEncoder().encode(html).byteLength > PAGE_MAX_BYTES) throw new Error(`Example is too large: ${file}`);
   const id = pageHash(html);
+  const name = file.slice(0, -5);
   storage.putSystemPublicValue(PAGE_REDUCER_HASH, id, html);
-  return { name: file.slice(0, -5), file, id };
+  return { name, file, id };
 }));
 
 const proposalText = await Bun.file(new URL("../docs/proposal.md", import.meta.url)).text();
@@ -129,6 +135,30 @@ function callerId(request: Request): string {
   const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get("authorization") ?? "");
   if (!match) throw new TypeError("A 256-bit bearer identity is required");
   return sha256(match[1]!);
+}
+
+function base64UrlBytes(value: string): Uint8Array<ArrayBuffer> {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new TypeError("Invalid Base64URL value");
+  const encoded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(encoded + "=".repeat((4 - encoded.length % 4) % 4));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function bytesBase64Url(value: ArrayBuffer): string {
+  let binary = "";
+  for (const byte of new Uint8Array(value)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function validateSubmission(kind: CodeKind, code: string): string {
@@ -224,7 +254,14 @@ function validState(state: unknown): state is StateSnapshot {
   } catch { return false; }
 }
 
-async function invoke(hash: string, input: unknown, fuel: number, caller: string): Promise<Response> {
+async function invoke(
+  hash: string,
+  input: unknown,
+  fuel: number,
+  caller: string,
+  audience: string,
+  authorization?: unknown,
+): Promise<Response> {
   const code = storage.get(hash);
   if (!code) return failure(`Unknown code: ${hash}`, 404);
   try { storage.reserveFuel(caller, fuel); } catch (error) { return failure(error); }
@@ -311,9 +348,98 @@ async function invoke(hash: string, input: unknown, fuel: number, caller: string
         finish(json({ error: message.error, fuel: failedFuel(), balance: storage.balance(caller) }, 422));
       }
     };
-    worker.postMessage({ type: "start", hash, kind: code.kind, code: code.code, input, caller });
+    worker.postMessage({
+      type: "start",
+      hash,
+      kind: code.kind,
+      code: code.code,
+      input,
+      caller,
+      audience,
+      authorization,
+    });
   });
 }
+
+async function systemRecoveryKey(): Promise<string> {
+  if (Bun.env.BOXOS_SYSTEM_RECOVERY_KEY) return Bun.env.BOXOS_SYSTEM_RECOVERY_KEY;
+  const path = Bun.env.BOXOS_SYSTEM_KEY_PATH ?? `${DATABASE}.system-key`;
+  try {
+    return (await readFile(path, "utf8")).trim();
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
+  const keys = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const privateKey = bytesBase64Url(await crypto.subtle.exportKey("pkcs8", keys.privateKey));
+  const publicKey = bytesBase64Url(await crypto.subtle.exportKey("raw", keys.publicKey));
+  const recovery = `boxos1.${privateKey}.${publicKey}`;
+  await writeFile(path, recovery, "utf8");
+  await chmod(path, 0o600);
+  return recovery;
+}
+
+async function installSystemExamples(): Promise<void> {
+  const recovery = await systemRecoveryKey();
+  const parts = recovery.split(".");
+  if (parts.length !== 3 || parts[0] !== "boxos1") throw new Error("Invalid BOXOS_SYSTEM_RECOVERY_KEY");
+  const publicKey = parts[2]!;
+  const privateKey = await crypto.subtle.importKey("pkcs8", base64UrlBytes(parts[1]!), "Ed25519", false, ["sign"]);
+  const verificationKey = await crypto.subtle.importKey("raw", base64UrlBytes(publicKey), "Ed25519", false, ["verify"]);
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const challengeSignature = await crypto.subtle.sign("Ed25519", privateKey, challenge);
+  if (!await crypto.subtle.verify("Ed25519", verificationKey, challengeSignature, challenge)) {
+    throw new Error("BOXOS system recovery key does not match its public key");
+  }
+  const account = sha256(publicKey);
+  const audience = "boxos:system";
+  storage.putSystemPublicValue(IDENTITY_REDUCER_HASH, account, publicKey);
+
+  const authorization = async (resource: string, capability: string, purpose: string) => {
+    const grant = {
+      version: 2,
+      domain: "boxos-capability",
+      account,
+      audience,
+      resource,
+      capabilities: [capability],
+      purpose,
+      grantId: crypto.randomUUID(),
+    };
+    const message = canonicalJson(grant);
+    const signature = bytesBase64Url(await crypto.subtle.sign("Ed25519", privateKey, new TextEncoder().encode(message)));
+    return { grant, message, signature, publicKey };
+  };
+  const call = async (hash: string, input: unknown, capability: string, purpose: string): Promise<unknown> => {
+    const response = await invoke(hash, input, MAX_FUEL, account, audience, await authorization(hash, capability, purpose));
+    const result = await response.json() as { ok?: unknown; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "BOXOS system invocation failed");
+    return result.ok;
+  };
+
+  if (storage.publicValue(PROFILE_REDUCER_HASH, `profile:${account}`) === undefined) {
+    await call(PROFILE_REDUCER_HASH, { action: "set", name: "BOXOS", bio: "Official BOXOS examples." }, "profile:write", "Create the BOXOS profile");
+  }
+  for (const example of examples) {
+    const appId = pageHash(`boxos-example:${example.name}`);
+    const record = storage.publicValue(APP_PUBLISHER_REDUCER_HASH, `app:${appId}`) as { authorId?: string } | undefined;
+    if (!record) {
+      await call(APP_PUBLISHER_REDUCER_HASH, {
+        action: "publish", appId, pageId: example.id, name: example.name,
+      }, "apps:publish", "Publish an official BOXOS example");
+      continue;
+    }
+    if (record.authorId !== account) throw new Error(`BOXOS example app ID is already owned: ${example.name}`);
+    const release = storage.publicValue(APP_PUBLISHER_REDUCER_HASH, `release-counter:${appId}`) as number | undefined ?? 1;
+    const current = storage.publicValue(APP_PUBLISHER_REDUCER_HASH, `release:${appId}:${release}`);
+    if (current !== example.id) {
+      await call(APP_PUBLISHER_REDUCER_HASH, {
+        action: "release", appId, pageId: example.id,
+      }, "apps:publish", "Update an official BOXOS example");
+    }
+  }
+}
+
+await installSystemExamples();
 
 Bun.serve({
   hostname: HOST,
@@ -343,7 +469,7 @@ Bun.serve({
       const name = decodeURIComponent(url.pathname.slice(10));
       const example = examples.find(item => item.name === name);
       if (!example) return failure("Example not found", 404);
-      return Response.redirect(pageUrlTemplate(request, url, pageId).replace("{id}", example.id), 302);
+      return Response.redirect(pageUrlTemplate(request, url, pageId).replace("{id}", example.id) + url.search, 302);
     }
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/example") {
       const example = examples.find(item => item.name === "persistent-counter") ?? examples[0];
@@ -400,7 +526,12 @@ Bun.serve({
         pages: { reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES },
         procedures: { validate: VALIDATE_PROCEDURE_HASH, publish: PUBLISH_PROCEDURE_HASH },
         identities: { reducer: IDENTITY_REDUCER_HASH, procedure: IDENTITY_PROCEDURE_HASH },
-        applications: { status: { reducer: STATUS_REDUCER_HASH, procedure: STATUS_PROCEDURE_HASH } },
+        profiles: { reducer: PROFILE_REDUCER_HASH },
+        applications: {
+          explorer: { installs: APP_INSTALLS_REDUCER_HASH, publisher: APP_PUBLISHER_REDUCER_HASH },
+          friends: { reducer: FRIENDS_REDUCER_HASH },
+          todo: { reducer: TODO_REDUCER_HASH },
+        },
       });
     }
     if (request.method === "GET" && url.pathname === "/page") {
@@ -440,7 +571,8 @@ Bun.serve({
         }
         let caller: string;
         try { caller = callerId(request); } catch (error) { return failure(error, 401); }
-        return invoke(hash, value.input ?? null, fuel as number, caller);
+        const audience = request.headers.get("origin") ?? url.origin;
+        return invoke(hash, value.input ?? null, fuel as number, caller, audience, value.authorization);
       } catch (error) { return failure(error); }
     }
     return failure("Not found", 404);

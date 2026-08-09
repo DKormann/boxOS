@@ -1,813 +1,197 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>boxOS App Gallery</title>
-  <style>
-:root {
-  font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  color: #24252a;
-  background: #f4f5f8;
-  color-scheme: light;
-}
-* { box-sizing: border-box; }
-[hidden] { display: none !important; }
-body { margin: 0; min-height: 100vh; }
-main { width: min(56rem, calc(100% - 2rem)); margin: 4vh auto; }
-
-header { margin-bottom: 1.5rem; }
-h1 { font-size: 1.8rem; margin: 0 0 .2rem; }
-h1 .brand { color: #5149d8; text-decoration: none; }
-h1 .brand:hover { text-decoration: underline; }
-.card .meta a { color: #5149d8; text-decoration: none; }
-.card .meta a:hover { text-decoration: underline; }
-h2 { font-size: 1.15rem; margin: 0 0 .8rem; }
-.muted { color: #6b6d76; margin: 0 0 1rem; }
-
-.account-bar {
-  display: inline-flex; align-items: center; gap: .8rem;
-  background: #eef0ff; border: 1px solid #d8dbf5; border-radius: .6rem; padding: .55rem 1rem;
-}
-.account-bar strong { color: #3a34a0; }
-
-.tabs { display: flex; gap: .3rem; border-bottom: 1px solid #dedfe5; margin-bottom: 1.2rem; }
-.tab {
-  padding: .7rem 1rem; border: 0; background: transparent; color: #6b6d76;
-  font: 600 15px system-ui; cursor: pointer; border-bottom: 2px solid transparent; border-radius: 0;
-}
-.tab.active { color: #5149d8; border-bottom-color: #5149d8; }
-
-.submit-panel {
-  background: #fff; border: 1px solid #dedfe5; border-radius: .75rem;
-  padding: 1.2rem 1.3rem; margin-bottom: 1.5rem;
-}
-.submit-panel form { display: grid; gap: .8rem; }
-.submit-panel label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 600; color: #6b6d76; }
-.submit-panel input {
-  padding: .6rem .7rem; border: 1px solid #c9cad1; border-radius: .5rem; font: inherit; color: #24252a;
-}
-.submit-panel button { justify-self: start; padding: .7rem 1.2rem; }
-
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 1rem; }
-.card {
-  display: flex; flex-direction: column; gap: .5rem; background: #fff;
-  border: 1px solid #dedfe5; border-radius: .75rem; padding: 1.1rem 1.2rem;
-}
-.card h3 { margin: 0; font-size: 1.1rem; }
-.card h3 a { color: #5149d8; text-decoration: none; }
-.card h3 a:hover { text-decoration: underline; }
-.card .desc { margin: 0; color: #4a4b52; font-size: .92rem; overflow-wrap: anywhere; }
-.card .meta { display: flex; gap: 1rem; font-size: .82rem; color: #888; }
-.card .tags { display: flex; gap: .35rem; flex-wrap: wrap; }
-.card .tag { font-size: .75rem; background: #eef0f5; color: #555; padding: .15rem .5rem; border-radius: 1rem; }
-.card .actions { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .3rem; }
-
-button { padding: .55rem .9rem; border: 0; border-radius: .5rem; background: #5149d8; color: #fff; font: 600 14px system-ui; cursor: pointer; }
-button:disabled { opacity: .5; }
-button.secondary { background: #e9e8f3; color: #4a45a8; }
-button.danger { background: #fdecea; color: #b3261e; }
-
-.empty { padding: 2rem 0; color: #888; text-align: center; }
-.message { min-height: 1.4rem; color: #666; margin: .8rem 0; }
-.message.error { color: #b3261e; }
-
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS Apps</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f5f5f7}*{box-sizing:border-box}main{width:min(58rem,calc(100% - 2rem));margin:6vh auto}header,.toolbar,.tabs,.actions{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}header h1{margin:0 auto 0 0;font-size:2.5rem}.muted,#message{color:#707078}button{padding:.65rem .85rem;border:0;border-radius:.5rem;background:#4f46d8;color:white;font-weight:600;cursor:pointer}.secondary,.tabs button{background:#e7e7ec;color:#333}.tabs button.active{background:#4f46d8;color:white}.toolbar{margin:1.2rem 0}.toolbar input{flex:1}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem}.card,.panel{background:white;border:1px solid #ddd;border-radius:.8rem;padding:1rem}.card{display:flex;flex-direction:column}.card h2{margin:0 0 1rem;font-size:1.15rem}.card small{margin-top:auto;color:#777}.card a{color:#4f46d8}input{width:100%;padding:.7rem;border:1px solid #ccc;border-radius:.5rem;font:inherit}label{display:block;margin:.75rem 0}.panel{margin:1rem 0}.empty{padding:2rem 0;color:#777}[hidden]{display:none!important}
 </style>
-</head>
-<body>
 <main>
-  <header>
-    <h1><a class="brand" href="https://boxos.org/">boxOS</a> App Gallery</h1>
-    <p class="muted">Discover, collect, and share boxOS apps.</p>
-    <div id="signed-out"><button id="sign-in" type="button">Sign in with boxOS account</button></div>
-    <div id="signed-in" class="account-bar" hidden>
-      <span>Signed in as <strong id="account-name"></strong></span>
-      <button id="sign-out" type="button" class="secondary">Sign out</button>
-    </div>
-  </header>
-
-  <nav class="tabs">
-    <button id="tab-explore" type="button" class="tab active">Explore</button>
-    <button id="tab-myapps" type="button" class="tab" hidden>My apps</button>
-    <button id="tab-published" type="button" class="tab" hidden>Published</button>
-  </nav>
-
-  <section id="submit-panel" class="submit-panel" hidden>
-    <h2>Submit an app</h2>
-    <form id="submit-form">
-      <label>Page hash or URL<input name="pageUrl" type="text" required placeholder="abcd1234 or https://abcd1234.pages.boxos.org/"></label>
-      <label>Name<input name="name" type="text" required maxlength="80" placeholder="My cool app"></label>
-      <label>Description<input name="description" type="text" maxlength="280" placeholder="One-line summary"></label>
-      <label>Tags (comma-separated)<input name="tags" type="text" placeholder="games, tools"></label>
-      <button type="submit">Publish to gallery</button>
-    </form>
-  </section>
-
-  <div id="grid" class="grid"></div>
-  <p id="empty" class="empty" hidden>Nothing here yet.</p>
-  <p id="message" class="message"></p>
+  <header><h1>Apps</h1><span id="account"></span><button id="sign-in">Choose account</button><button id="sign-out" class="secondary" hidden>Sign out</button></header>
+  <div class="toolbar"><input id="search" placeholder="Search apps"><button id="show-publish">Publish an app</button></div>
+  <form id="publish" class="panel" hidden>
+    <h2>Publish an app</h2>
+    <label>Permanent BOXOS page URL or ID<input id="app-url" required></label>
+    <label>Name<input id="app-name" maxlength="80" required></label>
+    <button>Publish</button> <button id="cancel-publish" type="button" class="secondary">Cancel</button>
+  </form>
+  <nav class="tabs"><button id="discover-tab" class="active">All apps</button><button id="installed-tab">Your apps</button><button id="published-tab">Published by you</button></nav>
+  <p id="message"></p>
+  <section id="apps" class="grid"></section>
 </main>
 <script type="module">
-// --- boxos-client.js ---
-
-// Minimal browser client for BOXOS. No build step or dependencies required.
-class BoxOSClient {
-  constructor(baseUrl = globalThis.location?.origin, options = {}) {
-    if (!baseUrl) throw new TypeError("A BOXOS base URL is required");
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.identity = options.identity || loadIdentity(options.storageKey || "boxos.identity");
-  }
-
-  async account() {
-    return this.request("/account");
-  }
-
-  async balance() {
-    return (await this.account()).balance;
-  }
-
-  stats() {
-    return this.request("/stats", {}, false);
-  }
-
-  async authorize(capabilities, text = "", resource = "") {
-    if (!Array.isArray(capabilities) || capabilities.some(value => typeof value !== "string")) {
-      throw new TypeError("Capabilities must be an array of strings");
-    }
-    const expectedCapabilities = [...new Set(capabilities)].sort();
-    const popup = globalThis.open(`${this.baseUrl}/examples/accounts`, "boxos-accounts", "popup,width=560,height=720");
-    if (!popup) throw new BoxOSError("The account popup was blocked");
-    const requestId = crypto.randomUUID();
-    const nonce = crypto.randomUUID();
-    const request = { boxos: "authorize", requestId, nonce, capabilities, text, resource };
-    return await new Promise((resolve, reject) => {
-      const send = setInterval(() => { if (!popup.closed) popup.postMessage(request, "*"); }, 300);
-      const timeout = setTimeout(() => finish(new BoxOSError("Authorization timed out")), 5 * 60 * 1000);
-      const receive = event => {
-        if (event.source !== popup || event.data?.requestId !== requestId) return;
-        if (event.data.boxos === "authorization-denied") return finish(new BoxOSError("Authorization denied"));
-        if (event.data.boxos !== "authorization") return;
-        const authorization = event.data;
-        if (authorization.grant?.audience !== globalThis.location.origin || authorization.grant?.nonce !== nonce
-          || authorization.grant?.text !== text || authorization.grant?.resource !== resource
-          || JSON.stringify(authorization.grant?.capabilities) !== JSON.stringify(expectedCapabilities)) {
-          return finish(new BoxOSError("Invalid authorization response"));
-        }
-        if (authorization.message !== canonicalJson(authorization.grant)) {
-          return finish(new BoxOSError("Authorization message is not canonical"));
-        }
-        finish(undefined, authorization);
-      };
-      const finish = (error, value) => {
-        clearInterval(send); clearTimeout(timeout); removeEventListener("message", receive); popup.close();
-        if (error) reject(error); else resolve(value);
-      };
-      addEventListener("message", receive);
-      popup.postMessage(request, "*");
-    });
-  }
-
-  async verifyAuthorization(authorization, options = {}) {
-    if (!authorization || authorization.message !== canonicalJson(authorization.grant)) {
-      throw new TypeError("Invalid authorization");
-    }
-    const stats = await this.stats();
-    return this.invoke(stats.identities.procedure, {
-      action: "verify",
-      account: authorization.grant.account,
-      message: authorization.message,
-      signature: authorization.signature,
-    }, options);
-  }
-
-  async validateCode(kind, code, options = {}) {
-    const stats = await this.stats();
-    return this.invoke(stats.procedures.validate, { kind, code }, options);
-  }
-
-  async publishCode(kind, code, options = {}) {
-    const stats = await this.stats();
-    return this.invoke(stats.procedures.publish, { kind, code }, options);
-  }
-
-  registerReducer(code) {
-    return this.register("reducers", code);
-  }
-
-  registerProcedure(code) {
-    return this.register("procedures", code);
-  }
-
-  async register(kind, code) {
-    if (typeof code !== "string") throw new TypeError("Code must be a string");
-    return this.request(`/${kind}`, { method: "POST", body: JSON.stringify({ code }) });
-  }
-
-  inspect(hash) {
-    return this.request(`/code/${encodeURIComponent(hash)}`, {}, false);
-  }
-
-  publicState(hash, key) {
-    return this.request(`/state/${encodeURIComponent(hash)}/${encodeURIComponent(key)}`, {}, false);
-  }
-
-  pageInfo() {
-    return this.request("/page", {}, false);
-  }
-
-  async publishPage(html, options = {}) {
-    if (typeof html !== "string") throw new TypeError("Page must be a string");
-    const info = await this.pageInfo();
-    if (new TextEncoder().encode(html).byteLength > info.maximumBytes) throw new TypeError("Page is too large");
-    const invocation = await this.invoke(info.reducer, html, options);
-    return { hash: invocation.ok, url: info.urlTemplate.replace("{id}", invocation.ok), fuel: invocation.fuel };
-  }
-
-  invoke(hash, input = null, options = {}) {
-    return this.request(`/invoke/${encodeURIComponent(hash)}`, {
-      method: "POST",
-      body: JSON.stringify({ input, fuel: options.fuel || 1000 }),
-    });
-  }
-
-  async runReducer(code, input = null, options = {}) {
-    const registered = await this.registerReducer(code);
-    return this.invoke(registered.hash, input, options);
-  }
-
-  async runProcedure(code, input = null, options = {}) {
-    const registered = await this.registerProcedure(code);
-    return this.invoke(registered.hash, input, options);
-  }
-
-  async request(path, init = {}, authenticated = true) {
-    const headers = new Headers(init.headers);
-    if (init.body !== undefined) headers.set("content-type", "application/json");
-    if (authenticated) headers.set("authorization", `Bearer ${this.identity}`);
-    const response = await fetch(this.baseUrl + path, { ...init, headers });
-    const result = await response.json();
-    if (!response.ok) throw new BoxOSError(result.error || `HTTP ${response.status}`, response.status, result);
-    return result;
-  }
-}
-
-class BoxOSError extends Error {
-  constructor(message, status, response) {
-    super(message);
-    this.name = "BoxOSError";
-    this.status = status;
-    this.response = response;
-  }
-}
-
-function loadIdentity(storageKey) {
-  try {
-    const existing = globalThis.localStorage?.getItem(storageKey);
-    if (existing) return existing;
-    const identity = randomIdentity();
-    globalThis.localStorage?.setItem(storageKey, identity);
-    return identity;
-  } catch {
-    return randomIdentity();
-  }
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function randomIdentity() {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-
-// --- boxos-reducer.js ---
-
-// BOXOS gallery reducer (v2).
-//
-// Stores app listings, likes, and per-account collections ("my apps") in
-// PUBLIC state so browsing is free (no auth, no fuel) via
-//   GET /state/<reducer-hash>/<key>
-// Writes go through the procedure, which verifies a signed "curate apps"
-// grant. The grant is reusable (requested once at sign-in).
-//
-// Keys:
-//   app:<appId>           → { id, name, description, pageUrl, tags, author, authorName, sequence }
-//   recent                → [appId, ...]  (newest first)
-//   byAuthor:<account>    → [appId, ...]
-//   byTag:<tag>           → [appId, ...]
-//   likes:<appId>         → number
-//   likedBy:<account>     → [appId, ...]
-//   collection:<account>  → [appId, ...]  ("my apps" launcher)
-
-const GALLERY_REDUCER_CODE = `// gallery v2
-function getList(key) { return ctx.state.public.get(key) || []; }
-function setList(key, list) { ctx.state.public.set(key, list); }
-function contains(list, id) {
-  for (let i = 0; i < list.length; i += 1) if (list[Number(i)] == id) return true;
-  return false;
-}
-function addUnique(list, id) {
-  if (contains(list, id)) return list;
-  let next = [];
-  for (let i = 0; i < list.length; i += 1) next[Number(next.length)] = list[Number(i)];
-  next[Number(next.length)] = id;
-  return next;
-}
-function drop(list, id) {
-  let next = [];
-  for (let i = 0; i < list.length; i += 1) if (list[Number(i)] != id) next[Number(next.length)] = list[Number(i)];
-  return next;
-}
-function validApp(app) {
-  if (app == null || typeof app != "object") return false;
-  if (typeof app.id != "string" || app.id.length < 1 || app.id.length > 128) return false;
-  if (typeof app.name != "string" || app.name.length < 1 || app.name.length > 80) return false;
-  if (typeof app.description != "string" || app.description.length > 280) return false;
-  if (typeof app.pageUrl != "string" || app.pageUrl.length < 4 || app.pageUrl.length > 200) return false;
-  if (app.tags == null || typeof app.tags.length != "number") return false;
-  return true;
-}
-if (input.action == "submit") {
-  if (typeof input.account != "string" || typeof input.authorName != "string" || !validApp(input.app)) throw "Invalid submit";
-  let app = input.app;
-  if (app.pageUrl.indexOf("http") != 0) throw "pageUrl must start with http";
-  let tags = [];
-  for (let i = 0; i < app.tags.length; i += 1) {
-    let t = app.tags[Number(i)];
-    if (typeof t == "string" && t.length > 0 && t.length <= 24 && !contains(tags, t)) tags[Number(tags.length)] = t;
-  }
-  let existing = ctx.state.public.get("app:" + app.id);
-  if (existing != null && existing.author != input.account) throw "App already published by another account";
-  let sequence;
-  if (existing != null) sequence = existing.sequence;
-  else {
-    sequence = (ctx.state.private.get("sequence") || 0) + 1;
-    ctx.state.private.set("sequence", sequence);
-  }
-  let entry = { id: app.id, name: app.name, description: app.description, pageUrl: app.pageUrl, tags: tags, author: input.account, authorName: input.authorName, sequence: sequence };
-  ctx.state.public.set("app:" + app.id, entry);
-  setList("recent", addUnique(getList("recent"), app.id));
-  setList("byAuthor:" + input.account, addUnique(getList("byAuthor:" + input.account), app.id));
-  for (let i = 0; i < tags.length; i += 1) {
-    let tag = tags[Number(i)];
-    setList("byTag:" + tag, addUnique(getList("byTag:" + tag), app.id));
-  }
-  if (!ctx.state.public.has("likes:" + app.id)) ctx.state.public.set("likes:" + app.id, 0);
-  return entry;
-}
-if (input.action == "like") {
-  if (typeof input.account != "string" || typeof input.appId != "string") throw "Invalid like";
-  if (!ctx.state.public.has("app:" + input.appId)) throw "App not found";
-  let liked = getList("likedBy:" + input.account);
-  if (contains(liked, input.appId)) return true;
-  setList("likedBy:" + input.account, addUnique(liked, input.appId));
-  let count = ctx.state.public.get("likes:" + input.appId) || 0;
-  ctx.state.public.set("likes:" + input.appId, count + 1);
-  return true;
-}
-if (input.action == "unlike") {
-  if (typeof input.account != "string" || typeof input.appId != "string") throw "Invalid unlike";
-  let liked = getList("likedBy:" + input.account);
-  if (!contains(liked, input.appId)) return true;
-  setList("likedBy:" + input.account, drop(liked, input.appId));
-  let count = ctx.state.public.get("likes:" + input.appId) || 0;
-  ctx.state.public.set("likes:" + input.appId, count - 1);
-  return true;
-}
-if (input.action == "collect") {
-  if (typeof input.account != "string" || typeof input.appId != "string") throw "Invalid collect";
-  if (!ctx.state.public.has("app:" + input.appId)) throw "App not found";
-  setList("collection:" + input.account, addUnique(getList("collection:" + input.account), input.appId));
-  return true;
-}
-if (input.action == "uncollect") {
-  if (typeof input.account != "string" || typeof input.appId != "string") throw "Invalid uncollect";
-  setList("collection:" + input.account, drop(getList("collection:" + input.account), input.appId));
-  return true;
-}
-if (input.action == "remove") {
-  if (typeof input.account != "string" || typeof input.appId != "string") throw "Invalid remove";
-  let entry = ctx.state.public.get("app:" + input.appId);
-  if (entry == null) throw "App not found";
-  if (entry.author != input.account) throw "Not the author";
-  ctx.state.public.delete("app:" + input.appId);
-  ctx.state.public.delete("likes:" + input.appId);
-  setList("recent", drop(getList("recent"), input.appId));
-  setList("byAuthor:" + input.account, drop(getList("byAuthor:" + input.account), input.appId));
-  for (let i = 0; i < entry.tags.length; i += 1) {
-    let tag = entry.tags[Number(i)];
-    setList("byTag:" + tag, drop(getList("byTag:" + tag), input.appId));
-  }
-  return true;
-}
-throw "Unknown action";`;
-
-
-// --- boxos-procedure.js ---
-
-// BOXOS gallery procedure.
-//
-// Verifies a reusable signed "curate apps" grant, then applies the requested
-// operation to the gallery reducer. Also syncs grant.name to the profile
-// reducer on every call, so the canonical name store stays current.
-
-function buildGalleryProcedureCode(reducerHash, identityReducerHash, profileReducerHash) {
-  return `if (input.action != "mutate") throw "Unknown action";
-if (typeof input.authorization != "object" || typeof input.authorization.message != "string" || typeof input.authorization.signature != "string") throw "Invalid authorization";
-let grant = JSON.parse(input.authorization.message);
-if (grant.version != 1 || grant.domain != "boxos-capability" || grant.resource != "${reducerHash}" || typeof grant.account != "string" || typeof grant.name != "string" || typeof grant.text != "string" || typeof grant.nonce != "string") throw "Invalid authorization";
-let allowed = false;
-for (let i = 0; i < grant.capabilities.length; i += 1) if (grant.capabilities[Number(i)] == "curate apps") allowed = true;
-if (!allowed) throw "Missing curate apps capability";
-function identity(tx) { return tx.invoke("${identityReducerHash}", { action: "lookup", account: grant.account }); }
-let publicKey = await ctx.transaction(identity);
-if (typeof publicKey != "string") throw "Unknown account";
-let valid = await ctx.verify(publicKey, input.authorization.message, input.authorization.signature);
-if (!valid) throw "Invalid signature";
-let op = input.op;
-function run(tx) {
-  tx.invoke("${profileReducerHash}", { action: "setName", account: grant.account, name: grant.name });
-  return tx.invoke("${reducerHash}", { action: op.type, account: grant.account, authorName: grant.name, app: op.app, appId: op.appId });
-}
-return await ctx.transaction(run);`;
-}
-
-
-// --- profile-reducer.js ---
-
-// BOXOS profile reducer — the canonical name store.
-//
-// Every app writes the signed-in user's name here on sign-in (using their
-// "set profile" capability grant), and reads everyone's name from here.
-// One source of truth, no fallbacks.
-//
-// Key:
-//   profile:<account> → string name
-
-const PROFILE_REDUCER_CODE = `if (input.action != "setName") throw "Unknown action";
-if (typeof input.account != "string" || typeof input.name != "string") throw "Invalid input";
-if (input.name.length < 1 || input.name.length > 80) throw "Invalid name";
-ctx.state.public.set("profile:" + input.account, input.name);
-return input.name;`;
-
-
-// --- profile-procedure.js ---
-
-// BOXOS profile procedure — verifies a signed "set profile" grant and writes
-// the account's name to the profile reducer.
-
-function buildProfileProcedureCode(reducerHash, identityReducerHash) {
-  return `if (input.action != "setName") throw "Unknown action";
-if (typeof input.authorization != "object" || typeof input.authorization.message != "string" || typeof input.authorization.signature != "string") throw "Invalid authorization";
-let grant = JSON.parse(input.authorization.message);
-if (grant.version != 1 || grant.domain != "boxos-capability" || grant.resource != "${reducerHash}" || typeof grant.account != "string" || typeof grant.name != "string" || typeof grant.text != "string" || typeof grant.nonce != "string") throw "Invalid authorization";
-let allowed = false;
-for (let i = 0; i < grant.capabilities.length; i += 1) if (grant.capabilities[Number(i)] == "set profile") allowed = true;
-if (!allowed) throw "Missing set profile capability";
-function identity(tx) { return tx.invoke("${identityReducerHash}", { action: "lookup", account: grant.account }); }
-let publicKey = await ctx.transaction(identity);
-if (typeof publicKey != "string") throw "Unknown account";
-let valid = await ctx.verify(publicKey, input.authorization.message, input.authorization.signature);
-if (!valid) throw "Invalid signature";
-function run(tx) { return tx.invoke("${reducerHash}", { action: "setName", account: grant.account, name: grant.name }); }
-return await ctx.transaction(run);`;
-}
-
-
-// --- app.js ---
-
-
-
-
-
-
+import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
-const $ = (id) => document.getElementById(id);
-const sha256Hex = async (text) => {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const stats = await boxos.stats();
+const publisher = stats.applications.explorer.publisher;
+const installsReducer = stats.applications.explorer.installs;
+const profileReducer = stats.profiles.reducer;
+const page = await boxos.pageInfo();
+const installKey = "app-explorer.install-authorization";
+const publishKey = "app-explorer.publish-authorization";
+let installAuthorization = stored(installKey);
+let publishAuthorization = stored(publishKey);
+let records = [];
+let installed = [];
+let installCounts = new Map();
+let tab = "discover";
+const profileNames = new Map();
+const $ = id => document.getElementById(id);
+
+function stored(key) {
+  try { return JSON.parse(localStorage.getItem(key) || "null"); }
+  catch { localStorage.removeItem(key); return null; }
+}
+function message(value) { $("message").textContent = value; }
+async function publicValue(reducer, key) {
+  try { return (await boxos.publicState(reducer, key)).value; }
+  catch { return undefined; }
+}
+async function profileName(account) {
+  if (profileNames.has(account)) return profileNames.get(account);
+  let name = account.slice(0, 12) + "…";
+  try { name = (await boxos.publicState(profileReducer, `profile:${account}`)).value.name; } catch {}
+  profileNames.set(account, name); return name;
+}
+async function installInvoke(input) {
+  return (await boxos.invoke(installsReducer, input, { authorization: installAuthorization })).ok;
+}
+async function publishInvoke(input) {
+  return (await boxos.invoke(publisher, input, { authorization: publishAuthorization })).ok;
+}
+async function authorizeInstalls() {
+  if (!installAuthorization) {
+    installAuthorization = await boxos.authorize(["apps:install"], "Install apps and view your apps", installsReducer);
+    localStorage.setItem(installKey, JSON.stringify(installAuthorization));
+  }
+  await refreshAccount();
+}
+async function authorizePublishing() {
+  if (publishAuthorization) return;
+  publishAuthorization = await boxos.authorize(["apps:publish"], "Publish and update apps", publisher);
+  localStorage.setItem(publishKey, JSON.stringify(publishAuthorization));
+}
+async function authorizeAsAuthor(record) {
+  if (publishAuthorization?.grant?.account !== record.authorId) {
+    publishAuthorization = null; localStorage.removeItem(publishKey); await authorizePublishing();
+  }
+  if (publishAuthorization.grant.account !== record.authorId) throw new Error("Choose the app's author account.");
+}
+async function refreshAccount() {
+  const signedIn = Boolean(installAuthorization);
+  $("sign-in").hidden = signedIn; $("sign-out").hidden = !signedIn;
+  if (!signedIn) { $("account").textContent = ""; installed = []; return; }
+  $("account").textContent = await profileName(installAuthorization.grant.account);
+  try { installed = await installInvoke({ action: "installed" }); }
+  catch (error) {
+    installAuthorization = null; localStorage.removeItem(installKey); message(error.message); await refreshAccount();
+  }
+}
+async function loadApps() {
+  const count = await publicValue(publisher, "publish:counter") || 0;
+  const ids = await Promise.all(Array.from({ length: count }, (_, index) => publicValue(publisher, `publish:${index + 1}`)));
+  const found = (await Promise.all(ids.reverse().map(id => publicValue(publisher, `app:${id}`)))).filter(Boolean);
+  const releases = await Promise.all(found.map(record => publicValue(publisher, `release-counter:${record.appId}`)));
+  const pages = await Promise.all(found.map((record, index) => publicValue(publisher, `release:${record.appId}:${releases[index] || 1}`)));
+  const unpublished = await Promise.all(found.map(record => publicValue(publisher, `unpublished:${record.appId}`)));
+  records = found.map((record, index) => ({
+    ...record,
+    pageId: pages[index] || record.appId,
+    release: releases[index] || 1,
+    unpublished: unpublished[index] === true,
+  }));
+  const counts = await Promise.all(records.map(record => publicValue(installsReducer, `installs:${record.appId}`)));
+  installCounts = new Map(records.map((record, index) => [record.appId, counts[index] || 0]));
+  await Promise.all(records.map(record => profileName(record.authorId)));
+}
+function appId(value) {
+  const text = value.trim().toLowerCase();
+  if (/^[a-z2-7]{16}$/.test(text)) return text;
+  try {
+    const label = new URL(text).hostname.split(".")[0];
+    if (/^[a-z2-7]{16}$/.test(label)) return label;
+  } catch {}
+  throw new Error("Enter a permanent BOXOS page URL or 16-character page ID.");
+}
+function card(record) {
+  const article = document.createElement("article"); article.className = "card";
+  const title = document.createElement("h2"); title.textContent = record.name;
+  const creator = document.createElement("a"); creator.href = `/examples/profile?account=${encodeURIComponent(record.authorId)}`; creator.textContent = profileNames.get(record.authorId);
+  const count = installCounts.get(record.appId) || 0;
+  const details = document.createElement("small"); details.append("By ", creator, ` · release ${record.release} · ${count} install${count === 1 ? "" : "s"}${record.unpublished ? " · unpublished" : ""}`);
+  const actions = document.createElement("div"); actions.className = "actions";
+  const open = document.createElement("a"); open.href = page.urlTemplate.replace("{id}", record.pageId); open.target = "_blank"; open.rel = "noopener"; open.textContent = "Open";
+  const inspect = document.createElement("a"); inspect.href = `/examples/studio?open=${encodeURIComponent(record.pageId)}`; inspect.textContent = "Inspect source";
+  const update = document.createElement("a"); update.href = "#"; update.textContent = "Update";
+  update.onclick = async event => {
+    event.preventDefault();
+    try {
+      await authorizeAsAuthor(record);
+      const value = prompt("Permanent BOXOS page URL or ID for the new release:");
+      if (!value) return;
+      await publishInvoke({ action: "release", appId: record.appId, pageId: appId(value) });
+      await loadApps(); render(); message("Release published.");
+    } catch (error) { message(error.message); }
+  };
+  const publication = document.createElement("a"); publication.href = "#"; publication.textContent = record.unpublished ? "Republish" : "Unpublish";
+  publication.onclick = async event => {
+    event.preventDefault();
+    try {
+      await authorizeAsAuthor(record);
+      if (!record.unpublished && !confirm(`Unpublish ${record.name}?`)) return;
+      await publishInvoke({ action: record.unpublished ? "republish" : "unpublish", appId: record.appId });
+      await loadApps(); render(); message(record.unpublished ? "App republished." : "App unpublished.");
+    } catch (error) { message(error.message); }
+  };
+  const install = document.createElement("button");
+  const isInstalled = installed.includes(record.appId); install.textContent = isInstalled ? "Uninstall" : "Install";
+  install.onclick = async () => {
+    try {
+      await authorizeInstalls();
+      const result = await installInvoke({ action: isInstalled ? "uninstall" : "install", appId: record.appId });
+      installed = result.installed; installCounts.set(record.appId, result.installs); render();
+    } catch (error) { message(error.message); }
+  };
+  actions.append(install, open, inspect);
+  if (publishAuthorization?.grant?.account === record.authorId || installAuthorization?.grant?.account === record.authorId) actions.append(update, publication);
+  article.append(title, details, actions); return article;
+}
+function render() {
+  $("discover-tab").classList.toggle("active", tab === "discover");
+  $("installed-tab").classList.toggle("active", tab === "installed");
+  $("published-tab").classList.toggle("active", tab === "published");
+  const query = $("search").value.trim().toLowerCase();
+  let shown;
+  if (tab === "installed") shown = records.filter(record => installed.includes(record.appId));
+  else if (tab === "published") shown = records.filter(record => record.authorId === publishAuthorization?.grant?.account);
+  else shown = records.filter(record => !record.unpublished);
+  if (query) shown = shown.filter(record => record.name.toLowerCase().includes(query));
+  $("apps").textContent = "";
+  for (const record of shown) $("apps").append(card(record));
+  if (!shown.length) {
+    const empty = document.createElement("p"); empty.className = "empty";
+    empty.textContent = tab === "installed" ? "You have not installed any apps." : tab === "published" ? "You have not published any apps." : "No apps published yet."; $("apps").append(empty);
+  }
+}
+$("sign-in").onclick = async () => { try { await authorizeInstalls(); render(); } catch (error) { message(error.message); } };
+$("sign-out").onclick = async () => { installAuthorization = null; localStorage.removeItem(installKey); await refreshAccount(); render(); };
+$("show-publish").onclick = () => { $("publish").hidden = false; };
+$("cancel-publish").onclick = () => { $("publish").hidden = true; };
+$("publish").onsubmit = async event => {
+  event.preventDefault();
+  try {
+    await authorizePublishing();
+    const pageId = appId($("app-url").value);
+    await publishInvoke({ action: "publish", appId: pageId, pageId, name: $("app-name").value.trim() });
+    $("publish").reset(); $("publish").hidden = true; await loadApps(); render(); message("App published.");
+  } catch (error) { message(error.message); }
 };
-
-const CAPABILITY = "curate apps";
-const GRANT_TEXT = "Manage your apps on the gallery";
-const AUTH_KEY = "gallery.authorization";
-
-let reducerHash = null;
-let procedureHash = null;
-let profileReducerHash = null;
-let profileProcedureHash = null;
-let authorization = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-let myAccount = authorization?.grant?.account || null;
-let myName = authorization?.grant?.name || null;
-let liked = new Set();
-let collected = new Set();
-let published = new Set();
-let currentTab = "explore";
-let busy = false;
-
-function setMessage(text, isError = false) {
-  $("message").textContent = text;
-  $("message").classList.toggle("error", isError);
-}
-
-async function ensureRegistered() {
-  if (reducerHash && procedureHash) return;
-  reducerHash = await sha256Hex(GALLERY_REDUCER_CODE);
-  const stats = await boxos.stats();
-  const procCode = buildGalleryProcedureCode(reducerHash, stats.identities.reducer);
-  procedureHash = await sha256Hex(procCode);
-  profileReducerHash = await sha256Hex(PROFILE_REDUCER_CODE);
-  const profileProcCode = buildProfileProcedureCode(profileReducerHash, stats.identities.reducer);
-  profileProcedureHash = await sha256Hex(profileProcCode);
-  await boxos.registerReducer(GALLERY_REDUCER_CODE);
-  await boxos.registerProcedure(procCode);
-  await boxos.registerReducer(PROFILE_REDUCER_CODE);
-  await boxos.registerProcedure(profileProcCode);
-}
-
-async function readName(account) {
-  const res = await fetch(`/state/${profileReducerHash}/profile:${encodeURIComponent(account)}`);
-  if (!res.ok) return "";
-  const v = (await res.json()).value;
-  return typeof v === "string" ? v : "";
-}
-
-async function writeMyName() {
-  // Name sync happens server-side: the gallery procedure writes grant.name to
-  // the profile reducer on every mutate. Nothing to do client-side.
-}
-
-// ----- free public-state reads -----
-async function readKey(key) {
-  await ensureRegistered();
-  const res = await fetch(`/state/${reducerHash}/${encodeURIComponent(key)}`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.value;
-}
-const readList = (key) => readKey(key).then((v) => (Array.isArray(v) ? v : []));
-const readApp = (id) => readKey("app:" + id);
-const readCount = (id) => readKey("likes:" + id).then((v) => (typeof v === "number" ? v : 0));
-
-async function loadAccountSets() {
-  if (!myAccount) { liked = new Set(); collected = new Set(); published = new Set(); return; }
-  const [l, c, p] = await Promise.all([
-    readList("likedBy:" + myAccount),
-    readList("collection:" + myAccount),
-    readList("byAuthor:" + myAccount),
-  ]);
-  liked = new Set(l);
-  collected = new Set(c);
-  published = new Set(p);
-}
-
-async function fetchApps(ids) {
-  const apps = await Promise.all(ids.map(readApp));
-  return apps.filter(Boolean);
-}
-
-// ----- writes (via procedure, reusable grant) -----
-async function mutate(op) {
-  if (!authorization) throw new Error("Sign in first");
-  await ensureRegistered();
-  const receipt = await boxos.invoke(procedureHash, { action: "mutate", authorization, op }, { fuel: 1000 });
-  return receipt.ok;
-}
-
-async function signIn() {
-  try {
-    setMessage("Choose an account in the popup…");
-    await ensureRegistered();
-    const auth = await boxos.authorize([CAPABILITY], GRANT_TEXT, reducerHash);
-    authorization = auth;
-    myAccount = auth.grant.account;
-    myName = auth.grant.name;
-    localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
-    setMessage("");
-    updateAuthUi();
-    await loadAccountSets();
-    await renderTab();
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-  }
-}
-
-function signOut() {
-  localStorage.removeItem(AUTH_KEY);
-  authorization = null;
-  myAccount = null;
-  myName = null;
-  liked = new Set(); collected = new Set(); published = new Set();
-  updateAuthUi();
-  renderTab();
-}
-
-// ----- rendering -----
-function card(app, likeCount, authorName) {
-  const el = document.createElement("article");
-  el.className = "card";
-  const isOwn = published.has(app.id);
-  const inCollection = collected.has(app.id);
-  const isLiked = liked.has(app.id);
-
-  const name = document.createElement("h3");
-  const open = document.createElement("a");
-  open.href = app.pageUrl;
-  open.target = "_blank";
-  open.rel = "noopener noreferrer";
-  open.textContent = app.name;
-  name.append(open);
-
-  const desc = document.createElement("p");
-  desc.className = "desc";
-  desc.textContent = app.description || "(no description)";
-
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  const author = document.createElement("span");
-  author.textContent = "by ";
-  if (app.author) {
-    const authorLink = document.createElement("a");
-    authorLink.href = "https://pzzizqwdhoefinsp.pages.boxos.org/?u=" + encodeURIComponent(app.author);
-    authorLink.textContent = authorName || "anonymous";
-    author.append(authorLink);
-  } else {
-    author.textContent += authorName || "anonymous";
-  }
-  const likes = document.createElement("span");
-  likes.textContent = "♥ " + (likeCount || 0);
-  meta.append(author, likes);
-
-  const tags = document.createElement("div");
-  tags.className = "tags";
-  for (const t of (app.tags || [])) {
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = t;
-    tags.append(tag);
-  }
-
-  el.append(name, desc, tags, meta);
-
-  if (myAccount) {
-    const actions = document.createElement("div");
-    actions.className = "actions";
-
-    const likeBtn = document.createElement("button");
-    likeBtn.type = "button";
-    likeBtn.className = "secondary";
-    likeBtn.textContent = isLiked ? "♥ Liked" : "♡ Like";
-    likeBtn.onclick = () => toggleLike(app.id, isLiked);
-    actions.append(likeBtn);
-
-    const colBtn = document.createElement("button");
-    colBtn.type = "button";
-    colBtn.className = "secondary";
-    colBtn.textContent = inCollection ? "✓ In my apps" : "+ Add to my apps";
-    colBtn.onclick = () => toggleCollect(app.id, inCollection);
-    actions.append(colBtn);
-
-    if (isOwn) {
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "danger";
-      del.textContent = "Remove";
-      del.onclick = () => removeApp(app);
-      actions.append(del);
-    }
-    el.append(actions);
-  }
-  return el;
-}
-
-async function renderGrid(apps) {
-  const grid = $("grid");
-  grid.textContent = "";
-  if (!apps.length) {
-    $("empty").hidden = false;
-    return;
-  }
-  $("empty").hidden = true;
-  const counts = await Promise.all(apps.map((a) => readCount(a.id)));
-  const authorNames = await Promise.all(apps.map((a) => a.author ? readName(a.author) : ""));
-  for (let i = 0; i < apps.length; i += 1) grid.append(card(apps[i], counts[i], authorNames[i]));
-}
-
-async function renderTab() {
-  setMessage("");
-  $("grid").textContent = "";
-  $("empty").hidden = true;
-  try {
-    let ids;
-    if (currentTab === "explore") ids = await readList("recent");
-    else if (currentTab === "myapps") ids = myAccount ? await readList("collection:" + myAccount) : [];
-    else ids = myAccount ? await readList("byAuthor:" + myAccount) : [];
-    await renderGrid(await fetchApps(ids));
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-  }
-}
-
-async function toggleLike(appId, isLiked) {
-  if (busy) return; busy = true;
-  try {
-    await mutate({ type: isLiked ? "unlike" : "like", appId });
-    if (isLiked) liked.delete(appId); else liked.add(appId);
-    await renderTab();
-  } catch (e) { setMessage(e.message, true); }
-  finally { busy = false; }
-}
-
-async function toggleCollect(appId, inCollection) {
-  if (busy) return; busy = true;
-  try {
-    await mutate({ type: inCollection ? "uncollect" : "collect", appId });
-    if (inCollection) collected.delete(appId); else collected.add(appId);
-    await renderTab();
-  } catch (e) { setMessage(e.message, true); }
-  finally { busy = false; }
-}
-
-async function removeApp(app) {
-  if (!confirm("Remove '" + app.name + "' from the gallery?")) return;
-  if (busy) return; busy = true;
-  try {
-    await mutate({ type: "remove", appId: app.id });
-    published.delete(app.id);
-    await renderTab();
-  } catch (e) { setMessage(e.message, true); }
-  finally { busy = false; }
-}
-
-async function submitApp(e) {
-  e.preventDefault();
-  if (busy || !authorization) return;
-  busy = true;
-  try {
-    const f = new FormData($("submit-form"));
-    const input = String(f.get("pageUrl") || "").trim();
-    const name = String(f.get("name") || "").trim();
-    const description = String(f.get("description") || "").trim();
-    const tagsRaw = String(f.get("tags") || "").trim();
-    const tags = tagsRaw ? tagsRaw.split(",").map((t) => t.trim()).filter(Boolean) : [];
-    // Accept either a full link (https://abcd1234.pages.boxos.org/)
-    // or a bare page hash (abcd1234). Derive both id and pageUrl from it.
-    let id, pageUrl;
-    const m = input.match(/^https?:\/\/([a-z0-9]+)\.pages\./i);
-    if (m) { id = m[1]; pageUrl = input; }
-    else if (/^[a-z0-9]+$/i.test(input)) { id = input; pageUrl = `https://${input}.pages.boxos.org/`; }
-    else throw new Error("Enter a page hash or a full pages.boxos.org URL");
-    await mutate({ type: "submit", app: { id, name, description, pageUrl, tags } });
-    published.add(id);
-    $("submit-form").reset();
-    setMessage("Published '" + name + "' to the gallery.");
-    setTab("published");
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-  } finally {
-    busy = false;
-  }
-}
-
-function setTab(tab) {
-  currentTab = tab;
-  for (const t of ["explore", "myapps", "published"]) {
-    $("tab-" + t).classList.toggle("active", t === tab);
-  }
-  const signedIn = Boolean(authorization);
-  $("submit-panel").hidden = tab !== "published" || !signedIn;
-  renderTab();
-}
-
-function updateAuthUi() {
-  const signedIn = Boolean(authorization);
-  $("signed-out").hidden = signedIn;
-  $("signed-in").hidden = !signedIn;
-  $("account-name").textContent = myName || "";
-  $("tab-myapps").hidden = !signedIn;
-  $("tab-published").hidden = !signedIn;
-}
-
-// ----- wire up -----
-$("sign-in").addEventListener("click", signIn);
-$("sign-out").addEventListener("click", signOut);
-$("tab-explore").addEventListener("click", () => setTab("explore"));
-$("tab-myapps").addEventListener("click", () => setTab("myapps"));
-$("tab-published").addEventListener("click", () => setTab("published"));
-$("submit-form").addEventListener("submit", submitApp);
-
-updateAuthUi();
-await loadAccountSets();
-setTab("explore");
-
+$("search").oninput = render;
+$("discover-tab").onclick = () => { tab = "discover"; render(); };
+$("installed-tab").onclick = async () => {
+  try { await authorizeInstalls(); tab = "installed"; render(); } catch (error) { message(error.message); }
+};
+$("published-tab").onclick = async () => {
+  try { await authorizePublishing(); tab = "published"; render(); } catch (error) { message(error.message); }
+};
+await refreshAccount(); await loadApps(); render();
 </script>
-</body>
-</html>

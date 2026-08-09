@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOXOS Todo</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f5f5f7}*{box-sizing:border-box}main{width:min(34rem,calc(100% - 2rem));margin:8vh auto}h1{font-size:2.5rem;margin:0}.muted,#message{color:#707078}.bar,li{display:flex;gap:.6rem}input{flex:1;padding:.75rem;border:1px solid #ccc;border-radius:.5rem;font:inherit}button{padding:.7rem .9rem;border:0;border-radius:.5rem;background:#4f46d8;color:white;font-weight:600;cursor:pointer}button.secondary{background:#e7e7ec;color:#333}ul{list-style:none;padding:0;display:grid;gap:.55rem}li{align-items:center;padding:.8rem;background:white;border:1px solid #ddd;border-radius:.6rem}li span{flex:1;overflow-wrap:anywhere}li.done span{text-decoration:line-through;color:#888}[hidden]{display:none!important}
+</style>
+<main>
+  <h1>Todo</h1>
+  <p class="muted">A private list owned by your signed BOXOS account.</p>
+  <button id="sign-in">Choose account</button>
+  <section id="app" hidden>
+    <p><span id="account"></span> · <button id="sign-out" class="secondary">Sign out</button></p>
+    <form id="form" class="bar"><input id="text" maxlength="200" required placeholder="What needs doing?"><button>Add</button></form>
+    <ul id="todos"></ul>
+  </section>
+  <p id="message"></p>
+</main>
+<script type="module">
+import { BoxOSClient } from "/client.js";
+const boxos = new BoxOSClient();
+const stats = await boxos.stats();
+const todo = stats.applications.todo;
+const profileReducer = stats.profiles.reducer;
+const key = "todo.authorization";
+let authorization;
+try { authorization = JSON.parse(localStorage.getItem(key) || "null"); }
+catch { localStorage.removeItem(key); }
+const $ = id => document.getElementById(id);
+
+function message(text) { $("message").textContent = text; }
+async function invoke(input) {
+  const receipt = await boxos.invoke(todo.reducer, input, { authorization });
+  return receipt.ok;
+}
+async function change(input) {
+  try { render(await invoke(input)); }
+  catch (error) { message(error.message); }
+}
+function render(items) {
+  $("todos").textContent = "";
+  for (const item of items) {
+    const row = document.createElement("li"); row.className = item.done ? "done" : "";
+    const toggle = document.createElement("button"); toggle.className = "secondary"; toggle.textContent = item.done ? "Undo" : "Done";
+    toggle.onclick = () => change({ action: "toggle", id: item.id });
+    const text = document.createElement("span"); text.textContent = item.text;
+    const remove = document.createElement("button"); remove.className = "secondary"; remove.textContent = "Delete";
+    remove.onclick = () => change({ action: "remove", id: item.id });
+    row.append(toggle, text, remove); $("todos").append(row);
+  }
+  if (!items.length) message("Nothing to do."); else message("");
+}
+async function open() {
+  const signedIn = Boolean(authorization);
+  $("sign-in").hidden = signedIn; $("app").hidden = !signedIn;
+  if (!signedIn) return message("Choose an account to open your list.");
+  try {
+    const profile = await boxos.publicState(profileReducer, `profile:${authorization.grant.account}`);
+    $("account").textContent = profile.value.name;
+  } catch { $("account").textContent = authorization.grant.account.slice(0, 12) + "…"; }
+  try { render(await invoke({ action: "list" })); }
+  catch (error) { authorization = null; localStorage.removeItem(key); await open(); message(error.message); }
+}
+$("sign-in").onclick = async () => {
+  try {
+    authorization = await boxos.authorize(["todo:manage"], "View and change your private todos", todo.reducer);
+    localStorage.setItem(key, JSON.stringify(authorization)); await open();
+  } catch (error) { message(error.message); }
+};
+$("sign-out").onclick = async () => { authorization = null; localStorage.removeItem(key); await open(); };
+$("form").onsubmit = async event => {
+  event.preventDefault(); const text = $("text").value.trim(); if (!text) return;
+  try { render(await invoke({ action: "add", id: crypto.randomUUID(), text })); $("text").value = ""; }
+  catch (error) { message(error.message); }
+};
+await open();
+</script>

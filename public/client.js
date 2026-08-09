@@ -18,16 +18,19 @@ export class BoxOSClient {
     return this.request("/stats", {}, false);
   }
 
-  async authorize(capabilities, text = "", resource = "") {
-    if (!Array.isArray(capabilities) || capabilities.some(value => typeof value !== "string")) {
-      throw new TypeError("Capabilities must be an array of strings");
+  async authorize(capabilities, purpose = "", resource = "") {
+    if (!Array.isArray(capabilities) || capabilities.length < 1 || capabilities.length > 20
+      || capabilities.some(value => typeof value !== "string" || !value || value.length > 200)) {
+      throw new TypeError("Capabilities must be one to twenty non-empty strings");
     }
+    if (typeof purpose !== "string" || purpose.length > 500) throw new TypeError("Invalid authorization purpose");
+    if (!/^[a-f0-9]{64}$/.test(resource)) throw new TypeError("Authorization resource must be a reducer hash");
     const expectedCapabilities = [...new Set(capabilities)].sort();
     const popup = globalThis.open(`${this.baseUrl}/examples/accounts`, "boxos-accounts", "popup,width=560,height=720");
     if (!popup) throw new BoxOSError("The account popup was blocked");
     const requestId = crypto.randomUUID();
-    const nonce = crypto.randomUUID();
-    const request = { boxos: "authorize", requestId, nonce, capabilities, text, resource };
+    const grantId = crypto.randomUUID();
+    const request = { boxos: "authorize", requestId, grantId, capabilities, purpose, resource };
     return await new Promise((resolve, reject) => {
       const send = setInterval(() => { if (!popup.closed) popup.postMessage(request, "*"); }, 300);
       const timeout = setTimeout(() => finish(new BoxOSError("Authorization timed out")), 5 * 60 * 1000);
@@ -36,8 +39,9 @@ export class BoxOSClient {
         if (event.data.boxos === "authorization-denied") return finish(new BoxOSError("Authorization denied"));
         if (event.data.boxos !== "authorization") return;
         const authorization = event.data;
-        if (authorization.grant?.audience !== globalThis.location.origin || authorization.grant?.nonce !== nonce
-          || authorization.grant?.text !== text || authorization.grant?.resource !== resource
+        if (authorization.grant?.version !== 2 || authorization.grant?.audience !== globalThis.location.origin
+          || authorization.grant?.grantId !== grantId || authorization.grant?.purpose !== purpose
+          || authorization.grant?.resource !== resource || typeof authorization.publicKey !== "string"
           || JSON.stringify(authorization.grant?.capabilities) !== JSON.stringify(expectedCapabilities)) {
           return finish(new BoxOSError("Invalid authorization response"));
         }
@@ -114,7 +118,7 @@ export class BoxOSClient {
   invoke(hash, input = null, options = {}) {
     return this.request(`/invoke/${encodeURIComponent(hash)}`, {
       method: "POST",
-      body: JSON.stringify({ input, fuel: options.fuel || 1000 }),
+      body: JSON.stringify({ input, fuel: options.fuel || 1000, authorization: options.authorization }),
     });
   }
 

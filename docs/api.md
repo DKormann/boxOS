@@ -57,7 +57,7 @@ POST /invoke/<code-hash>
 Content-Type: application/json
 Authorization: Bearer ...
 
-{"input":{"message":"hello"},"fuel":1000}
+{"input":{"message":"hello"},"fuel":1000,"authorization":{"grant":{},"message":"...","signature":"...","publicKey":"..."}}
 ```
 
 Alternatively post `{ hash, input, fuel }` to `/invoke`. Input and results must be JSON. Fuel must be an integer from 1 through 10,000.
@@ -91,7 +91,8 @@ return count;
 
 Available reducer capabilities:
 
-- `ctx.caller`: SHA-256 user ID of the original caller.
+- `ctx.caller`: SHA-256 fuel-account ID of the original caller.
+- `ctx.authorization`: a runtime-verified signed account grant when its resource is this reducer; otherwise `undefined`.
 - `ctx.sha256(string)`: full hexadecimal SHA-256 hash.
 - `ctx.pageHash(string)`: 16-character page content ID.
 - `ctx.state.private.get/has/set/delete(key, value)`.
@@ -126,7 +127,7 @@ Available procedure capabilities:
 - `ctx.publish(kind, code)`: validates and permanently registers source, charged to the original caller.
 - `ctx.verify(publicKey, message, signature)`: verifies an Ed25519 signature over arbitrary UTF-8 text.
 
-All reducer calls in one transaction share a snapshot and commit atomically. Reducers called by a procedure see the procedure's original caller. Publication is permanent and is not rolled back if the publishing procedure later fails.
+All reducer calls in one transaction share a snapshot and commit atomically. Reducers called by a procedure see the procedure's original caller and any runtime-verified authorization whose resource matches that reducer. Publication is permanent and is not rolled back if the publishing procedure later fails.
 
 BOXOS ships immutable validation and publication procedures. Their hashes are returned under `procedures` by `GET /stats`, allowing applications such as Studio to validate and publish code entirely through normal procedure invocation.
 
@@ -143,7 +144,7 @@ Invocation fuel is reserved before a worker starts. Successful execution refunds
 
 Creating state charges for its key and serialized JSON value. Replacing state repays the old entry and charges the new entry. Deleting state always repays the deleting caller. Failed and rolled-back transactions do not receive storage repayments.
 
-`GET /stats` also exposes the built-in identity reducer and procedure hashes. Signed application accounts, popup authorization, and arbitrary capability grants are documented at `/docs/accounts`.
+`GET /stats` also exposes the built-in identity functions and application reducers for profiles, Todo, Friends, app publishing, and app installations. Signed application accounts and runtime-verified capability grants are documented at `/docs/accounts`.
 
 Current prices and limits are available from:
 
@@ -200,12 +201,12 @@ Main methods:
 
 - `account()` and `balance()`
 - `stats()`
-- `authorize(capabilities, text)` and `verifyAuthorization(authorization)`
+- `authorize(capabilities, purpose, resource)` and `verifyAuthorization(authorization)`
 - `validateCode(kind, code)` and `publishCode(kind, code)`
 - `registerReducer(code)` and `registerProcedure(code)`
 - `inspect(hash)`
 - `publicState(reducerHash, key)`
-- `invoke(hash, input, { fuel })`
+- `invoke(hash, input, { fuel, authorization })`
 - `runReducer(code, input, options)`
 - `runProcedure(code, input, options)`
 - `pageInfo()` and `publishPage(html, options)`

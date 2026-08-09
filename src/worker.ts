@@ -2,7 +2,24 @@ import { pageHash, procHash, sha256 } from "./hash.ts";
 import { analyzeProcCode, validateProcCode } from "./parser.ts";
 import type { CodeKind, StateSnapshot, StoredCode } from "./storage.ts";
 
-type Start = { type: "start"; hash: string; kind: CodeKind; code: string; input: unknown; caller: string };
+type Start = {
+  type: "start";
+  hash: string;
+  kind: CodeKind;
+  code: string;
+  input: unknown;
+  caller: string;
+  audience: string;
+  authorization?: unknown;
+};
+type Authorization = Readonly<{
+  account: string;
+  audience: string;
+  resource: string;
+  capabilities: readonly string[];
+  purpose: string;
+  grantId: string;
+}>;
 type TransactionData = { type: "transaction-data"; id: number; reducers: StoredCode[]; state: StateSnapshot };
 type CommitResult = { type: "commit-result"; id: number; ok: boolean; error?: string };
 type PublishResult = { type: "publish-result"; id: number; ok: boolean; result?: unknown; error?: string };
@@ -22,6 +39,7 @@ const waitingCommit = new Map<number, Transaction>();
 const waitingPublish = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 let transactionOpen = false;
 let activeCaller = "";
+let activeAuthorization: Authorization | undefined;
 
 function message(value: unknown): void {
   postMessage(value);
@@ -56,8 +74,10 @@ function reducerContext(hash: string, state: StateSnapshot, caller: string) {
     set(value: unknown, next: unknown) { values[key(value)] = cloneJson(next, "State value"); },
     delete(value: unknown) { delete values[key(value)]; },
   });
+  const authorization = activeAuthorization?.resource === hash ? activeAuthorization : undefined;
   return Object.freeze({
     caller,
+    authorization,
     sha256(value: unknown) {
       if (typeof value !== "string") throw new TypeError("sha256 expects a string");
       return sha256(value);
@@ -158,6 +178,58 @@ async function verifySignature(publicKey: unknown, messageValue: unknown, signat
   return crypto.subtle.verify("Ed25519", key, signature, new TextEncoder().encode(messageValue));
 }
 
+function record(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${name} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new TypeError("Authorization must be JSON serializable");
+  return encoded;
+}
+
+async function authenticate(value: unknown, audience: string): Promise<Authorization | undefined> {
+  if (value == null) return undefined;
+  const envelope = record(value, "Authorization");
+  const grant = record(envelope.grant, "Authorization grant");
+  if (typeof envelope.publicKey !== "string" || typeof envelope.message !== "string" || typeof envelope.signature !== "string") {
+    throw new TypeError("Invalid authorization envelope");
+  }
+  if (envelope.message !== canonicalJson(grant)) throw new TypeError("Authorization message is not canonical");
+  if (grant.version !== 2 || grant.domain !== "boxos-capability" || typeof grant.account !== "string"
+    || typeof grant.audience !== "string" || typeof grant.resource !== "string"
+    || typeof grant.purpose !== "string" || typeof grant.grantId !== "string" || !Array.isArray(grant.capabilities)) {
+    throw new TypeError("Invalid capability grant");
+  }
+  if (grant.account !== sha256(envelope.publicKey) || grant.audience !== audience || !/^[a-f0-9]{64}$/.test(grant.resource)
+    || grant.purpose.length > 500 || grant.grantId.length < 1 || grant.grantId.length > 200
+    || grant.capabilities.length < 1 || grant.capabilities.length > 20) {
+    throw new TypeError("Invalid capability grant");
+  }
+  const capabilities: string[] = [];
+  for (const capability of grant.capabilities) {
+    if (typeof capability !== "string" || capability.length < 1 || capability.length > 200) throw new TypeError("Invalid capability grant");
+    capabilities.push(capability);
+  }
+  const normalized = [...new Set(capabilities)].sort();
+  if (JSON.stringify(capabilities) !== JSON.stringify(normalized)) throw new TypeError("Capabilities must be sorted and unique");
+  if (!await verifySignature(envelope.publicKey, envelope.message, envelope.signature)) throw new TypeError("Invalid authorization signature");
+  return Object.freeze({
+    account: grant.account,
+    audience: grant.audience,
+    resource: grant.resource,
+    capabilities: Object.freeze(capabilities),
+    purpose: grant.purpose,
+    grantId: grant.grantId,
+  });
+}
+
 async function safeFetch(resource: unknown, options?: unknown): Promise<unknown> {
   if (typeof resource !== "string") throw new TypeError("fetch URL must be a string");
   const response = await fetch(resource, cloneJson(options ?? {}, "fetch options") as RequestInit);
@@ -169,12 +241,14 @@ async function safeFetch(resource: unknown, options?: unknown): Promise<unknown>
 async function run(start: Start): Promise<void> {
   try {
     activeCaller = start.caller;
+    activeAuthorization = await authenticate(start.authorization, start.audience);
     let result: unknown;
     if (start.kind === "reducer") {
       result = await transaction((tx: { invoke(hash: unknown, input: unknown): unknown }) => tx.invoke(start.hash, start.input));
     } else {
       const ctx = Object.freeze({
         caller: start.caller,
+        authorization: activeAuthorization,
         transaction,
         fetch: safeFetch,
         validate: validateCode,
