@@ -29,6 +29,7 @@ import {
   type StateSnapshot,
 } from "./storage.ts";
 import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "./userspace/todo.ts";
+import { WorkerPool, WorkerPoolBusyError } from "./worker-pool.ts";
 
 const HOST = Bun.env.HOST ?? "127.0.0.1";
 const PORT = Number(Bun.env.PORT ?? 4000);
@@ -39,7 +40,14 @@ const MAX_CODE_BYTES = 128 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_STATE_BYTES = 4 * 1024 * 1024;
 const MAX_STATE_VALUE_BYTES = 256 * 1024;
+const WORKER_POOL_SIZE = Number(Bun.env.BOXOS_WORKER_POOL_SIZE ?? 2);
+const WORKER_QUEUE_LIMIT = Number(Bun.env.BOXOS_WORKER_QUEUE_LIMIT ?? 32);
 const storage = new Storage(DATABASE);
+const workerPool = new WorkerPool<Worker>(
+  WORKER_POOL_SIZE,
+  WORKER_QUEUE_LIMIT,
+  () => new Worker(new URL("./worker.ts", import.meta.url), { smol: true }),
+);
 
 // Bundled userspace is installed for convenience, but is not exposed as core API metadata.
 const reducerNames = ["ctx", "input", "JSON", "Math", "String"];
@@ -283,36 +291,46 @@ async function invoke(
   const code = storage.get(hash);
   if (!code) return failure(`Unknown code: ${hash}`, 404);
   try { storage.reserveFuel(caller, fuel); } catch (error) { return failure(error); }
-  const started = performance.now();
-  let worker: Worker;
+  let workerLease;
   try {
-    worker = new Worker(new URL("./worker.ts", import.meta.url), { smol: true });
+    workerLease = await workerPool.acquire();
   } catch (error) {
-    return json({ error: String(error), fuel: { reserved: fuel, used: fuel, refunded: 0 }, balance: storage.balance(caller) }, 500);
+    const balance = storage.creditFuel(caller, fuel);
+    const status = error instanceof WorkerPoolBusyError ? 503 : 500;
+    return json({
+      error: error instanceof Error ? error.message : String(error),
+      fuel: { reserved: fuel, used: 0, refunded: fuel },
+      balance,
+    }, status);
   }
+  const worker = workerLease.worker;
+  const started = performance.now();
   const leases = new Map<number, Lease>();
   let storageCharged = 0;
   let storageRepaid = 0;
 
   return await new Promise<Response>(resolve => {
     let done = false;
-    const finish = (response: Response): void => {
+    const finish = (response: Response, reusable: boolean): void => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      worker.terminate();
+      worker.onmessage = null;
+      worker.onerror = null;
       for (const lease of leases.values()) lease.release();
       leases.clear();
+      if (reusable) workerLease.release();
+      else workerLease.discard();
       resolve(response);
     };
     const failedFuel = () => ({ reserved: fuel, used: fuel, refunded: 0 });
     const timer = setTimeout(() => finish(json({
       error: "Fuel exhausted", fuel: failedFuel(), balance: storage.balance(caller),
-    }, 408)), fuel);
+    }, 408), false), fuel);
 
     worker.onerror = event => finish(json({
       error: `Worker failed: ${event.message}`, fuel: failedFuel(), balance: storage.balance(caller),
-    }, 500));
+    }, 500), false);
     worker.onmessage = event => {
       const message = event.data as WorkerRequest;
       if (message.type === "transaction-start") {
@@ -361,9 +379,9 @@ async function invoke(
           ok: message.result,
           fuel: { reserved: fuel, used, refunded, storageCharged, storageRepaid },
           balance,
-        }));
+        }), true);
       } else if (message.type === "error") {
-        finish(json({ error: message.error, fuel: failedFuel(), balance: storage.balance(caller) }, 422));
+        finish(json({ error: message.error, fuel: failedFuel(), balance: storage.balance(caller) }, 422), true);
       }
     };
     worker.postMessage({
