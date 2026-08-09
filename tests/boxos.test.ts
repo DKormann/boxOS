@@ -15,6 +15,7 @@ import { PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "../src/page.ts";
 import { analyzeProcCode, isValidProcCode, validateProcCode } from "../src/parser.ts";
 import { PROFILE_REDUCER_CODE, PROFILE_REDUCER_HASH } from "../src/profile.ts";
 import { INITIAL_USER_FUEL, Storage } from "../src/storage.ts";
+import { STARTUP_REDUCER_CODE, STARTUP_REDUCER_HASH } from "../src/startup.ts";
 import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "../src/todo.ts";
 import {
   PUBLISH_PROCEDURE_CODE,
@@ -43,11 +44,13 @@ test("signed-account applications have stable content addresses", () => {
   expect(APP_PUBLISHER_REDUCER_HASH).toBe(procHash(APP_PUBLISHER_REDUCER_CODE));
   expect(FRIENDS_REDUCER_HASH).toBe(procHash(FRIENDS_REDUCER_CODE));
   expect(PROFILE_REDUCER_HASH).toBe(procHash(PROFILE_REDUCER_CODE));
+  expect(STARTUP_REDUCER_HASH).toBe(procHash(STARTUP_REDUCER_CODE));
   expect(TODO_REDUCER_HASH).toBe(procHash(TODO_REDUCER_CODE));
   validateProcCode(APP_INSTALLS_REDUCER_CODE, ["ctx", "input", "JSON", "Math", "String"]);
   validateProcCode(APP_PUBLISHER_REDUCER_CODE, ["ctx", "input", "JSON", "Math", "String"]);
   validateProcCode(FRIENDS_REDUCER_CODE, ["ctx", "input", "JSON", "Math", "String"]);
   validateProcCode(PROFILE_REDUCER_CODE, ["ctx", "input", "JSON", "Math", "String"]);
+  validateProcCode(STARTUP_REDUCER_CODE, ["ctx", "input", "JSON", "Math", "String"]);
   validateProcCode(TODO_REDUCER_CODE, ["ctx", "input", "JSON", "Math", "String"]);
 });
 
@@ -122,12 +125,19 @@ test("signed capabilities cannot be forged as reducer input", async () => {
     const stats = await fetch(`${origin}/stats`).then(response => response.json()) as {
       identities: { procedure: string };
       profiles: { reducer: string };
+      startup: { reducer: string; root: string; tryPage: string };
       applications: {
         explorer: { installs: string; publisher: string };
         friends: { reducer: string };
         todo: { reducer: string };
       };
     };
+    const homepage = await fetch(origin).then(response => response.text());
+    const about = await fetch(`${origin}/about`).then(response => response.text());
+    expect(homepage).toBe(about);
+    expect(homepage).toContain("Try BOXOS");
+    const tryBoxos = await fetch(`${origin}/start/try`, { redirect: "manual" });
+    expect(tryBoxos.headers.get("location")).toContain(stats.startup.tryPage);
     const officialApps = await fetch(`${origin}/state/${stats.applications.explorer.publisher}/publish:counter`)
       .then(response => response.json()) as { value: number };
     expect(officialApps.value > 0).toBe(true);
@@ -208,6 +218,27 @@ test("signed capabilities cannot be forged as reducer input", async () => {
     const profile = await profileResponse.json() as { ok: { account: string; name: string } };
     expect(profile.ok.account).toBe(registered.ok);
     expect(profile.ok.name).toBe("Alice");
+
+    const startupAuthorization = await signed(stats.startup.reducer, ["startup:manage"], "Manage startup");
+    const emptyStartup = await fetch(`${origin}/invoke/${stats.startup.reducer}`, {
+      method: "POST", headers,
+      body: JSON.stringify({ input: { action: "get" }, authorization: startupAuthorization, fuel: 1000 }),
+    }).then(response => response.json()) as { ok: null };
+    expect(emptyStartup.ok).toBe(null);
+    const startupSet = await fetch(`${origin}/invoke/${stats.startup.reducer}`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        input: { action: "set", pageId: stats.startup.tryPage, account: "0".repeat(64) },
+        authorization: startupAuthorization,
+        fuel: 1000,
+      }),
+    });
+    expect(startupSet.status).toBe(200);
+    const startupGet = await fetch(`${origin}/invoke/${stats.startup.reducer}`, {
+      method: "POST", headers,
+      body: JSON.stringify({ input: { action: "get" }, authorization: startupAuthorization, fuel: 1000 }),
+    }).then(response => response.json()) as { ok: string };
+    expect(startupGet.ok).toBe(stats.startup.tryPage);
 
     const friendTarget = "f".repeat(64);
     const friendsGrant = {

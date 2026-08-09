@@ -144,7 +144,7 @@ Invocation fuel is reserved before a worker starts. Successful execution refunds
 
 Creating state charges for its key and serialized JSON value. Replacing state repays the old entry and charges the new entry. Deleting state always repays the deleting caller. Failed and rolled-back transactions do not receive storage repayments.
 
-`GET /stats` also exposes the built-in identity functions and application reducers for profiles, Todo, Friends, app publishing, and app installations. Signed application accounts and runtime-verified capability grants are documented at `/docs/accounts`.
+`GET /stats` also exposes the built-in identity functions and application reducers for profiles, startup pages, Todo, Friends, app publishing, and app installations. Signed application accounts and runtime-verified capability grants are documented at `/docs/accounts`.
 
 Current prices and limits are available from:
 
@@ -202,6 +202,7 @@ Main methods:
 - `account()` and `balance()`
 - `stats()`
 - `authorize(capabilities, purpose, resource)` and `verifyAuthorization(authorization)`
+- `startupCandidateUrl(pageId)` and `offerAsStartupPage(pageId)`
 - `validateCode(kind, code)` and `publishCode(kind, code)`
 - `registerReducer(code)` and `registerProcedure(code)`
 - `inspect(hash)`
@@ -215,7 +216,10 @@ By default the client creates a bearer identity in the current browser origin's 
 
 ## Other routes
 
-- `GET /`: project pitch.
+- `GET /`: project pitch, or the signed account's startup page after browser login.
+- `GET /about`: always show the ordinary stored pitch page.
+- `GET /start?candidate=<page-id>`: confirm an immutable startup page.
+- `GET /start/try`: open the official App Explorer without changing startup state.
 - `GET /docs`: this document.
 - `GET /proposal`: concise architecture whitepaper.
 - `GET /examples`: installed example pages.

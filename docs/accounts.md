@@ -87,6 +87,18 @@ Names are not unique. `set` and `delete` require a grant for the profile reducer
 
 `/examples/profile?account=<account-id>` displays a linkable public profile. The same page lets an account owner edit or delete their profile.
 
+## Startup pages
+
+The built-in startup reducer stores one private immutable page ID per signed account. The root `boxos.org` page may request a durable `startup:manage` grant and retain it in root-origin localStorage.
+
+On later visits the root uses that authorization to read the canonical setting and redirect. `/about` always shows the pitch instead. An immutable app can propose itself by navigating to:
+
+```text
+https://boxos.org/start?candidate=<its-page-id>
+```
+
+The trusted root page validates the page and asks for confirmation before changing the setting. Startup IDs are exact immutable pages and do not follow App Explorer releases.
+
 ## Deployment identity
 
 On first startup BOXOS generates a deployment identity and saves its recovery key beside the database as `<database>.system-key` with owner-only permissions. Keep this file secret and persist it with the database. `BOXOS_SYSTEM_KEY_PATH` can select another path, or `BOXOS_SYSTEM_RECOVERY_KEY` can provide a dedicated `boxos1.<private-key>.<public-key>` value directly.

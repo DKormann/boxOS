@@ -59,6 +59,17 @@ export class BoxOSClient {
     });
   }
 
+  async startupCandidateUrl(pageId = globalThis.location?.hostname?.split(".")[0]) {
+    if (!/^[a-z2-7]{16}$/.test(pageId || "")) throw new TypeError("A startup page ID is required");
+    const stats = await this.stats();
+    return `${stats.startup.root}/start?candidate=${encodeURIComponent(pageId)}`;
+  }
+
+  async offerAsStartupPage(pageId) {
+    const url = await this.startupCandidateUrl(pageId);
+    globalThis.location.assign(url);
+  }
+
   async verifyAuthorization(authorization, options = {}) {
     if (!authorization || authorization.message !== canonicalJson(authorization.grant)) {
       throw new TypeError("Invalid authorization");

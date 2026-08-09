@@ -19,6 +19,7 @@ import {
   VALIDATE_PROCEDURE_CODE,
   VALIDATE_PROCEDURE_HASH,
 } from "./system-procedures.ts";
+import { STARTUP_REDUCER_CODE, STARTUP_REDUCER_HASH } from "./startup.ts";
 import {
   INITIAL_USER_FUEL,
   InsufficientFuelError,
@@ -48,6 +49,7 @@ validateProcCode(FRIENDS_REDUCER_CODE, reducerNames);
 validateProcCode(IDENTITY_REDUCER_CODE, reducerNames);
 validateProcCode(IDENTITY_PROCEDURE_CODE, reducerNames, true);
 validateProcCode(PROFILE_REDUCER_CODE, reducerNames);
+validateProcCode(STARTUP_REDUCER_CODE, reducerNames);
 validateProcCode(TODO_REDUCER_CODE, reducerNames);
 validateProcCode(VALIDATE_PROCEDURE_CODE, reducerNames, true);
 validateProcCode(PUBLISH_PROCEDURE_CODE, reducerNames, true);
@@ -59,6 +61,7 @@ storage.putSystemCode(FRIENDS_REDUCER_HASH, "reducer", FRIENDS_REDUCER_CODE);
 storage.putSystemCode(IDENTITY_REDUCER_HASH, "reducer", IDENTITY_REDUCER_CODE);
 storage.putSystemCode(IDENTITY_PROCEDURE_HASH, "procedure", IDENTITY_PROCEDURE_CODE);
 storage.putSystemCode(PROFILE_REDUCER_HASH, "reducer", PROFILE_REDUCER_CODE);
+storage.putSystemCode(STARTUP_REDUCER_HASH, "reducer", STARTUP_REDUCER_CODE);
 storage.putSystemCode(TODO_REDUCER_HASH, "reducer", TODO_REDUCER_CODE);
 storage.putSystemCode(VALIDATE_PROCEDURE_HASH, "procedure", VALIDATE_PROCEDURE_CODE);
 storage.putSystemCode(PUBLISH_PROCEDURE_HASH, "procedure", PUBLISH_PROCEDURE_CODE);
@@ -71,14 +74,19 @@ const examples = await Promise.all((await readdir(examplesDirectory)).filter(nam
   const id = pageHash(html);
   const name = file.slice(0, -5);
   storage.putSystemPublicValue(PAGE_REDUCER_HASH, id, html);
-  return { name, file, id };
+  return { name, file, id, html };
 }));
+
+const aboutPage = examples.find(example => example.name === "about");
+if (!aboutPage) throw new Error("examples/about.html is required");
+const explorerPage = examples.find(example => example.name === "app-explorer");
+if (!explorerPage) throw new Error("examples/app-explorer.html is required");
 
 const proposalText = await Bun.file(new URL("../docs/proposal.md", import.meta.url)).text();
 const docsText = await Bun.file(new URL("../docs/api.md", import.meta.url)).text();
 const accountsText = await Bun.file(new URL("../docs/accounts.md", import.meta.url)).text();
 const clientJavaScript = await Bun.file(new URL("../public/client.js", import.meta.url)).text();
-const pitchHtml = await Bun.file(new URL("../public/index.html", import.meta.url)).text();
+const pitchHtml = aboutPage.html;
 const docsHtml = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -210,6 +218,14 @@ function pageUrlTemplate(request: Request, url: URL, pageId?: string): string {
   const scheme = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1);
   const baseHost = Bun.env.PAGE_BASE_DOMAIN ?? (pageId ? url.host.slice(pageId.length + 1) : url.host);
   return `${scheme}://{id}.${baseHost}/`;
+}
+
+function rootUrl(request: Request, url: URL, pageId?: string): string {
+  if (Bun.env.BOXOS_ROOT_URL) return Bun.env.BOXOS_ROOT_URL.replace(/\/$/, "");
+  const scheme = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1);
+  let host = pageId ? url.host.slice(pageId.length + 1) : url.host;
+  if (host.startsWith("pages.")) host = host.slice(6);
+  return `${scheme}://${host}`;
 }
 
 function servePage(request: Request, url: URL, pageId: string): Response {
@@ -450,10 +466,18 @@ Bun.serve({
     if (pageId && url.pathname === "/") return servePage(request, url, pageId);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/health") return new Response("OK");
-    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/") {
+    if ((request.method === "GET" || request.method === "HEAD") && ["/", "/about", "/start"].includes(url.pathname)) {
       return new Response(request.method === "HEAD" ? null : pitchHtml, {
-        headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "text/html; charset=utf-8",
+          "x-content-type-options": "nosniff",
+        },
       });
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/start/try") {
+      const target = pageUrlTemplate(request, url, pageId).replace("{id}", explorerPage.id);
+      return Response.redirect(target, 302);
     }
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/examples") {
       const template = pageUrlTemplate(request, url, pageId);
@@ -527,6 +551,11 @@ Bun.serve({
         procedures: { validate: VALIDATE_PROCEDURE_HASH, publish: PUBLISH_PROCEDURE_HASH },
         identities: { reducer: IDENTITY_REDUCER_HASH, procedure: IDENTITY_PROCEDURE_HASH },
         profiles: { reducer: PROFILE_REDUCER_HASH },
+        startup: {
+          reducer: STARTUP_REDUCER_HASH,
+          root: rootUrl(request, url, pageId),
+          tryPage: explorerPage.id,
+        },
         applications: {
           explorer: { installs: APP_INSTALLS_REDUCER_HASH, publisher: APP_PUBLISHER_REDUCER_HASH },
           friends: { reducer: FRIENDS_REDUCER_HASH },
