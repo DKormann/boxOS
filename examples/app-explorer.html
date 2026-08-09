@@ -21,10 +21,9 @@
 <script type="module">
 import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
-const stats = await boxos.stats();
-const publisher = stats.applications.explorer.publisher;
-const installsReducer = stats.applications.explorer.installs;
-const profileReducer = stats.profiles.reducer;
+const publisher = "c116549612c4c34be8746246e859f756857e8911176e59556ca03929a59b6048";
+const installsReducer = "2b27b5b47634d9e39a9b1bfafb4b415ebca5d31cedacc67bdda50b2d60632453";
+const profileReducer = "5a9974345e9eb33a8f7055f040679a43cda5b35695e01d627bfdc584ffb9c765";
 const page = await boxos.pageInfo();
 const installKey = "app-explorer.install-authorization";
 const publishKey = "app-explorer.publish-authorization";

@@ -1,4 +1,4 @@
-import { procHash } from "./hash.ts";
+import { procHash } from "../hash.ts";
 
 export const PROFILE_WRITE_CAPABILITY = "profile:write";
 

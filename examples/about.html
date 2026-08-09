@@ -30,11 +30,10 @@
 <script type="module">
 import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
-const stats = await boxos.stats();
-const startupReducer = stats.startup.reducer;
-const profileReducer = stats.profiles.reducer;
+const startupReducer = "a792ccebb34c869c3a2036501b3cccd691bd541d31b22d20c142d17d58cf4be5";
+const profileReducer = "5a9974345e9eb33a8f7055f040679a43cda5b35695e01d627bfdc584ffb9c765";
 const page = await boxos.pageInfo();
-const root = new URL(stats.startup.root);
+const root = new URL(page.rootUrl);
 const atRoot = location.origin === root.origin;
 const storageKey = "boxos.startup.authorization";
 let authorization;

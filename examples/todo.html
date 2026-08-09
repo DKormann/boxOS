@@ -19,9 +19,8 @@
 <script type="module">
 import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
-const stats = await boxos.stats();
-const todo = stats.applications.todo;
-const profileReducer = stats.profiles.reducer;
+const todo = { reducer: "48871b1cd679bf007babc09ab4aa1524004367008c77b4e4f739bacef68f71c7" };
+const profileReducer = "5a9974345e9eb33a8f7055f040679a43cda5b35695e01d627bfdc584ffb9c765";
 const key = "todo.authorization";
 let authorization;
 try { authorization = JSON.parse(localStorage.getItem(key) || "null"); }

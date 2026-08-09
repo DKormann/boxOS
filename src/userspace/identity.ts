@@ -1,4 +1,4 @@
-import { procHash } from "./hash.ts";
+import { procHash } from "../hash.ts";
 
 export const IDENTITY_REDUCER_CODE = `if (input.action == "register") {
   if (typeof input.publicKey != "string") throw "Expected a public key";

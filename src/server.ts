@@ -1,25 +1,25 @@
 import { chmod, readFile, readdir, writeFile } from "fs/promises";
-import { APP_INSTALLS_REDUCER_CODE, APP_INSTALLS_REDUCER_HASH } from "./app-installs.ts";
-import { APP_PUBLISHER_REDUCER_CODE, APP_PUBLISHER_REDUCER_HASH } from "./app-publisher.ts";
-import { COUNTER_REDUCER_CODE, COUNTER_REDUCER_HASH } from "./counter.ts";
-import { FRIENDS_REDUCER_CODE, FRIENDS_REDUCER_HASH } from "./friends.ts";
+import { APP_INSTALLS_REDUCER_CODE, APP_INSTALLS_REDUCER_HASH } from "./userspace/app-installs.ts";
+import { APP_PUBLISHER_REDUCER_CODE, APP_PUBLISHER_REDUCER_HASH } from "./userspace/app-publisher.ts";
+import { COUNTER_REDUCER_CODE, COUNTER_REDUCER_HASH } from "./userspace/counter.ts";
+import { FRIENDS_REDUCER_CODE, FRIENDS_REDUCER_HASH } from "./userspace/friends.ts";
 import { pageHash, procHash, sha256 } from "./hash.ts";
 import {
   IDENTITY_PROCEDURE_CODE,
   IDENTITY_PROCEDURE_HASH,
   IDENTITY_REDUCER_CODE,
   IDENTITY_REDUCER_HASH,
-} from "./identity.ts";
+} from "./userspace/identity.ts";
 import { PAGE_MAX_BYTES, PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "./page.ts";
 import { ProcSyntaxError, validateProcCode } from "./parser.ts";
-import { PROFILE_REDUCER_CODE, PROFILE_REDUCER_HASH } from "./profile.ts";
+import { PROFILE_REDUCER_CODE, PROFILE_REDUCER_HASH } from "./userspace/profile.ts";
 import {
   PUBLISH_PROCEDURE_CODE,
   PUBLISH_PROCEDURE_HASH,
   VALIDATE_PROCEDURE_CODE,
   VALIDATE_PROCEDURE_HASH,
-} from "./system-procedures.ts";
-import { STARTUP_REDUCER_CODE, STARTUP_REDUCER_HASH } from "./startup.ts";
+} from "./userspace/procedures.ts";
+import { STARTUP_REDUCER_CODE, STARTUP_REDUCER_HASH } from "./userspace/startup.ts";
 import {
   INITIAL_USER_FUEL,
   InsufficientFuelError,
@@ -28,7 +28,7 @@ import {
   type CodeKind,
   type StateSnapshot,
 } from "./storage.ts";
-import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "./todo.ts";
+import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "./userspace/todo.ts";
 
 const HOST = Bun.env.HOST ?? "127.0.0.1";
 const PORT = Number(Bun.env.PORT ?? 4000);
@@ -40,6 +40,8 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_STATE_BYTES = 4 * 1024 * 1024;
 const MAX_STATE_VALUE_BYTES = 256 * 1024;
 const storage = new Storage(DATABASE);
+
+// Bundled userspace is installed for convenience, but is not exposed as core API metadata.
 const reducerNames = ["ctx", "input", "JSON", "Math", "String"];
 validateProcCode(PAGE_REDUCER_CODE, reducerNames);
 validateProcCode(APP_INSTALLS_REDUCER_CODE, reducerNames);
@@ -548,23 +550,15 @@ Bun.serve({
         fuel: { initialUserFuel: INITIAL_USER_FUEL, runtimeFuelPerMillisecond: 1, maximumInvocation: MAX_FUEL },
         storage: { fuelPerByte: STORAGE_FUEL_PER_BYTE, maximumValueBytes: MAX_STATE_VALUE_BYTES },
         pages: { reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES },
-        procedures: { validate: VALIDATE_PROCEDURE_HASH, publish: PUBLISH_PROCEDURE_HASH },
-        identities: { reducer: IDENTITY_REDUCER_HASH, procedure: IDENTITY_PROCEDURE_HASH },
-        profiles: { reducer: PROFILE_REDUCER_HASH },
-        startup: {
-          reducer: STARTUP_REDUCER_HASH,
-          root: rootUrl(request, url, pageId),
-          tryPage: explorerPage.id,
-        },
-        applications: {
-          explorer: { installs: APP_INSTALLS_REDUCER_HASH, publisher: APP_PUBLISHER_REDUCER_HASH },
-          friends: { reducer: FRIENDS_REDUCER_HASH },
-          todo: { reducer: TODO_REDUCER_HASH },
-        },
       });
     }
     if (request.method === "GET" && url.pathname === "/page") {
-      return json({ reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES, urlTemplate: pageUrlTemplate(request, url, pageId) });
+      return json({
+        reducer: PAGE_REDUCER_HASH,
+        maximumBytes: PAGE_MAX_BYTES,
+        rootUrl: rootUrl(request, url, pageId),
+        urlTemplate: pageUrlTemplate(request, url, pageId),
+      });
     }
     if (request.method === "POST" && url.pathname === "/code") return register(request);
     if (request.method === "POST" && url.pathname === "/reducers") return register(request, "reducer");

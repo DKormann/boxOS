@@ -1,4 +1,4 @@
-import { procHash } from "./hash.ts";
+import { procHash } from "../hash.ts";
 
 export const FRIENDS_MANAGE_CAPABILITY = "friends:manage";
 

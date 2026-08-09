@@ -45,6 +45,7 @@
 <script type="module">
 import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
+const validationProcedure = "a303dc522f6e5c656f5e5c0e9401ae5ed09c42b9d3e6a3fdf54a40189f5c71e2";
 const $ = id => document.querySelector(`#${id}`);
 const storeKey = "boxos.studio.workspace.v2";
 let workspace = load();
@@ -183,7 +184,7 @@ $("check").onclick = async () => {
     if (node.kind === "page") {
       node.references = pageReferences(node.source); save(); render(); show({ ok: "HTML ready", references: node.references });
     } else {
-      const receipt = await boxos.validateCode(node.kind, node.source);
+      const receipt = await boxos.invoke(validationProcedure, { kind: node.kind, code: node.source });
       node.references = receipt.ok.references; save(); render(); show(receipt);
       await refreshAccount();
     }
@@ -196,8 +197,10 @@ $("publish").onclick = async () => {
       const receipt = await boxos.publishPage(node.source);
       node.hash = receipt.hash; node.url = receipt.url; node.references = pageReferences(node.source); show(receipt);
     } else {
-      const receipt = await boxos.publishCode(node.kind, node.source);
-      node.hash = receipt.ok.hash; show(receipt);
+      const receipt = node.kind === "reducer"
+        ? await boxos.registerReducer(node.source)
+        : await boxos.registerProcedure(node.source);
+      node.hash = receipt.hash; show(receipt);
     }
     save(); render(); await refreshAccount();
   } catch (error) { fail(error); }

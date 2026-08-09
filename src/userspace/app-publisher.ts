@@ -1,4 +1,4 @@
-import { procHash } from "./hash.ts";
+import { procHash } from "../hash.ts";
 
 export const APP_PUBLISH_CAPABILITY = "apps:publish";
 

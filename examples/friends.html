@@ -28,9 +28,8 @@
 <script type="module">
 import { BoxOSClient } from "/client.js";
 const boxos = new BoxOSClient();
-const stats = await boxos.stats();
-const friendsReducer = stats.applications.friends.reducer;
-const profileReducer = stats.profiles.reducer;
+const friendsReducer = "8fde5ac4cc2688ea4dcf2d6cec8a52a198c69c4364e4355ba4dc5e43990d8029";
+const profileReducer = "5a9974345e9eb33a8f7055f040679a43cda5b35695e01d627bfdc584ffb9c765";
 const storageKey = "friends.authorization";
 let authorization;
 try { authorization = JSON.parse(localStorage.getItem(storageKey) || "null"); }

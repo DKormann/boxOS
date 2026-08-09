@@ -1,4 +1,4 @@
-import { procHash } from "./hash.ts";
+import { procHash } from "../hash.ts";
 
 export const TODO_MANAGE_CAPABILITY = "todo:manage";
 

@@ -1,4 +1,4 @@
-import { procHash } from "./hash.ts";
+import { procHash } from "../hash.ts";
 
 export const VALIDATE_PROCEDURE_CODE = `return ctx.validate(input.kind, input.code);`;
 export const VALIDATE_PROCEDURE_HASH = procHash(VALIDATE_PROCEDURE_CODE);
