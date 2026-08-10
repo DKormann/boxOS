@@ -38,6 +38,8 @@ const DEFAULT_FUEL = 1_000;
 const MAX_FUEL = 10_000;
 const MAX_CODE_BYTES = 128 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_BATCH_READS = 128;
+const MAX_BATCH_RESPONSE_BYTES = 1024 * 1024;
 const MAX_STATE_BYTES = 4 * 1024 * 1024;
 const MAX_STATE_VALUE_BYTES = 256 * 1024;
 const WORKER_POOL_SIZE = Number(Bun.env.BOXOS_WORKER_POOL_SIZE ?? 2);
@@ -586,6 +588,27 @@ Bun.serve({
       try { checkHash(hash); } catch (error) { return failure(error); }
       const found = storage.get(hash);
       return found ? json(found) : failure(`Unknown code: ${hash}`, 404);
+    }
+    if (request.method === "POST" && url.pathname === "/state") {
+      try {
+        const value = await body(request);
+        if (!Array.isArray(value.reads) || value.reads.length < 1 || value.reads.length > MAX_BATCH_READS) {
+          throw new TypeError(`reads must contain one to ${MAX_BATCH_READS} items`);
+        }
+        const results = value.reads.map(item => {
+          const read = object(item);
+          if (typeof read.hash !== "string") throw new TypeError("State hash must be a string");
+          if (typeof read.key !== "string" || read.key.length > 1024) throw new TypeError("State key must be a string of at most 1024 characters");
+          checkHash(read.hash);
+          const found = storage.publicValue(read.hash, read.key);
+          return found === undefined ? { found: false } : { found: true, value: found };
+        });
+        const response = { results };
+        if (new TextEncoder().encode(JSON.stringify(response)).byteLength > MAX_BATCH_RESPONSE_BYTES) {
+          return failure("Batch response is too large", 413);
+        }
+        return json(response);
+      } catch (error) { return failure(error); }
     }
     if (request.method === "GET" && url.pathname.startsWith("/state/")) {
       try {

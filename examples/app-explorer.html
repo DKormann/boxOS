@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BOXOS Apps</title>
 <style>
-:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f5f5f7}*{box-sizing:border-box}main{width:min(58rem,calc(100% - 2rem));margin:6vh auto}header,.toolbar,.tabs,.actions{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}header h1{margin:0 auto 0 0;font-size:2.5rem}.muted,#message{color:#707078}button{padding:.65rem .85rem;border:0;border-radius:.5rem;background:#4f46d8;color:white;font-weight:600;cursor:pointer}.secondary,.tabs button{background:#e7e7ec;color:#333}.tabs button.active{background:#4f46d8;color:white}.toolbar{margin:1.2rem 0}.toolbar input{flex:1}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem}.card,.panel{background:white;border:1px solid #ddd;border-radius:.8rem;padding:1rem}.card{display:flex;flex-direction:column}.card h2{margin:0 0 1rem;font-size:1.15rem}.card small{margin-top:auto;color:#777}.card a{color:#4f46d8}input{width:100%;padding:.7rem;border:1px solid #ccc;border-radius:.5rem;font:inherit}label{display:block;margin:.75rem 0}.panel{margin:1rem 0}.empty{padding:2rem 0;color:#777}[hidden]{display:none!important}
+:root{font:16px/1.5 system-ui,sans-serif;color:#24252a;background:#f5f5f7}*{box-sizing:border-box}main{width:min(58rem,calc(100% - 2rem));margin:6vh auto}header,.toolbar,.tabs,.actions,.pagination{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}header h1{margin:0 auto 0 0;font-size:2.5rem}.muted,#message{color:#707078}button{padding:.65rem .85rem;border:0;border-radius:.5rem;background:#4f46d8;color:white;font-weight:600;cursor:pointer}.secondary,.tabs button{background:#e7e7ec;color:#333}.tabs button.active{background:#4f46d8;color:white}.toolbar{margin:1.2rem 0}.toolbar input{flex:1}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem}.card,.panel{background:white;border:1px solid #ddd;border-radius:.8rem;padding:1rem}.card{display:flex;flex-direction:column}.card h2{margin:0 0 1rem;font-size:1.15rem}.card small{margin-top:auto;color:#777}.card a{color:#4f46d8}input{width:100%;padding:.7rem;border:1px solid #ccc;border-radius:.5rem;font:inherit}label{display:block;margin:.75rem 0}.panel{margin:1rem 0}.empty{padding:2rem 0;color:#777}.pagination{justify-content:center;margin:1.4rem 0}.pagination button:disabled{opacity:.45;cursor:default}[hidden]{display:none!important}
 </style>
 <main>
   <header><h1>Apps</h1><button id="make-startup" class="secondary">Use as startup</button><span id="account"></span><button id="sign-in">Choose account</button><button id="sign-out" class="secondary" hidden>Sign out</button></header>
@@ -17,6 +17,7 @@
   <nav class="tabs"><button id="discover-tab" class="active">All apps</button><button id="installed-tab">Your apps</button><button id="published-tab">Published by you</button></nav>
   <p id="message"></p>
   <section id="apps" class="grid"></section>
+  <nav id="pagination" class="pagination" aria-label="App pages" hidden><button id="previous-page" class="secondary">Previous</button><span id="page-status"></span><button id="next-page" class="secondary">Next</button></nav>
 </main>
 <script type="module">
 import { BoxOSClient } from "/client.js";
@@ -33,6 +34,8 @@ let records = [];
 let installed = [];
 let installCounts = new Map();
 let tab = "discover";
+let currentPage = 0;
+const PAGE_SIZE = 9;
 const profileNames = new Map();
 const $ = id => document.getElementById(id);
 
@@ -44,6 +47,17 @@ function message(value) { $("message").textContent = value; }
 async function publicValue(reducer, key) {
   try { return (await boxos.publicState(reducer, key)).value; }
   catch { return undefined; }
+}
+async function publicValues(reads) {
+  const values = [];
+  for (let index = 0; index < reads.length; index += 128) {
+    const chunk = reads.slice(index, index + 128);
+    try {
+      const response = await boxos.publicStateBatch(chunk.map(([hash, key]) => ({ hash, key })));
+      values.push(...response.results.map(result => result.found ? result.value : undefined));
+    } catch { values.push(...chunk.map(() => undefined)); }
+  }
+  return values;
 }
 async function profileName(account) {
   if (profileNames.has(account)) return profileNames.get(account);
@@ -87,20 +101,30 @@ async function refreshAccount() {
 }
 async function loadApps() {
   const count = await publicValue(publisher, "publish:counter") || 0;
-  const ids = await Promise.all(Array.from({ length: count }, (_, index) => publicValue(publisher, `publish:${index + 1}`)));
-  const found = (await Promise.all(ids.reverse().map(id => publicValue(publisher, `app:${id}`)))).filter(Boolean);
-  const releases = await Promise.all(found.map(record => publicValue(publisher, `release-counter:${record.appId}`)));
-  const pages = await Promise.all(found.map((record, index) => publicValue(publisher, `release:${record.appId}:${releases[index] || 1}`)));
-  const unpublished = await Promise.all(found.map(record => publicValue(publisher, `unpublished:${record.appId}`)));
+  const ids = (await publicValues(Array.from(
+    { length: count }, (_, index) => [publisher, `publish:${index + 1}`],
+  ))).filter(id => typeof id === "string").reverse();
+  const found = (await publicValues(ids.map(id => [publisher, `app:${id}`]))).filter(Boolean);
+  const releases = await publicValues(found.map(record => [publisher, `release-counter:${record.appId}`]));
+  const authors = [...new Set(found.map(record => record.authorId))];
+  const details = await publicValues([
+    ...found.map((record, index) => [publisher, `release:${record.appId}:${releases[index] || 1}`]),
+    ...found.map(record => [publisher, `unpublished:${record.appId}`]),
+    ...found.map(record => [installsReducer, `installs:${record.appId}`]),
+    ...authors.map(account => [profileReducer, `profile:${account}`]),
+  ]);
+  const pages = details.slice(0, found.length);
+  const unpublished = details.slice(found.length, found.length * 2);
+  const counts = details.slice(found.length * 2, found.length * 3);
+  const profiles = details.slice(found.length * 3);
   records = found.map((record, index) => ({
     ...record,
     pageId: pages[index] || record.appId,
     release: releases[index] || 1,
     unpublished: unpublished[index] === true,
   }));
-  const counts = await Promise.all(records.map(record => publicValue(installsReducer, `installs:${record.appId}`)));
   installCounts = new Map(records.map((record, index) => [record.appId, counts[index] || 0]));
-  await Promise.all(records.map(record => profileName(record.authorId)));
+  authors.forEach((account, index) => profileNames.set(account, profiles[index]?.name || account.slice(0, 12) + "…"));
 }
 function appId(value) {
   const text = value.trim().toLowerCase();
@@ -164,8 +188,15 @@ function render() {
   else if (tab === "published") shown = records.filter(record => record.authorId === publishAuthorization?.grant?.account);
   else shown = records.filter(record => !record.unpublished);
   if (query) shown = shown.filter(record => record.name.toLowerCase().includes(query));
+  const pageCount = Math.ceil(shown.length / PAGE_SIZE);
+  currentPage = Math.max(0, Math.min(currentPage, Math.max(0, pageCount - 1)));
+  const visible = shown.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   $("apps").textContent = "";
-  for (const record of shown) $("apps").append(card(record));
+  for (const record of visible) $("apps").append(card(record));
+  $("pagination").hidden = pageCount <= 1;
+  $("page-status").textContent = pageCount ? `Page ${currentPage + 1} of ${pageCount}` : "";
+  $("previous-page").disabled = currentPage === 0;
+  $("next-page").disabled = currentPage >= pageCount - 1;
   if (!shown.length) {
     const empty = document.createElement("p"); empty.className = "empty";
     empty.textContent = tab === "installed" ? "You have not installed any apps." : tab === "published" ? "You have not published any apps." : "No apps published yet."; $("apps").append(empty);
@@ -188,13 +219,15 @@ $("publish").onsubmit = async event => {
     $("publish").reset(); $("publish").hidden = true; await loadApps(); render(); message("App published.");
   } catch (error) { message(error.message); }
 };
-$("search").oninput = render;
-$("discover-tab").onclick = () => { tab = "discover"; render(); };
+$("search").oninput = () => { currentPage = 0; render(); };
+$("previous-page").onclick = () => { currentPage--; render(); };
+$("next-page").onclick = () => { currentPage++; render(); };
+$("discover-tab").onclick = () => { tab = "discover"; currentPage = 0; render(); };
 $("installed-tab").onclick = async () => {
-  try { await authorizeInstalls(); tab = "installed"; render(); } catch (error) { message(error.message); }
+  try { await authorizeInstalls(); tab = "installed"; currentPage = 0; render(); } catch (error) { message(error.message); }
 };
 $("published-tab").onclick = async () => {
-  try { await authorizePublishing(); tab = "published"; render(); } catch (error) { message(error.message); }
+  try { await authorizePublishing(); tab = "published"; currentPage = 0; render(); } catch (error) { message(error.message); }
 };
 await refreshAccount(); await loadApps(); render();
 </script>

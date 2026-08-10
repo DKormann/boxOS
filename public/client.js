@@ -91,6 +91,13 @@ export class BoxOSClient {
     return this.request(`/state/${encodeURIComponent(hash)}/${encodeURIComponent(key)}`, {}, false);
   }
 
+  publicStateBatch(reads) {
+    if (!Array.isArray(reads) || reads.length < 1 || reads.length > 128) {
+      throw new TypeError("State batch must contain one to 128 reads");
+    }
+    return this.request("/state", { method: "POST", body: JSON.stringify({ reads }) }, false);
+  }
+
   pageInfo() {
     return this.request("/page", {}, false);
   }

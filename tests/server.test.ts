@@ -27,6 +27,18 @@ test("the core API exposes infrastructure without an application registry", asyn
     const officialApps = await fetch(`${server.origin}/state/${APP_PUBLISHER_REDUCER_HASH}/publish:counter`)
       .then(response => response.json()) as { value: number };
     expect(officialApps.value > 0).toBe(true);
+
+    const batch = await fetch(`${server.origin}/state`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reads: [
+        { hash: APP_PUBLISHER_REDUCER_HASH, key: "publish:counter" },
+        { hash: APP_PUBLISHER_REDUCER_HASH, key: "missing" },
+      ] }),
+    }).then(response => response.json()) as { results: Array<{ found: boolean; value?: unknown }> };
+    expect(batch.results[0]?.found).toBe(true);
+    expect(batch.results[0]?.value).toBe(officialApps.value);
+    expect(batch.results[1]?.found).toBe(false);
   } finally {
     await server.stop();
   }
