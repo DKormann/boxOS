@@ -22,7 +22,7 @@ function pageId(value) {
   return value;
 }
 if (input.action == "get") {
-  let value = ctx.state.private.get("startup:" + account());
+  let value = await ctx.state.private.get("startup:" + account());
   return value == null ? null : value;
 }
 if (input.action == "set") {

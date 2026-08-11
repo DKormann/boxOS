@@ -19,6 +19,16 @@ test("the core API exposes infrastructure without an application registry", asyn
     const about = await fetch(`${server.origin}/about`).then(response => response.text());
     expect(homepage).toBe(about);
     expect(homepage).toContain("Try BOXOS");
+    expect(homepage).toContain("https://boxos.org/agents");
+
+    const agentGuide = await fetch(`${server.origin}/agents`);
+    expect(agentGuide.headers.get("content-type")).toContain("text/markdown");
+    expect(await agentGuide.text()).toContain("BOXOS agent guide");
+
+    const documentation = await fetch(`${server.origin}/docs`).then(response => response.text());
+    expect(documentation).toContain("Build a BOXOS app");
+    expect(documentation).toContain("/docs/api");
+    expect(documentation).toContain("<pre><code");
 
     const explorerId = pageHash(await Bun.file("examples/app-explorer.html").text());
     const tryBoxos = await fetch(`${server.origin}/start/try`, { redirect: "manual" });

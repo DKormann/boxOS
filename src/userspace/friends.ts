@@ -11,8 +11,10 @@ for (let i = 0; i < authorization.capabilities.length; i += 1) {
 }
 if (!allowed) throw "Missing friends:manage capability";
 let owner = authorization.account;
-function publicList(key) { return ctx.state.public.get(key) || []; }
-function privateList(key) { return ctx.state.private.get(key) || []; }
+let following = await ctx.state.public.get("following:" + owner) || [];
+let followers = await ctx.state.public.get("followers:" + owner) || [];
+let muted = await ctx.state.private.get("muted:" + owner) || [];
+let blocked = await ctx.state.private.get("blocked:" + owner) || [];
 function contains(items, account) {
   for (let i = 0; i < items.length; i += 1) if (items[Number(i)] == account) return true;
   return false;
@@ -36,12 +38,7 @@ function setPrivate(key, items) {
   else ctx.state.private.set(key, items);
 }
 function lists() {
-  return {
-    following: publicList("following:" + owner),
-    followers: publicList("followers:" + owner),
-    muted: privateList("muted:" + owner),
-    blocked: privateList("blocked:" + owner)
-  };
+  return { following: following, followers: followers, muted: muted, blocked: blocked };
 }
 if (input.action == "list") return lists();
 if (input.action == "change") {
@@ -52,12 +49,17 @@ if (input.action == "change") {
     if (!(character >= "0" && character <= "9") && !(character >= "a" && character <= "f")) throw "Invalid target";
   }
   if (input.relation == "follow") {
-    setPublic("following:" + owner, changed(publicList("following:" + owner), input.target, input.enabled));
-    setPublic("followers:" + input.target, changed(publicList("followers:" + input.target), owner, input.enabled));
+    following = changed(following, input.target, input.enabled);
+    let targetFollowers = await ctx.state.public.get("followers:" + input.target) || [];
+    targetFollowers = changed(targetFollowers, owner, input.enabled);
+    setPublic("following:" + owner, following);
+    setPublic("followers:" + input.target, targetFollowers);
   } else if (input.relation == "mute") {
-    setPrivate("muted:" + owner, changed(privateList("muted:" + owner), input.target, input.enabled));
+    muted = changed(muted, input.target, input.enabled);
+    setPrivate("muted:" + owner, muted);
   } else if (input.relation == "block") {
-    setPrivate("blocked:" + owner, changed(privateList("blocked:" + owner), input.target, input.enabled));
+    blocked = changed(blocked, input.target, input.enabled);
+    setPrivate("blocked:" + owner, blocked);
   } else throw "Invalid relation";
   return lists();
 }

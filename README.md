@@ -1,44 +1,118 @@
 # BOXOS
 
-## A tiny backend made of transparent, permanent functions
+**A tiny backend made of transparent, permanent functions.**
 
-BOXOS turns a small piece of restricted JavaScript into a persistent internet service.
-
-Submit a function once. BOXOS hashes its exact source, stores it permanently, and gives it an immutable address. Anyone can inspect the code behind that address. There are no mutable deployments or hidden upgrades: if behavior can change, the authorization and upgrade rules must be visible in the function itself.
-
-## Two simple building blocks
-
-**Reducers** own private persistent state and update it transactionally. A reducer can expose selected values as public state while keeping other values private. Public and private versions of the same key are distinct. Reducers can use the caller’s stable user ID for permissions and ownership rules.
-
-**Procedures** perform network requests and compose reducers inside atomic transactions. This separates external coordination from durable state changes without introducing a large application framework.
-
-Together they are enough for counters, shared documents, APIs, games, small databases, and full web applications.
-
-For user-owned application data, a browser account can sign a narrow capability for one reducer. BOXOS verifies its signature, immutable page origin, and resource before exposing the signed account as trusted reducer context; an account ID in ordinary input has no authority.
-
-## Content-addressed web pages
-
-BOXOS includes a permanent page reducer. Give it an HTML string and it stores the page under a short, collision-checked ID derived from SHA-256:
+BOXOS turns restricted JavaScript and ordinary HTML into persistent internet applications. Source is stored under the SHA-256 hash of its exact contents, making every backend function immutable, inspectable, and permanently addressable.
 
 ```text
-http://cdj4ofshc6bwc4df.localhost:4000/
+HTML page  ──invoke──▶  reducer  ──transaction──▶  private/public state
+     │
+     └──────────────▶  procedure ──fetch / compose reducers / publish code
 ```
 
-Each page receives its own browser origin. Static reads are public, cacheable, and free of execution fuel: no worker or transaction starts when somebody visits a page. A complete application can be one immutable HTML page calling a few immutable reducers.
+## Why it is different
 
-## Fuel makes resource use explicit
+- **Transparent:** executable source is public and addressed by its hash.
+- **Permanent:** code and pages cannot be changed in place.
+- **Stateful:** reducers own isolated, transactional keyspaces.
+- **Composable:** procedures call multiple reducers in one atomic transaction.
+- **Capability-based:** signed accounts grant one immutable origin narrowly scoped access to one reducer.
+- **Portable:** an application can be one HTML file importing the dependency-free `/client.js` module.
+- **Explicit:** runtime and permanent storage consume visible fuel.
 
-Users are anonymous bearer identities with persistent fuel balances. Running code consumes fuel based on elapsed execution time. Permanent code and state consume fuel per stored byte. Deleting state returns its locked fuel to the deleting caller.
+## Build an app
 
-Successful calls refund unused runtime fuel. Errors, crashes, and timeouts do not. Every response reports its costs, making computation and storage visible rather than hiding them behind a cloud bill.
+Start with a normal HTML document:
 
-## Why BOXOS?
+```html
+<!doctype html>
+<meta charset="utf-8">
+<title>Hello BOXOS</title>
+<h1>Hello BOXOS</h1>
+<script type="module">
+  import { BoxOSClient } from "/client.js";
+  const boxos = new BoxOSClient();
+  console.log(await boxos.account());
+</script>
+```
 
-- **Transparent:** source is public and addressed by its hash.
-- **Persistent:** reducer state survives requests and restarts.
-- **Composable:** procedures combine reducers transactionally.
-- **Isolated:** reducers cannot inspect one another’s private state.
-- **Portable:** the client is a small JavaScript module served at `/client.js`.
-- **Minimal:** Bun, TypeScript, SQLite, and standard web APIs—no framework or dependency stack.
+Publish it through the built-in page reducer and receive a permanent, isolated origin such as:
 
-BOXOS is an experiment in making backend software as easy to publish and inspect as a static file: write a few lines, receive a permanent address, and let the code explain exactly what it does.
+```text
+https://cdj4ofshc6bwc4df.pages.boxos.org/
+```
+
+When the app needs durable state, add a reducer:
+
+```js
+let count = ctx.state.public.get("count") || 0;
+count += 1;
+ctx.state.public.set("count", count);
+return count;
+```
+
+See the **[application quickstart](docs/quickstart.md)** for a complete publication script.
+
+> **Coding agents:** the production service publishes a compact onboarding contract at [`https://boxos.org/agents`](https://boxos.org/agents). It explains how to build, validate, publish, and report a BOXOS application without repository-specific knowledge.
+
+## Core primitives
+
+### Reducers
+
+Reducers update their own private and public state transactionally. They receive only explicit capabilities and cannot inspect another reducer’s private state. The original caller and any runtime-verified signed authorization are available through trusted context.
+
+### Procedures
+
+Procedures perform external requests, validate or publish immutable code, and compose reducers through atomic transactions. External effects such as fetch and publication are deliberately not rolled back with state.
+
+### Immutable pages
+
+The page reducer stores HTML under a short, collision-checked ID derived from SHA-256. Static page requests do not start a worker or transaction and consume no runtime fuel. Every page ID receives a separate browser origin.
+
+### Fuel
+
+Anonymous bearer identities have persistent balances. Calls reserve a chosen runtime budget and successful calls refund unused fuel. Permanent code and state lock fuel according to their stored byte size.
+
+## Run locally
+
+Requirements: a current version of [Bun](https://bun.sh).
+
+```sh
+bun src/server.ts
+```
+
+Open `http://localhost:4000`. The server creates `boxos.sqlite` and an owner-only deployment recovery key beside it. Both should be persisted together in a real deployment.
+
+Useful commands:
+
+```sh
+bun test
+bunx tsc --noEmit
+HOST=0.0.0.0 PORT=4000 bun src/server.ts
+```
+
+Configuration:
+
+- `HOST`, `PORT` — listening address, defaulting to `127.0.0.1:4000`
+- `BOXOS_DB_PATH` — SQLite path
+- `BOXOS_WORKER_POOL_SIZE`, `BOXOS_WORKER_QUEUE_LIMIT` — execution concurrency
+- `BOXOS_ROOT_URL`, `PAGE_BASE_DOMAIN` — public reverse-proxy and page-origin URLs
+- `BOXOS_SYSTEM_KEY_PATH` or `BOXOS_SYSTEM_RECOVERY_KEY` — deployment identity recovery
+
+## Documentation
+
+- [Build your first application](docs/quickstart.md)
+- [Agent onboarding contract](docs/agents.md)
+- [HTTP API and runtime reference](docs/api.md)
+- [Signed accounts and capabilities](docs/accounts.md)
+- [Architecture and trust model](docs/proposal.md)
+- [Studio design](docs/editor-concept.md)
+- [Example applications](examples/)
+
+Production documentation is served at [`https://boxos.org/docs`](https://boxos.org/docs).
+
+## Trust and scope
+
+BOXOS is an experiment, not an operating-system sandbox. Its trusted computing base includes the restricted-language parser, worker capability wrappers, transaction coordinator, SQLite, Bun, and SHA-256. Worker limits bound execution, but external fetch effects cannot be rolled back, bearer credentials can be copied, and anonymous account creation is not Sybil-resistant.
+
+The architecture intentionally favors a small, inspectable kernel over a broad application platform. See the [architecture proposal](docs/proposal.md) for the complete model and explicit limitations.

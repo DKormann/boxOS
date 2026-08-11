@@ -32,7 +32,7 @@ return ctx.validate(input.kind, input.code);
 return await ctx.publish(input.kind, input.code);
 ```
 
-Their hashes are returned by `GET /stats`. Studio invokes these procedures rather than requiring a special `/validate` endpoint. Direct HTTP registration can remain as a low-level compatibility route, but Studio does not need it.
+Their immutable hashes are embedded in Studio's published source, just like any other userspace dependency. Studio invokes these procedures rather than requiring a special `/validate` endpoint. Direct HTTP registration remains a low-level compatibility route, but Studio does not need it.
 
 ## Minimal workspace
 

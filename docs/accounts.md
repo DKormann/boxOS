@@ -72,7 +72,7 @@ Procedures receive the same verified authorization and pass it implicitly into t
 
 ## Canonical profile reducer
 
-`GET /stats` exposes one built-in profile reducer under `profiles.reducer`. It stores one public document per account:
+The bundled immutable profile reducer stores one public document per account. Its source and hash are part of BOXOS userspace rather than kernel metadata returned by `GET /stats`:
 
 ```json
 {

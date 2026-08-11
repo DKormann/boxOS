@@ -27,9 +27,9 @@ if (input.action == "publish") {
   let page = appId(input.pageId);
   if (typeof input.name != "string" || input.name.length < 1 || input.name.length > 80) throw "Invalid app name";
   let key = "app:" + id;
-  if (ctx.state.public.has(key)) throw "App already published";
+  if (await ctx.state.public.has(key)) throw "App already published";
   let record = { appId: id, name: input.name, authorId: publisher };
-  let sequence = (ctx.state.public.get("publish:counter") || 0) + 1;
+  let sequence = (await ctx.state.public.get("publish:counter") || 0) + 1;
   ctx.state.public.set(key, record);
   ctx.state.public.set("publish:" + sequence, id);
   ctx.state.public.set("publish:counter", sequence);
@@ -40,7 +40,7 @@ if (input.action == "publish") {
 if (input.action == "unpublish" || input.action == "republish") {
   let publisher = author();
   let id = appId(input.appId);
-  let record = ctx.state.public.get("app:" + id);
+  let record = await ctx.state.public.get("app:" + id);
   if (record == null) throw "Unknown app";
   if (record.authorId != publisher) throw "Only the author can change publication";
   let key = "unpublished:" + id;
@@ -52,12 +52,12 @@ if (input.action == "release") {
   let publisher = author();
   let id = appId(input.appId);
   let page = appId(input.pageId);
-  let record = ctx.state.public.get("app:" + id);
+  let record = await ctx.state.public.get("app:" + id);
   if (record == null) throw "Unknown app";
   if (record.authorId != publisher) throw "Only the author can publish a release";
   let counterKey = "release-counter:" + id;
-  let release = ctx.state.public.get(counterKey) || 1;
-  if (ctx.state.public.get("release:" + id + ":" + release) == page) throw "Page is already the current release";
+  let release = await ctx.state.public.get(counterKey) || 1;
+  if (await ctx.state.public.get("release:" + id + ":" + release) == page) throw "Page is already the current release";
   release += 1;
   ctx.state.public.set("release:" + id + ":" + release, page);
   ctx.state.public.set(counterKey, release);

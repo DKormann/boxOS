@@ -1,6 +1,6 @@
 import { pageHash, procHash, sha256 } from "./hash.ts";
 import { analyzeProcCode, validateProcCode } from "./parser.ts";
-import type { CodeKind, StateSnapshot, StoredCode } from "./storage.ts";
+import type { CodeKind, StateMutation, StateVisibility, StoredCode } from "./storage.ts";
 
 type Start = {
   type: "start";
@@ -20,23 +20,30 @@ type Authorization = Readonly<{
   purpose: string;
   grantId: string;
 }>;
-type TransactionData = { type: "transaction-data"; id: number; reducers: StoredCode[]; state: StateSnapshot };
-type CommitResult = { type: "commit-result"; id: number; ok: boolean; error?: string };
-type PublishResult = { type: "publish-result"; id: number; ok: boolean; result?: unknown; error?: string };
-type ParentMessage = Start | TransactionData | CommitResult | PublishResult;
-
-type Transaction = {
-  id: number;
-  resolve: (value: TransactionData) => void;
-  reject: (error: Error) => void;
+type OperationResult = { ok: boolean; error?: string };
+type TransactionStartResult = OperationResult & { type: "transaction-start-result"; id: number };
+type ReducerResult = OperationResult & { type: "reducer-result"; requestId: number; reducer?: StoredCode };
+type StateReadResult = OperationResult & {
+  type: "state-read-result";
+  requestId: number;
+  found?: boolean;
+  value?: unknown;
 };
+type CommitResult = OperationResult & { type: "commit-result"; id: number };
+type PublishResult = OperationResult & { type: "publish-result"; id: number; result?: unknown };
+type ParentMessage = Start | TransactionStartResult | ReducerResult | StateReadResult | CommitResult | PublishResult;
+
+type Pending<T> = { resolve: (value: T) => void; reject: (error: Error) => void };
+type CachedState = { found: boolean; value?: unknown };
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) =>
   (...values: unknown[]) => Promise<unknown>;
 let nextId = 1;
-const waitingData = new Map<number, Transaction>();
-const waitingCommit = new Map<number, Transaction>();
-const waitingPublish = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+const waitingStarts = new Map<number, Pending<void>>();
+const waitingReducers = new Map<number, Pending<StoredCode>>();
+const waitingState = new Map<number, Pending<CachedState>>();
+const waitingCommits = new Map<number, Pending<void>>();
+const waitingPublish = new Map<number, Pending<unknown>>();
 let transactionOpen = false;
 let activeCaller = "";
 let activeAuthorization: Authorization | undefined;
@@ -56,23 +63,38 @@ function cloneJson<T>(value: T, label = "value"): T {
   }
 }
 
-function reducerContext(hash: string, state: StateSnapshot, caller: string) {
-  const owned = state[hash] ??= {
-    private: Object.create(null) as Record<string, unknown>,
-    public: Object.create(null) as Record<string, unknown>,
-  };
+function stateId(hash: string, visibility: StateVisibility, key: string): string {
+  return `${hash}\0${visibility}\0${key}`;
+}
+
+function reducerContext(
+  hash: string,
+  caller: string,
+  read: (visibility: StateVisibility, key: string) => Promise<CachedState>,
+  mutations: Map<string, StateMutation>,
+) {
   const key = (value: unknown): string => {
     if (typeof value !== "string" || value.length > 1024) throw new TypeError("State keys must be strings of at most 1024 characters");
     return value;
   };
-  const slot = (values: Record<string, unknown>) => Object.freeze({
-    get(value: unknown) {
-      const name = key(value);
-      return Object.hasOwn(values, name) ? cloneJson(values[name]) : undefined;
+  const slot = (visibility: StateVisibility) => Object.freeze({
+    async get(value: unknown) {
+      const found = await read(visibility, key(value));
+      return found.found ? cloneJson(found.value) : undefined;
     },
-    has(value: unknown) { return Object.hasOwn(values, key(value)); },
-    set(value: unknown, next: unknown) { values[key(value)] = cloneJson(next, "State value"); },
-    delete(value: unknown) { delete values[key(value)]; },
+    async has(value: unknown) {
+      return (await read(visibility, key(value))).found;
+    },
+    set(value: unknown, next: unknown) {
+      const name = key(value);
+      mutations.set(stateId(hash, visibility, name), {
+        hash, visibility, key: name, operation: "set", value: cloneJson(next, "State value"),
+      });
+    },
+    delete(value: unknown) {
+      const name = key(value);
+      mutations.set(stateId(hash, visibility, name), { hash, visibility, key: name, operation: "delete" });
+    },
   });
   const authorization = activeAuthorization?.resource === hash ? activeAuthorization : undefined;
   return Object.freeze({
@@ -86,13 +108,19 @@ function reducerContext(hash: string, state: StateSnapshot, caller: string) {
       if (typeof value !== "string") throw new TypeError("pageHash expects a string");
       return pageHash(value);
     },
-    state: Object.freeze({ private: slot(owned.private), public: slot(owned.public) }),
+    state: Object.freeze({ private: slot("private"), public: slot("public") }),
   });
 }
 
-function runReducer(reducer: StoredCode, input: unknown, state: StateSnapshot, caller: string): unknown {
-  const fn = new Function("ctx", "input", "JSON", "Math", "String", `"use strict";\n${reducer.code}`);
-  return fn(reducerContext(reducer.hash, state, caller), cloneJson(input, "Reducer input"), JSON_CAP, MATH_CAP, String);
+async function runReducer(
+  reducer: StoredCode,
+  input: unknown,
+  caller: string,
+  read: (visibility: StateVisibility, key: string) => Promise<CachedState>,
+  mutations: Map<string, StateMutation>,
+): Promise<unknown> {
+  const fn = new AsyncFunction("ctx", "input", "JSON", "Math", "String", `"use strict";\n${reducer.code}`);
+  return await fn(reducerContext(reducer.hash, caller, read, mutations), cloneJson(input, "Reducer input"), JSON_CAP, MATH_CAP, String);
 }
 
 async function transaction(callback: unknown): Promise<unknown> {
@@ -100,24 +128,85 @@ async function transaction(callback: unknown): Promise<unknown> {
   if (transactionOpen) throw new Error("Nested transactions are not allowed");
   transactionOpen = true;
   const id = nextId++;
+  const reducers = new Map<string, StoredCode>();
+  const reducerLoads = new Map<string, Promise<StoredCode>>();
+  const state = new Map<string, CachedState>();
+  const stateLoads = new Map<string, Promise<CachedState>>();
+  const mutations = new Map<string, StateMutation>();
+  let invocationTail = Promise.resolve();
   try {
-    const data = await new Promise<TransactionData>((resolve, reject) => {
-      waitingData.set(id, { id, resolve, reject });
+    await new Promise<void>((resolve, reject) => {
+      waitingStarts.set(id, { resolve, reject });
       message({ type: "transaction-start", id });
     });
-    const reducers = new Map(data.reducers.map(reducer => [reducer.hash, reducer]));
-    const tx: { invoke(hash: unknown, input: unknown): unknown } = Object.freeze({
+
+    const loadReducer = (hash: string): Promise<StoredCode> => {
+      const loaded = reducers.get(hash);
+      if (loaded) return Promise.resolve(loaded);
+      const pending = reducerLoads.get(hash);
+      if (pending) return pending;
+      const requestId = nextId++;
+      const promise = new Promise<StoredCode>((resolve, reject) => {
+        waitingReducers.set(requestId, { resolve, reject });
+        message({ type: "reducer-load", id, requestId, hash });
+      }).then(reducer => {
+        reducers.set(hash, reducer);
+        reducerLoads.delete(hash);
+        return reducer;
+      });
+      reducerLoads.set(hash, promise);
+      return promise;
+    };
+
+    const read = (hash: string, visibility: StateVisibility, key: string): Promise<CachedState> => {
+      const address = stateId(hash, visibility, key);
+      const mutation = mutations.get(address);
+      if (mutation) return Promise.resolve(mutation.operation === "set"
+        ? { found: true, value: cloneJson(mutation.value) }
+        : { found: false });
+      const cached = state.get(address);
+      if (cached) return Promise.resolve(cloneJson(cached));
+      const pending = stateLoads.get(address);
+      if (pending) return pending;
+      const requestId = nextId++;
+      const promise = new Promise<CachedState>((resolve, reject) => {
+        waitingState.set(requestId, { resolve, reject });
+        message({ type: "state-read", id, requestId, hash, visibility, key });
+      }).then(value => {
+        const cachedValue = cloneJson(value);
+        state.set(address, cachedValue);
+        stateLoads.delete(address);
+        return cloneJson(cachedValue);
+      });
+      stateLoads.set(address, promise);
+      return promise;
+    };
+
+    const tx: { invoke(hash: unknown, input: unknown): Promise<unknown> } = Object.freeze({
       invoke(hash: unknown, input: unknown) {
-        if (typeof hash !== "string") throw new TypeError("Reducer hash must be a string");
-        const reducer = reducers.get(hash);
-        if (!reducer) throw new Error(`Unknown reducer: ${hash}`);
-        return cloneJson(runReducer(reducer, input, data.state, activeCaller), "Reducer result");
+        if (typeof hash !== "string") return Promise.reject(new TypeError("Reducer hash must be a string"));
+        // Reducer calls within one transaction are deliberately ordered. Separate
+        // transactions still run on separate workers in parallel, while local
+        // ordering keeps transaction behavior deterministic.
+        const invocation = invocationTail.then(async () => {
+          const reducer = await loadReducer(hash);
+          return cloneJson(await runReducer(
+            reducer,
+            input,
+            activeCaller,
+            (visibility, key) => read(hash, visibility, key),
+            mutations,
+          ), "Reducer result");
+        });
+        invocationTail = invocation.then(() => undefined, () => undefined);
+        return invocation;
       },
     });
-    const result = cloneJson(await (callback as (transaction: { invoke(hash: unknown, input: unknown): unknown }) => unknown)(tx), "Transaction result");
-    await new Promise<TransactionData>((resolve, reject) => {
-      waitingCommit.set(id, { id, resolve, reject });
-      message({ type: "transaction-commit", id, state: data.state });
+    const result = cloneJson(await (callback as (transaction: typeof tx) => unknown)(tx), "Transaction result");
+    await invocationTail;
+    await new Promise<void>((resolve, reject) => {
+      waitingCommits.set(id, { resolve, reject });
+      message({ type: "transaction-commit", id, mutations: [...mutations.values()] });
     });
     return result;
   } catch (error) {
@@ -137,17 +226,13 @@ const MATH_CAP = Object.freeze({
 function checkedCode(kind: unknown, code: unknown): { kind: CodeKind; code: string; hash: string } {
   if (kind !== "reducer" && kind !== "procedure") throw new TypeError("kind must be 'reducer' or 'procedure'");
   if (typeof code !== "string") throw new TypeError("code must be a string");
-  validateProcCode(code, ["ctx", "input", "JSON", "Math", "String"], kind === "procedure");
+  validateProcCode(code, ["ctx", "input", "JSON", "Math", "String"], true);
   return { kind, code, hash: procHash(code) };
 }
 
 function validateCode(kind: unknown, code: unknown): unknown {
   const valid = checkedCode(kind, code);
-  const analysis = analyzeProcCode(
-    valid.code,
-    ["ctx", "input", "JSON", "Math", "String"],
-    valid.kind === "procedure",
-  );
+  const analysis = analyzeProcCode(valid.code, ["ctx", "input", "JSON", "Math", "String"], true);
   return { kind: valid.kind, hash: valid.hash, references: analysis.references };
 }
 
@@ -244,7 +329,7 @@ async function run(start: Start): Promise<void> {
     activeAuthorization = await authenticate(start.authorization, start.audience);
     let result: unknown;
     if (start.kind === "reducer") {
-      result = await transaction((tx: { invoke(hash: unknown, input: unknown): unknown }) => tx.invoke(start.hash, start.input));
+      result = await transaction((tx: { invoke(hash: unknown, input: unknown): Promise<unknown> }) => tx.invoke(start.hash, start.input));
     } else {
       const ctx = Object.freeze({
         caller: start.caller,
@@ -264,25 +349,35 @@ async function run(start: Start): Promise<void> {
   }
 }
 
+function settle<T>(pending: Pending<T> | undefined, data: OperationResult, value: T): void {
+  if (!pending) return;
+  if (data.ok) pending.resolve(value);
+  else pending.reject(new Error(data.error ?? "Worker operation failed"));
+}
+
 onmessage = (event: MessageEvent<ParentMessage>) => {
   const data = event.data;
   if (data.type === "start") void run(data);
-  else if (data.type === "transaction-data") {
-    const pending = waitingData.get(data.id);
-    if (pending) { waitingData.delete(data.id); pending.resolve(data); }
+  else if (data.type === "transaction-start-result") {
+    const pending = waitingStarts.get(data.id);
+    waitingStarts.delete(data.id);
+    settle(pending, data, undefined);
+  } else if (data.type === "reducer-result") {
+    const pending = waitingReducers.get(data.requestId);
+    waitingReducers.delete(data.requestId);
+    if (data.ok && !data.reducer) pending?.reject(new Error("Reducer response was empty"));
+    else settle(pending, data, data.reducer!);
+  } else if (data.type === "state-read-result") {
+    const pending = waitingState.get(data.requestId);
+    waitingState.delete(data.requestId);
+    settle(pending, data, data.found ? { found: true, value: data.value } : { found: false });
   } else if (data.type === "commit-result") {
-    const pending = waitingCommit.get(data.id);
-    if (pending) {
-      waitingCommit.delete(data.id);
-      if (data.ok) pending.resolve({ type: "transaction-data", id: data.id, reducers: [], state: {} });
-      else pending.reject(new Error(data.error ?? "Transaction commit failed"));
-    }
+    const pending = waitingCommits.get(data.id);
+    waitingCommits.delete(data.id);
+    settle(pending, data, undefined);
   } else if (data.type === "publish-result") {
     const pending = waitingPublish.get(data.id);
-    if (pending) {
-      waitingPublish.delete(data.id);
-      if (data.ok) pending.resolve(data.result);
-      else pending.reject(new Error(data.error ?? "Publication failed"));
-    }
+    waitingPublish.delete(data.id);
+    settle(pending, data, data.result);
   }
 };

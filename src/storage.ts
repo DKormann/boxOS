@@ -6,8 +6,10 @@ export const STORAGE_FUEL_PER_BYTE = 8;
 export type CodeKind = "reducer" | "procedure";
 export type StoredCode = { hash: string; kind: CodeKind; code: string };
 export type StateVisibility = "private" | "public";
-export type ReducerState = Record<StateVisibility, Record<string, unknown>>;
-export type StateSnapshot = Record<string, ReducerState>;
+export type StateRead = { hash: string; visibility: StateVisibility; key: string; version: number };
+export type StateMutation =
+  | { hash: string; visibility: StateVisibility; key: string; operation: "set"; value: unknown }
+  | { hash: string; visibility: StateVisibility; key: string; operation: "delete" };
 
 export class InsufficientFuelError extends Error {
   constructor(readonly balance: number, readonly required: number) {
@@ -16,7 +18,14 @@ export class InsufficientFuelError extends Error {
   }
 }
 
-/** Durable code, accounts, and reducer state. */
+export class TransactionConflictError extends Error {
+  constructor(readonly hash: string, readonly visibility: StateVisibility, readonly key: string) {
+    super(`Transaction conflict while reading ${hash}/${visibility}/${key}`);
+    this.name = "TransactionConflictError";
+  }
+}
+
+/** Durable code, accounts, and versioned reducer state. */
 export class Storage {
   private readonly db: Database;
 
@@ -30,6 +39,15 @@ export class Storage {
       value TEXT NOT NULL, locked_fuel INTEGER NOT NULL,
       PRIMARY KEY (reducer_hash, visibility, key)
     )`);
+    // Versions survive deletion, so a transaction which observed a missing key
+    // conflicts if another transaction creates and deletes that key before commit.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS state_versions (
+      reducer_hash TEXT NOT NULL, visibility TEXT NOT NULL, key TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      PRIMARY KEY (reducer_hash, visibility, key)
+    )`);
+    this.db.exec(`INSERT OR IGNORE INTO state_versions (reducer_hash, visibility, key, version)
+      SELECT reducer_hash, visibility, key, 1 FROM reducer_state`);
   }
 
   close(): void {
@@ -67,12 +85,6 @@ export class Storage {
     return row ? { hash: row.hash, kind: row.kind as CodeKind, code: row.source } : undefined;
   }
 
-  allReducers(): StoredCode[] {
-    return this.db.query<{ hash: string; source: string }>(
-      "SELECT hash, source FROM code WHERE kind = 'reducer'",
-    ).all().map(row => ({ hash: row.hash, kind: "reducer", code: row.source }));
-  }
-
   account(user: string): number {
     this.ensureUser(user);
     return this.balance(user);
@@ -106,9 +118,15 @@ export class Storage {
       if (existing.value !== encoded) throw new Error(`Public state collision: ${hash}/${key}`);
       return;
     }
-    this.db.prepare(
-      "INSERT INTO reducer_state (reducer_hash, visibility, key, value, locked_fuel) VALUES (?, 'public', ?, ?, 0)",
-    ).run(hash, key, encoded);
+    this.db.transaction(() => {
+      this.db.prepare(
+        "INSERT INTO reducer_state (reducer_hash, visibility, key, value, locked_fuel) VALUES (?, 'public', ?, ?, 0)",
+      ).run(hash, key, encoded);
+      this.db.prepare(
+        `INSERT INTO state_versions (reducer_hash, visibility, key, version) VALUES (?, 'public', ?, 1)
+         ON CONFLICT(reducer_hash, visibility, key) DO UPDATE SET version = version + 1`,
+      ).run(hash, key);
+    })();
   }
 
   publicValue(hash: string, key: string): unknown | undefined {
@@ -118,61 +136,97 @@ export class Storage {
     return row ? JSON.parse(row.value) : undefined;
   }
 
-  snapshot(): StateSnapshot {
-    const state: StateSnapshot = Object.create(null) as StateSnapshot;
-    for (const row of this.db.query<{ reducer_hash: string; visibility: StateVisibility; key: string; value: string }>(
-      "SELECT reducer_hash, visibility, key, value FROM reducer_state",
-    ).all()) {
-      const reducer = state[row.reducer_hash] ??= emptyReducerState();
-      reducer[row.visibility][row.key] = JSON.parse(row.value);
-    }
-    return state;
+  readState(hash: string, visibility: StateVisibility, key: string): { found: boolean; value?: unknown; version: number } {
+    const row = this.db.query<{ value: string }>(
+      "SELECT value FROM reducer_state WHERE reducer_hash = ? AND visibility = ? AND key = ?",
+    ).get(hash, visibility, key);
+    const version = this.stateVersion(hash, visibility, key);
+    return row ? { found: true, value: JSON.parse(row.value), version } : { found: false, version };
   }
 
-  commitState(user: string, state: StateSnapshot): { balance: number; charged: number; repaid: number } {
+  /**
+   * Atomically validate an optimistic read set and apply a compact write set.
+   * Unrelated keys are never loaded or rewritten, so independent transactions
+   * can execute in parallel and only serialize for their short SQLite commit.
+   */
+  commitTransaction(
+    user: string,
+    reads: readonly StateRead[],
+    mutations: readonly StateMutation[],
+  ): { balance: number; charged: number; repaid: number } {
     return this.db.transaction(() => {
       this.ensureUser(user);
-      const oldRows = this.db.query<{
-        reducer_hash: string; visibility: StateVisibility; key: string; value: string; locked_fuel: number;
-      }>("SELECT reducer_hash, visibility, key, value, locked_fuel FROM reducer_state").all();
-      const old = new Map(oldRows.map(row => [stateId(row.reducer_hash, row.visibility, row.key), row]));
-      const next: Array<{ hash: string; visibility: StateVisibility; key: string; value: string; locked: number }> = [];
+      for (const read of reads) {
+        if (this.stateVersion(read.hash, read.visibility, read.key) !== read.version) {
+          throw new TransactionConflictError(read.hash, read.visibility, read.key);
+        }
+      }
+
+      const seen = new Set<string>();
+      const changes: Array<{
+        mutation: StateMutation;
+        previous?: { value: string; locked_fuel: number };
+        value?: string;
+        locked: number;
+        version: number;
+      }> = [];
       let charged = 0;
       let repaid = 0;
 
-      for (const hash of Object.keys(state)) {
-        for (const visibility of ["private", "public"] as const) {
-          for (const key of Object.keys(state[hash]![visibility])) {
-            const value = JSON.stringify(state[hash]![visibility][key]);
-            if (value === undefined) throw new TypeError("State must be JSON serializable");
-            const id = stateId(hash, visibility, key);
-            const previous = old.get(id);
-            old.delete(id);
-            if (previous?.value === value) {
-              next.push({ hash, visibility, key, value, locked: previous.locked_fuel });
-            } else {
-              if (previous) repaid += previous.locked_fuel;
-              const locked = (utf8Bytes(key) + utf8Bytes(value)) * STORAGE_FUEL_PER_BYTE;
-              charged += locked;
-              next.push({ hash, visibility, key, value, locked });
-            }
-          }
+      for (const mutation of mutations) {
+        const id = stateId(mutation.hash, mutation.visibility, mutation.key);
+        if (seen.has(id)) throw new TypeError("Duplicate state mutation");
+        seen.add(id);
+        const previous = this.db.query<{ value: string; locked_fuel: number }>(
+          "SELECT value, locked_fuel FROM reducer_state WHERE reducer_hash = ? AND visibility = ? AND key = ?",
+        ).get(mutation.hash, mutation.visibility, mutation.key) ?? undefined;
+        const version = this.stateVersion(mutation.hash, mutation.visibility, mutation.key);
+
+        if (mutation.operation === "delete") {
+          if (!previous) continue;
+          repaid += previous.locked_fuel;
+          changes.push({ mutation, previous, locked: 0, version });
+          continue;
         }
+
+        const value = JSON.stringify(mutation.value);
+        if (value === undefined) throw new TypeError("State must be JSON serializable");
+        if (previous?.value === value) continue;
+        if (previous) repaid += previous.locked_fuel;
+        const locked = (utf8Bytes(mutation.key) + utf8Bytes(value)) * STORAGE_FUEL_PER_BYTE;
+        charged += locked;
+        changes.push({ mutation, previous, value, locked, version });
       }
-      for (const removed of old.values()) repaid += removed.locked_fuel;
 
       const balance = this.balance(user);
       const required = Math.max(0, charged - repaid);
       if (balance < required) throw new InsufficientFuelError(balance, required);
 
-      this.db.prepare("DELETE FROM reducer_state").run();
-      const insert = this.db.prepare(
-        "INSERT INTO reducer_state (reducer_hash, visibility, key, value, locked_fuel) VALUES (?, ?, ?, ?, ?)",
-      );
-      for (const item of next) insert.run(item.hash, item.visibility, item.key, item.value, item.locked);
+      for (const change of changes) {
+        const mutation = change.mutation;
+        if (mutation.operation === "delete") {
+          this.db.prepare(
+            "DELETE FROM reducer_state WHERE reducer_hash = ? AND visibility = ? AND key = ?",
+          ).run(mutation.hash, mutation.visibility, mutation.key);
+        } else {
+          this.db.prepare(`INSERT INTO reducer_state
+            (reducer_hash, visibility, key, value, locked_fuel) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(reducer_hash, visibility, key) DO UPDATE SET value = excluded.value, locked_fuel = excluded.locked_fuel`)
+            .run(mutation.hash, mutation.visibility, mutation.key, change.value!, change.locked);
+        }
+        this.db.prepare(`INSERT INTO state_versions (reducer_hash, visibility, key, version) VALUES (?, ?, ?, ?)
+          ON CONFLICT(reducer_hash, visibility, key) DO UPDATE SET version = excluded.version`)
+          .run(mutation.hash, mutation.visibility, mutation.key, change.version + 1);
+      }
       this.db.prepare("UPDATE users SET fuel = fuel + ? WHERE id = ?").run(repaid - charged, user);
       return { balance: this.balance(user), charged, repaid };
     })();
+  }
+
+  private stateVersion(hash: string, visibility: StateVisibility, key: string): number {
+    return this.db.query<{ version: number }>(
+      "SELECT version FROM state_versions WHERE reducer_hash = ? AND visibility = ? AND key = ?",
+    ).get(hash, visibility, key)?.version ?? 0;
   }
 
   private ensureUser(user: string): void {
@@ -192,10 +246,4 @@ function stateId(hash: string, visibility: StateVisibility, key: string): string
 }
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-function emptyReducerState(): ReducerState {
-  return {
-    private: Object.create(null) as Record<string, unknown>,
-    public: Object.create(null) as Record<string, unknown>,
-  };
 }

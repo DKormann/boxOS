@@ -3,12 +3,12 @@ import { procHash } from "../hash.ts";
 export const IDENTITY_REDUCER_CODE = `if (input.action == "register") {
   if (typeof input.publicKey != "string") throw "Expected a public key";
   let account = ctx.sha256(input.publicKey);
-  let existing = ctx.state.public.get(account);
+  let existing = await ctx.state.public.get(account);
   if (typeof existing == "string" && existing != input.publicKey) throw "Account collision";
   ctx.state.public.set(account, input.publicKey);
   return account;
 }
-if (input.action == "lookup") return ctx.state.public.get(input.account);
+if (input.action == "lookup") return await ctx.state.public.get(input.account);
 throw "Unknown identity action";`;
 
 export const IDENTITY_REDUCER_HASH = procHash(IDENTITY_REDUCER_CODE);

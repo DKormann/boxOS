@@ -26,7 +26,9 @@ import {
   STORAGE_FUEL_PER_BYTE,
   Storage,
   type CodeKind,
-  type StateSnapshot,
+  type StateMutation,
+  type StateRead,
+  type StateVisibility,
 } from "./storage.ts";
 import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "./userspace/todo.ts";
 import { WorkerPool, WorkerPoolBusyError } from "./worker-pool.ts";
@@ -40,7 +42,8 @@ const MAX_CODE_BYTES = 128 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_BATCH_READS = 128;
 const MAX_BATCH_RESPONSE_BYTES = 1024 * 1024;
-const MAX_STATE_BYTES = 4 * 1024 * 1024;
+const MAX_TRANSACTION_BYTES = 4 * 1024 * 1024;
+const MAX_TRANSACTION_MUTATIONS = 4_096;
 const MAX_STATE_VALUE_BYTES = 256 * 1024;
 const WORKER_POOL_SIZE = Number(Bun.env.BOXOS_WORKER_POOL_SIZE ?? 2);
 const WORKER_QUEUE_LIMIT = Number(Bun.env.BOXOS_WORKER_QUEUE_LIMIT ?? 32);
@@ -53,16 +56,16 @@ const workerPool = new WorkerPool<Worker>(
 
 // Bundled userspace is installed for convenience, but is not exposed as core API metadata.
 const reducerNames = ["ctx", "input", "JSON", "Math", "String"];
-validateProcCode(PAGE_REDUCER_CODE, reducerNames);
-validateProcCode(APP_INSTALLS_REDUCER_CODE, reducerNames);
-validateProcCode(APP_PUBLISHER_REDUCER_CODE, reducerNames);
-validateProcCode(COUNTER_REDUCER_CODE, reducerNames);
-validateProcCode(FRIENDS_REDUCER_CODE, reducerNames);
-validateProcCode(IDENTITY_REDUCER_CODE, reducerNames);
+validateProcCode(PAGE_REDUCER_CODE, reducerNames, true);
+validateProcCode(APP_INSTALLS_REDUCER_CODE, reducerNames, true);
+validateProcCode(APP_PUBLISHER_REDUCER_CODE, reducerNames, true);
+validateProcCode(COUNTER_REDUCER_CODE, reducerNames, true);
+validateProcCode(FRIENDS_REDUCER_CODE, reducerNames, true);
+validateProcCode(IDENTITY_REDUCER_CODE, reducerNames, true);
 validateProcCode(IDENTITY_PROCEDURE_CODE, reducerNames, true);
-validateProcCode(PROFILE_REDUCER_CODE, reducerNames);
-validateProcCode(STARTUP_REDUCER_CODE, reducerNames);
-validateProcCode(TODO_REDUCER_CODE, reducerNames);
+validateProcCode(PROFILE_REDUCER_CODE, reducerNames, true);
+validateProcCode(STARTUP_REDUCER_CODE, reducerNames, true);
+validateProcCode(TODO_REDUCER_CODE, reducerNames, true);
 validateProcCode(VALIDATE_PROCEDURE_CODE, reducerNames, true);
 validateProcCode(PUBLISH_PROCEDURE_CODE, reducerNames, true);
 storage.putSystemCode(PAGE_REDUCER_HASH, "reducer", PAGE_REDUCER_CODE);
@@ -95,25 +98,102 @@ const explorerPage = examples.find(example => example.name === "app-explorer");
 if (!explorerPage) throw new Error("examples/app-explorer.html is required");
 
 const proposalText = await Bun.file(new URL("../docs/proposal.md", import.meta.url)).text();
-const docsText = await Bun.file(new URL("../docs/api.md", import.meta.url)).text();
+const quickstartText = await Bun.file(new URL("../docs/quickstart.md", import.meta.url)).text();
+const apiText = await Bun.file(new URL("../docs/api.md", import.meta.url)).text();
 const accountsText = await Bun.file(new URL("../docs/accounts.md", import.meta.url)).text();
+const agentsText = await Bun.file(new URL("../docs/agents.md", import.meta.url)).text();
 const clientJavaScript = await Bun.file(new URL("../public/client.js", import.meta.url)).text();
 const pitchHtml = aboutPage.html;
-const docsHtml = `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BOXOS documentation</title>
-<main><h1>BOXOS documentation</h1><p><a href="/proposal">Architecture proposal</a> · <a href="/client.js">JavaScript client</a></p><pre>${escapeHtml(docsText)}</pre></main>`;
-const proposalHtml = `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BOXOS architecture proposal</title>
-<main><p><a href="/docs">Documentation</a></p><pre>${escapeHtml(proposalText)}</pre></main>`;
-const accountsHtml = `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BOXOS signed accounts</title>
-<main><p><a href="/docs">Documentation</a></p><pre>${escapeHtml(accountsText)}</pre></main>`;
+
+const DOCS_STYLE = `
+:root{font:17px/1.65 ui-sans-serif,system-ui,-apple-system,sans-serif;color:#24252a;background:#f7f7f9}*{box-sizing:border-box}body{margin:0}a{color:#4f46d8;text-underline-offset:.16em}a:hover{color:#3730a3}.layout{width:min(76rem,calc(100% - 2rem));margin:0 auto;display:grid;grid-template-columns:14rem minmax(0,48rem);gap:4rem;align-items:start}.sidebar{position:sticky;top:0;padding:2rem 0}.brand{display:block;color:#24252a;font-size:1.15rem;font-weight:800;text-decoration:none;letter-spacing:.04em;margin-bottom:1.4rem}.sidebar nav{display:grid;gap:.25rem}.sidebar nav a{padding:.4rem .6rem;border-radius:.4rem;color:#5d5e68;text-decoration:none}.sidebar nav a:hover,.sidebar nav a.active{color:#3730a3;background:#ecebff}.sidebar .minor{margin-top:1.3rem;font-size:.88rem}article{min-width:0;padding:3.5rem 0 8rem}h1{font-size:clamp(2.2rem,6vw,3.5rem);line-height:1.08;letter-spacing:-.035em;margin:0 0 1.5rem}h2{font-size:1.65rem;line-height:1.25;margin:3rem 0 .8rem;padding-top:.4rem;border-top:1px solid #dddde3}h3{font-size:1.15rem;margin:2rem 0 .5rem}p,ul,ol{margin:.7rem 0 1.2rem}li{margin:.25rem 0}pre{overflow:auto;padding:1rem 1.15rem;border:1px solid #d9d9e0;border-radius:.65rem;background:#202129;color:#f3f3f5;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.12em .32em;border-radius:.3em;background:#e9e9ee;font: .88em ui-monospace,SFMono-Regular,Consolas,monospace}pre code{padding:0;background:transparent;font-size:inherit}blockquote{margin:1.3rem 0;padding:.7rem 1rem;border-left:4px solid #7068e8;background:#efefff;border-radius:0 .45rem .45rem 0}blockquote p{margin:0}.eyebrow{color:#6a6b75;font-size:.82rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.8rem}@media(max-width:760px){.layout{display:block}.sidebar{position:static;padding:1rem 0;border-bottom:1px solid #dddde3}.sidebar nav{display:flex;overflow:auto}.sidebar nav a{white-space:nowrap}.sidebar .minor{display:none}article{padding-top:2.5rem}}
+`;
+
+function inlineMarkdown(value: string): string {
+  return value.split(/(`[^`]*`)/g).map(part => {
+    if (part.startsWith("`") && part.endsWith("`")) return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+    return escapeHtml(part)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
+        const safe = /^(https?:\/\/|\/|#)/.test(href) ? href : "#";
+        return `<a href="${escapeHtml(safe)}">${label}</a>`;
+      })
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  }).join("");
+}
+
+function renderMarkdown(source: string): string {
+  const lines = source.replace(/\r/g, "").split("\n");
+  const html: string[] = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index]!;
+    if (!line.trim()) { index++; continue; }
+    if (line.startsWith("```")) {
+      const language = line.slice(3).trim();
+      const code: string[] = [];
+      index++;
+      while (index < lines.length && !lines[index]!.startsWith("```")) code.push(lines[index++]!);
+      if (index < lines.length) index++;
+      html.push(`<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${escapeHtml(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = heading[1]!.length;
+      const text = heading[2]!;
+      const id = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      html.push(`<h${level} id="${id}">${inlineMarkdown(text)}</h${level}>`);
+      index++;
+      continue;
+    }
+    if (/^\s*-\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*-\s+/.test(lines[index]!)) {
+        items.push(`<li>${inlineMarkdown(lines[index]!.replace(/^\s*-\s+/, ""))}</li>`);
+        index++;
+      }
+      html.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index]!)) {
+        items.push(`<li>${inlineMarkdown(lines[index]!.replace(/^\s*\d+\.\s+/, ""))}</li>`);
+        index++;
+      }
+      html.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+    if (line.startsWith("> ")) {
+      const quote: string[] = [];
+      while (index < lines.length && lines[index]!.startsWith("> ")) quote.push(lines[index++]!.slice(2));
+      html.push(`<blockquote><p>${inlineMarkdown(quote.join(" "))}</p></blockquote>`);
+      continue;
+    }
+    const paragraph: string[] = [];
+    while (index < lines.length && lines[index]!.trim() && !/^(#{1,3})\s|^```|^\s*-\s+|^\s*\d+\.\s+|^>\s/.test(lines[index]!)) {
+      paragraph.push(lines[index++]!.trim());
+    }
+    html.push(`<p>${inlineMarkdown(paragraph.join(" "))}</p>`);
+  }
+  return html.join("\n");
+}
+
+function documentationPage(title: string, source: string, active: string): string {
+  const links = [
+    ["start", "/docs", "Quickstart"], ["api", "/docs/api", "API reference"],
+    ["accounts", "/docs/accounts", "Accounts"], ["agents", "/docs/agents", "Agent guide"],
+    ["proposal", "/proposal", "Architecture"],
+  ];
+  const navigation = links.map(([key, href, label]) =>
+    `<a${key === active ? ` class="active"` : ""} href="${href}">${label}</a>`).join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>${escapeHtml(title)} · BOXOS</title><style>${DOCS_STYLE}</style></head><body><div class="layout"><aside class="sidebar"><a class="brand" href="/about">BOXOS</a><nav>${navigation}</nav><nav class="minor"><a href="/examples">Examples</a><a href="/examples/studio">Studio</a><a href="/client.js">Client module</a><a href="https://github.com/DKormann/boxOS">GitHub</a></nav></aside><article><div class="eyebrow">BOXOS documentation</div>${renderMarkdown(source)}</article></div></body></html>`;
+}
+
+const quickstartHtml = documentationPage("Quickstart", quickstartText, "start");
+const apiHtml = documentationPage("API reference", apiText, "api");
+const accountsHtml = documentationPage("Signed accounts", accountsText, "accounts");
+const agentsHtml = documentationPage("Agent guide", agentsText, "agents");
+const proposalHtml = documentationPage("Architecture", proposalText, "proposal");
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -183,7 +263,7 @@ function canonicalJson(value: unknown): string {
 
 function validateSubmission(kind: CodeKind, code: string): string {
   if (new TextEncoder().encode(code).byteLength > MAX_CODE_BYTES) throw new Error("Code is too large");
-  validateProcCode(code, ["ctx", "input", "JSON", "Math", "String"], kind === "procedure");
+  validateProcCode(code, ["ctx", "input", "JSON", "Math", "String"], true);
   return procHash(code);
 }
 
@@ -202,20 +282,16 @@ async function register(request: Request, fixedKind?: CodeKind): Promise<Respons
   }
 }
 
-let transactionTail = Promise.resolve();
-async function lock(): Promise<() => void> {
-  let release!: () => void;
-  const turn = new Promise<void>(resolve => { release = resolve; });
-  const before = transactionTail;
-  transactionTail = transactionTail.then(() => turn);
-  await before;
-  return release;
-}
-
-type Lease = { release: () => void };
+type SessionRead = StateRead & { found: boolean; value?: unknown };
+type TransactionSession = {
+  reducers: Set<string>;
+  reads: Map<string, SessionRead>;
+};
 type WorkerRequest =
   | { type: "transaction-start"; id: number }
-  | { type: "transaction-commit"; id: number; state: StateSnapshot }
+  | { type: "reducer-load"; id: number; requestId: number; hash: string }
+  | { type: "state-read"; id: number; requestId: number; hash: string; visibility: StateVisibility; key: string }
+  | { type: "transaction-commit"; id: number; mutations: unknown }
   | { type: "transaction-abort"; id: number }
   | { type: "publish"; id: number; kind: CodeKind; code: string }
   | { type: "result"; result: unknown }
@@ -258,28 +334,42 @@ function servePage(request: Request, url: URL, pageId: string): Response {
   return new Response(request.method === "HEAD" ? null : value, { headers });
 }
 
-function validState(state: unknown): state is StateSnapshot {
-  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
-  try {
-    const encoded = JSON.stringify(state);
-    if (new TextEncoder().encode(encoded).byteLength > MAX_STATE_BYTES) return false;
-    const reducers = new Set(storage.allReducers().map(item => item.hash));
-    return Object.entries(state).every(([hash, value]) => {
-      if (!reducers.has(hash) || !value || typeof value !== "object" || Array.isArray(value)) return false;
-      const slots = value as Record<string, unknown>;
-      return ["private", "public"].every(name => {
-        const slot = slots[name];
-        if (!slot || typeof slot !== "object" || Array.isArray(slot)) return false;
-        return Object.values(slot).every(item => {
-          if (hash === PAGE_REDUCER_HASH && name === "public" && typeof item === "string") {
-            return new TextEncoder().encode(item).byteLength <= PAGE_MAX_BYTES;
-          }
-          const serialized = JSON.stringify(item);
-          return serialized !== undefined && new TextEncoder().encode(serialized).byteLength <= MAX_STATE_VALUE_BYTES;
-        });
-      });
-    });
-  } catch { return false; }
+function stateAddress(hash: string, visibility: StateVisibility, key: string): string {
+  return `${hash}\0${visibility}\0${key}`;
+}
+
+function checkedMutations(value: unknown, reducers: ReadonlySet<string>): StateMutation[] {
+  if (!Array.isArray(value) || value.length > MAX_TRANSACTION_MUTATIONS) {
+    throw new TypeError(`A transaction may contain at most ${MAX_TRANSACTION_MUTATIONS} state mutations`);
+  }
+  const encoded = JSON.stringify(value);
+  if (new TextEncoder().encode(encoded).byteLength > MAX_TRANSACTION_BYTES) throw new TypeError("Transaction is too large");
+  const seen = new Set<string>();
+  return value.map(item => {
+    const mutation = object(item);
+    if (typeof mutation.hash !== "string" || !reducers.has(mutation.hash)) throw new TypeError("Mutation targets an unloaded reducer");
+    if (mutation.visibility !== "private" && mutation.visibility !== "public") throw new TypeError("Invalid state visibility");
+    if (typeof mutation.key !== "string" || mutation.key.length > 1024) throw new TypeError("Invalid state key");
+    const address = stateAddress(mutation.hash, mutation.visibility, mutation.key);
+    if (seen.has(address)) throw new TypeError("Duplicate state mutation");
+    seen.add(address);
+    if (mutation.operation === "delete") {
+      return { hash: mutation.hash, visibility: mutation.visibility, key: mutation.key, operation: "delete" };
+    }
+    if (mutation.operation !== "set") throw new TypeError("Invalid state operation");
+    const serialized = JSON.stringify(mutation.value);
+    if (serialized === undefined || new TextEncoder().encode(serialized).byteLength > MAX_STATE_VALUE_BYTES) {
+      throw new TypeError("Invalid or oversized state value");
+    }
+    if (mutation.hash === PAGE_REDUCER_HASH && mutation.visibility === "public"
+      && (typeof mutation.value !== "string" || new TextEncoder().encode(mutation.value).byteLength > PAGE_MAX_BYTES)) {
+      throw new TypeError("Invalid or oversized page");
+    }
+    return {
+      hash: mutation.hash, visibility: mutation.visibility, key: mutation.key,
+      operation: "set", value: mutation.value,
+    };
+  });
 }
 
 async function invoke(
@@ -307,7 +397,7 @@ async function invoke(
   }
   const worker = workerLease.worker;
   const started = performance.now();
-  const leases = new Map<number, Lease>();
+  const sessions = new Map<number, TransactionSession>();
   let storageCharged = 0;
   let storageRepaid = 0;
 
@@ -319,8 +409,7 @@ async function invoke(
       clearTimeout(timer);
       worker.onmessage = null;
       worker.onerror = null;
-      for (const lease of leases.values()) lease.release();
-      leases.clear();
+      sessions.clear();
       if (reusable) workerLease.release();
       else workerLease.discard();
       resolve(response);
@@ -336,32 +425,60 @@ async function invoke(
     worker.onmessage = event => {
       const message = event.data as WorkerRequest;
       if (message.type === "transaction-start") {
-        void lock().then(release => {
-          if (done) { release(); return; }
-          leases.set(message.id, { release });
+        if (sessions.has(message.id)) {
+          worker.postMessage({ type: "transaction-start-result", id: message.id, ok: false, error: "Transaction already exists" });
+        } else {
+          sessions.set(message.id, { reducers: new Set(), reads: new Map() });
+          worker.postMessage({ type: "transaction-start-result", id: message.id, ok: true });
+        }
+      } else if (message.type === "reducer-load") {
+        const session = sessions.get(message.id);
+        const reducer = storage.get(message.hash);
+        if (!session || !reducer || reducer.kind !== "reducer") {
           worker.postMessage({
-            type: "transaction-data", id: message.id,
-            reducers: storage.allReducers(), state: storage.snapshot(),
+            type: "reducer-result", requestId: message.requestId, ok: false,
+            error: !session ? "No active transaction" : `Unknown reducer: ${message.hash}`,
           });
-        });
+        } else {
+          session.reducers.add(message.hash);
+          worker.postMessage({ type: "reducer-result", requestId: message.requestId, ok: true, reducer });
+        }
+      } else if (message.type === "state-read") {
+        const session = sessions.get(message.id);
+        if (!session || !session.reducers.has(message.hash)
+          || (message.visibility !== "private" && message.visibility !== "public")
+          || typeof message.key !== "string" || message.key.length > 1024) {
+          worker.postMessage({ type: "state-read-result", requestId: message.requestId, ok: false, error: "Invalid state read" });
+        } else {
+          const address = stateAddress(message.hash, message.visibility, message.key);
+          let read = session.reads.get(address);
+          if (!read) {
+            const value = storage.readState(message.hash, message.visibility, message.key);
+            read = { hash: message.hash, visibility: message.visibility, key: message.key, ...value };
+            session.reads.set(address, read);
+          }
+          worker.postMessage({
+            type: "state-read-result", requestId: message.requestId, ok: true,
+            found: read.found, value: read.value,
+          });
+        }
       } else if (message.type === "transaction-commit") {
-        const lease = leases.get(message.id);
-        if (!lease) { worker.postMessage({ type: "commit-result", id: message.id, ok: false, error: "No active transaction" }); return; }
+        const session = sessions.get(message.id);
+        if (!session) { worker.postMessage({ type: "commit-result", id: message.id, ok: false, error: "No active transaction" }); return; }
         try {
-          if (!validState(message.state)) throw new Error("Invalid or oversized reducer state");
-          const settlement = storage.commitState(caller, message.state);
+          const mutations = checkedMutations(message.mutations, session.reducers);
+          const reads = [...session.reads.values()].map(({ hash, visibility, key, version }) => ({ hash, visibility, key, version }));
+          const settlement = storage.commitTransaction(caller, reads, mutations);
           storageCharged += settlement.charged;
           storageRepaid += settlement.repaid;
           worker.postMessage({ type: "commit-result", id: message.id, ok: true });
         } catch (error) {
           worker.postMessage({ type: "commit-result", id: message.id, ok: false, error: String(error) });
         } finally {
-          leases.delete(message.id);
-          lease.release();
+          sessions.delete(message.id);
         }
       } else if (message.type === "transaction-abort") {
-        const lease = leases.get(message.id);
-        if (lease) { leases.delete(message.id); lease.release(); }
+        sessions.delete(message.id);
       } else if (message.type === "publish") {
         try {
           const hash = validateSubmission(message.kind, message.code);
@@ -522,29 +639,29 @@ Bun.serve({
       if (!example) return failure("No examples installed", 404);
       return Response.redirect(pageUrlTemplate(request, url, pageId).replace("{id}", example.id), 302);
     }
-    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/docs") {
-      return new Response(request.method === "HEAD" ? null : docsHtml, {
+    const documentation = url.pathname === "/docs" ? quickstartHtml
+      : url.pathname === "/docs/api" ? apiHtml
+      : url.pathname === "/docs/accounts" ? accountsHtml
+      : url.pathname === "/docs/agents" ? agentsHtml
+      : url.pathname === "/proposal" ? proposalHtml
+      : undefined;
+    if ((request.method === "GET" || request.method === "HEAD") && documentation) {
+      return new Response(request.method === "HEAD" ? null : documentation, {
         headers: {
+          "cache-control": "public, max-age=300",
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'none'; base-uri 'none'",
+          "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
           "x-content-type-options": "nosniff",
         },
       });
     }
-    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/docs/accounts") {
-      return new Response(request.method === "HEAD" ? null : accountsHtml, {
+    if ((request.method === "GET" || request.method === "HEAD") && ["/agents", "/llms.txt"].includes(url.pathname)) {
+      return new Response(request.method === "HEAD" ? null : agentsText, {
         headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'none'; base-uri 'none'",
-          "x-content-type-options": "nosniff",
-        },
-      });
-    }
-    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/proposal") {
-      return new Response(request.method === "HEAD" ? null : proposalHtml, {
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'none'; base-uri 'none'",
+          ...CORS,
+          "cache-control": "public, max-age=300",
+          "content-type": "text/markdown; charset=utf-8",
+          "link": "</docs/agents>; rel=alternate; type=text/html",
           "x-content-type-options": "nosniff",
         },
       });

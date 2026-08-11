@@ -2,6 +2,8 @@
 
 BOXOS stores restricted JavaScript by content hash and executes it with persistent reducer state. Production is available at `https://boxos.org`.
 
+New to BOXOS? Start with the [application quickstart](/docs). Coding agents can fetch the compact publication contract from [`/agents`](/agents).
+
 ## Authentication and accounts
 
 Registration and invocation require this header:
@@ -129,7 +131,7 @@ Available procedure capabilities:
 
 All reducer calls in one transaction share a snapshot and commit atomically. Reducers called by a procedure see the procedure's original caller and any runtime-verified authorization whose resource matches that reducer. Publication is permanent and is not rolled back if the publishing procedure later fails.
 
-BOXOS ships immutable validation and publication procedures. Their hashes are returned under `procedures` by `GET /stats`, allowing applications such as Studio to validate and publish code entirely through normal procedure invocation.
+BOXOS ships immutable validation and publication procedures as bundled userspace code. Applications such as Studio can validate and publish code through normal procedure invocation; their immutable hashes are embedded in the bundled application source rather than exposed as kernel API metadata.
 
 ## Fuel and storage
 
@@ -144,9 +146,9 @@ Invocation fuel is reserved before a worker starts. Successful execution refunds
 
 Creating state charges for its key and serialized JSON value. Replacing state repays the old entry and charges the new entry. Deleting state always repays the deleting caller. Failed and rolled-back transactions do not receive storage repayments.
 
-`GET /stats` also exposes the built-in identity functions and application reducers for profiles, startup pages, Todo, Friends, app publishing, and app installations. Signed application accounts and runtime-verified capability grants are documented at `/docs/accounts`.
+Identity, profiles, startup pages, Todo, Friends, app publishing, and app installations are bundled userspace applications rather than kernel API metadata. Their source and immutable hashes live in the repository and can be inspected through `/code/<hash>`. Signed application accounts and runtime-verified capability grants are documented at `/docs/accounts`.
 
-Current prices and limits are available from:
+Current kernel prices and limits are available from:
 
 ```http
 GET /stats
@@ -220,7 +222,11 @@ By default the client creates a bearer identity in the current browser origin's 
 - `GET /about`: always show the ordinary stored pitch page.
 - `GET /start?candidate=<page-id>`: confirm an immutable startup page.
 - `GET /start/try`: open the official App Explorer without changing startup state.
-- `GET /docs`: this document.
+- `GET /docs`: application quickstart and documentation home.
+- `GET /docs/api`: this API reference.
+- `GET /docs/accounts`: signed accounts and capability grants.
+- `GET /docs/agents`: rendered coding-agent guide.
+- `GET /agents` or `GET /llms.txt`: machine-friendly coding-agent guide as Markdown.
 - `GET /proposal`: concise architecture whitepaper.
 - `GET /examples`: installed example pages.
 - `GET /examples/<name>`: redirect to a named example's content-addressed origin.

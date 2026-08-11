@@ -11,7 +11,7 @@ for (let i = 0; i < authorization.capabilities.length; i += 1) {
 }
 if (!allowed) throw "Missing todo:manage capability";
 let key = "todos:" + authorization.account;
-let todos = ctx.state.private.get(key) || [];
+let todos = await ctx.state.private.get(key) || [];
 if (input.action == "list") return todos;
 if (input.action == "add") {
   if (typeof input.id != "string" || typeof input.text != "string") throw "Invalid todo";

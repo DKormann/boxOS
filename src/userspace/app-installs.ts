@@ -25,13 +25,13 @@ if (input.action == "install") {
   let account = owner();
   let id = appId(input.appId);
   let key = "installed:" + account;
-  let installed = ctx.state.private.get(key) || [];
+  let installed = await ctx.state.private.get(key) || [];
   for (let i = 0; i < installed.length; i += 1) {
-    if (installed[Number(i)] == id) return { appId: id, installs: ctx.state.public.get("installs:" + id) || 0, installed: installed };
+    if (installed[Number(i)] == id) return { appId: id, installs: await ctx.state.public.get("installs:" + id) || 0, installed: installed };
   }
   installed[Number(installed.length)] = id;
   ctx.state.private.set(key, installed);
-  let count = (ctx.state.public.get("installs:" + id) || 0) + 1;
+  let count = (await ctx.state.public.get("installs:" + id) || 0) + 1;
   ctx.state.public.set("installs:" + id, count);
   return { appId: id, installs: count, installed: installed };
 }
@@ -39,7 +39,7 @@ if (input.action == "uninstall") {
   let account = owner();
   let id = appId(input.appId);
   let key = "installed:" + account;
-  let installed = ctx.state.private.get(key) || [];
+  let installed = await ctx.state.private.get(key) || [];
   let next = [];
   let found = false;
   for (let i = 0; i < installed.length; i += 1) {
@@ -47,7 +47,7 @@ if (input.action == "uninstall") {
     if (item == id) found = true;
     else next[Number(next.length)] = item;
   }
-  let count = ctx.state.public.get("installs:" + id) || 0;
+  let count = await ctx.state.public.get("installs:" + id) || 0;
   if (!found) return { appId: id, installs: count, installed: installed };
   if (next.length == 0) ctx.state.private.delete(key);
   else ctx.state.private.set(key, next);
@@ -60,7 +60,7 @@ if (input.action == "uninstall") {
 }
 if (input.action == "installed") {
   let account = owner();
-  return ctx.state.private.get("installed:" + account) || [];
+  return await ctx.state.private.get("installed:" + account) || [];
 }
 throw "Unknown installs action";`;
 

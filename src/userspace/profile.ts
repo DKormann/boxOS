@@ -15,14 +15,14 @@ export const PROFILE_REDUCER_CODE = `function account() {
 }
 if (input.action == "get") {
   if (typeof input.account != "string") throw "Invalid account";
-  return ctx.state.public.get("profile:" + input.account);
+  return await ctx.state.public.get("profile:" + input.account);
 }
 if (input.action == "set") {
   let owner = account();
   if (typeof input.name != "string" || typeof input.bio != "string") throw "Invalid profile";
   if (input.name.length < 1 || input.name.length > 80 || input.bio.length > 500) throw "Invalid profile";
   let key = "profile:" + owner;
-  let previous = ctx.state.public.get(key);
+  let previous = await ctx.state.public.get(key);
   let revision = previous == null ? 1 : previous.revision + 1;
   let profile = { account: owner, name: input.name, bio: input.bio, revision: revision };
   ctx.state.public.set(key, profile);
