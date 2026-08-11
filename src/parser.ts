@@ -1,3 +1,5 @@
+import { BOXOS_RUNTIME_VERSION } from "./version.ts";
+
 const KEYWORDS = new Set([
   "await", "break", "catch", "const", "continue", "else", "false", "finally", "for",
   "function", "if", "let", "null", "return", "throw", "true", "try", "typeof",
@@ -571,6 +573,19 @@ function isIdentifierName(value: string): boolean {
 }
 
 /**
+ * Source without a marker is permanently runtime 1. A future incompatible
+ * runtime must use a first-line marker, which also makes it part of the source
+ * hash; changing the host must never silently change stored-code semantics.
+ */
+export function sourceRuntimeVersion(source: string): number {
+  const firstLine = source.split(/\r?\n/, 1)[0]!;
+  if (!firstLine.startsWith("// boxos-runtime:")) return 1;
+  const match = /^\/\/ boxos-runtime: ([1-9][0-9]*)$/.exec(firstLine);
+  if (!match) throw new TypeError("Invalid BOXOS runtime marker");
+  return Number(match[1]);
+}
+
+/**
  * Validate a procedure body against boxOS's deliberately small JavaScript subset.
  * The only names initially in scope are `argumentNames`; all others must be declared locally.
  * Throws ProcSyntaxError when the source is outside the subset.
@@ -581,6 +596,8 @@ export function analyzeProcCode(
   allowAwait = false,
 ): { references: string[] } {
   if (typeof source !== "string") throw new TypeError("Procedure code must be a string");
+  const runtime = sourceRuntimeVersion(source);
+  if (runtime !== BOXOS_RUNTIME_VERSION) throw new TypeError(`Unsupported BOXOS runtime: ${runtime}`);
   const parser = new Parser(source, argumentNames, allowAwait);
   parser.parse();
   return { references: [...parser.references] };

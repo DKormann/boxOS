@@ -32,7 +32,7 @@ POST https://boxos.org/reducers
 Content-Type: application/json
 Authorization: Bearer ...
 
-{"code":"let n = ctx.state.public.get(\"n\") || 0; n += 1; ctx.state.public.set(\"n\", n); return n;"}
+{"code":"let n = await ctx.state.public.get(\"n\") || 0; n += 1; ctx.state.public.set(\"n\", n); return n;"}
 ```
 
 The response includes `hash`. Source is addressed byte-for-byte, so preserve the exact registered string. Use `POST /procedures` instead only when network access or multi-reducer composition is required.
@@ -91,14 +91,14 @@ Available reducer bindings:
 - `ctx.caller`
 - `ctx.authorization`
 - `ctx.sha256(string)` and `ctx.pageHash(string)`
-- `ctx.state.private.get/has/set/delete`
-- `ctx.state.public.get/has/set/delete`
+- `await ctx.state.private.get/has(key)` and synchronous `set/delete(key, value)`
+- `await ctx.state.public.get/has(key)` and synchronous `set/delete(key, value)`
 - `input`, restricted `JSON`, deterministic `Math`, and `String`
 
 Available procedure capabilities additionally include:
 
 - `ctx.fetch(url, options)`
-- `ctx.transaction(callback)` and `tx.invoke(reducerHash, input)`
+- `ctx.transaction(callback)` and asynchronous `tx.invoke(reducerHash, input)`
 - `ctx.validate(kind, code)` and `ctx.publish(kind, code)`
 - `ctx.verify(publicKey, message, signature)`
 - top-level `await`
@@ -145,7 +145,8 @@ Before returning the app:
 - `GET /state/<hash>/<key>` — read public state
 - `POST /state` — batch public-state reads
 - `GET /account` — deployment identity and fuel balance
-- `GET /stats` — current fuel, storage, and page limits
+- `GET /version` — BOXOS server/API and stored-code runtime versions
+- `GET /stats` — versions plus current fuel, storage, transaction, and page limits
 - `GET /client.js` — dependency-free browser client
 
 Full documentation: `https://boxos.org/docs`

@@ -6,7 +6,7 @@ import { FRIENDS_REDUCER_CODE, FRIENDS_REDUCER_HASH } from "../src/userspace/fri
 import { procHash } from "../src/hash.ts";
 import { IDENTITY_PROCEDURE_CODE, IDENTITY_PROCEDURE_HASH, IDENTITY_REDUCER_CODE, IDENTITY_REDUCER_HASH } from "../src/userspace/identity.ts";
 import { PAGE_REDUCER_CODE, PAGE_REDUCER_HASH } from "../src/page.ts";
-import { analyzeProcCode, isValidProcCode, validateProcCode } from "../src/parser.ts";
+import { analyzeProcCode, isValidProcCode, sourceRuntimeVersion, validateProcCode } from "../src/parser.ts";
 import { PROFILE_REDUCER_CODE, PROFILE_REDUCER_HASH } from "../src/userspace/profile.ts";
 import { PUBLISH_PROCEDURE_CODE, PUBLISH_PROCEDURE_HASH, VALIDATE_PROCEDURE_CODE, VALIDATE_PROCEDURE_HASH } from "../src/userspace/procedures.ts";
 import { STARTUP_REDUCER_CODE, STARTUP_REDUCER_HASH } from "../src/userspace/startup.ts";
@@ -33,7 +33,7 @@ const procedures = [
 test("stored functions have stable valid content addresses", () => {
   for (const [code, hash] of reducers) {
     expect(hash).toBe(procHash(code));
-    validateProcCode(code, reducerNames);
+    validateProcCode(code, reducerNames, true);
   }
   for (const [code, hash] of procedures) {
     expect(hash).toBe(procHash(code));
@@ -56,6 +56,14 @@ test("example pages expose their userspace dependencies", async () => {
     const source = await Bun.file(`examples/${file}`).text();
     for (const hash of hashes) expect(source).toContain(hash);
   }
+});
+
+test("runtime semantics are explicitly versioned in source", () => {
+  expect(sourceRuntimeVersion("return input;")).toBe(1);
+  expect(sourceRuntimeVersion("// boxos-runtime: 1\nreturn input;")).toBe(1);
+  let error: unknown;
+  try { validateProcCode("// boxos-runtime: 2\nreturn input;", ["input"], true); } catch (caught) { error = caught; }
+  expect(String(error)).toContain("Unsupported BOXOS runtime: 2");
 });
 
 test("the parser finds literal code references and rejects ambient globals", () => {

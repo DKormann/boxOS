@@ -6,6 +6,10 @@ export class BoxOSClient {
     this.identity = options.identity || loadIdentity(options.storageKey || "boxos.identity");
   }
 
+  version() {
+    return this.request("/version", {}, false);
+  }
+
   async account() {
     return this.request("/account");
   }

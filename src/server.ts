@@ -25,12 +25,14 @@ import {
   InsufficientFuelError,
   STORAGE_FUEL_PER_BYTE,
   Storage,
+  TransactionConflictError,
   type CodeKind,
   type StateMutation,
-  type StateRead,
   type StateVisibility,
 } from "./storage.ts";
+import { TransactionCoordinator, type TransactionLimits } from "./transaction-coordinator.ts";
 import { TODO_REDUCER_CODE, TODO_REDUCER_HASH } from "./userspace/todo.ts";
+import { BOXOS_RUNTIME_VERSION, BOXOS_VERSION } from "./version.ts";
 import { WorkerPool, WorkerPoolBusyError } from "./worker-pool.ts";
 
 const HOST = Bun.env.HOST ?? "127.0.0.1";
@@ -42,9 +44,20 @@ const MAX_CODE_BYTES = 128 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_BATCH_READS = 128;
 const MAX_BATCH_RESPONSE_BYTES = 1024 * 1024;
-const MAX_TRANSACTION_BYTES = 4 * 1024 * 1024;
+const MAX_TRANSACTION_READ_BYTES = 4 * 1024 * 1024;
+const MAX_TRANSACTION_WRITE_BYTES = 4 * 1024 * 1024;
+const MAX_TRANSACTION_READS = 4_096;
 const MAX_TRANSACTION_MUTATIONS = 4_096;
+const MAX_TRANSACTION_REDUCERS = 128;
 const MAX_STATE_VALUE_BYTES = 256 * 1024;
+const TRANSACTION_LIMITS: TransactionLimits = {
+  maximumReducers: MAX_TRANSACTION_REDUCERS,
+  maximumReads: MAX_TRANSACTION_READS,
+  maximumReadBytes: MAX_TRANSACTION_READ_BYTES,
+  maximumMutations: MAX_TRANSACTION_MUTATIONS,
+  maximumWriteBytes: MAX_TRANSACTION_WRITE_BYTES,
+  maximumValueBytes: MAX_STATE_VALUE_BYTES,
+};
 const WORKER_POOL_SIZE = Number(Bun.env.BOXOS_WORKER_POOL_SIZE ?? 2);
 const WORKER_QUEUE_LIMIT = Number(Bun.env.BOXOS_WORKER_QUEUE_LIMIT ?? 32);
 const storage = new Storage(DATABASE);
@@ -282,11 +295,6 @@ async function register(request: Request, fixedKind?: CodeKind): Promise<Respons
   }
 }
 
-type SessionRead = StateRead & { found: boolean; value?: unknown };
-type TransactionSession = {
-  reducers: Set<string>;
-  reads: Map<string, SessionRead>;
-};
 type WorkerRequest =
   | { type: "transaction-start"; id: number }
   | { type: "reducer-load"; id: number; requestId: number; hash: string }
@@ -295,7 +303,7 @@ type WorkerRequest =
   | { type: "transaction-abort"; id: number }
   | { type: "publish"; id: number; kind: CodeKind; code: string }
   | { type: "result"; result: unknown }
-  | { type: "error"; error: string };
+  | { type: "error"; error: string; code?: string };
 
 function pageIdFromHostname(hostname: string): string | undefined {
   const label = hostname.split(".")[0];
@@ -334,44 +342,6 @@ function servePage(request: Request, url: URL, pageId: string): Response {
   return new Response(request.method === "HEAD" ? null : value, { headers });
 }
 
-function stateAddress(hash: string, visibility: StateVisibility, key: string): string {
-  return `${hash}\0${visibility}\0${key}`;
-}
-
-function checkedMutations(value: unknown, reducers: ReadonlySet<string>): StateMutation[] {
-  if (!Array.isArray(value) || value.length > MAX_TRANSACTION_MUTATIONS) {
-    throw new TypeError(`A transaction may contain at most ${MAX_TRANSACTION_MUTATIONS} state mutations`);
-  }
-  const encoded = JSON.stringify(value);
-  if (new TextEncoder().encode(encoded).byteLength > MAX_TRANSACTION_BYTES) throw new TypeError("Transaction is too large");
-  const seen = new Set<string>();
-  return value.map(item => {
-    const mutation = object(item);
-    if (typeof mutation.hash !== "string" || !reducers.has(mutation.hash)) throw new TypeError("Mutation targets an unloaded reducer");
-    if (mutation.visibility !== "private" && mutation.visibility !== "public") throw new TypeError("Invalid state visibility");
-    if (typeof mutation.key !== "string" || mutation.key.length > 1024) throw new TypeError("Invalid state key");
-    const address = stateAddress(mutation.hash, mutation.visibility, mutation.key);
-    if (seen.has(address)) throw new TypeError("Duplicate state mutation");
-    seen.add(address);
-    if (mutation.operation === "delete") {
-      return { hash: mutation.hash, visibility: mutation.visibility, key: mutation.key, operation: "delete" };
-    }
-    if (mutation.operation !== "set") throw new TypeError("Invalid state operation");
-    const serialized = JSON.stringify(mutation.value);
-    if (serialized === undefined || new TextEncoder().encode(serialized).byteLength > MAX_STATE_VALUE_BYTES) {
-      throw new TypeError("Invalid or oversized state value");
-    }
-    if (mutation.hash === PAGE_REDUCER_HASH && mutation.visibility === "public"
-      && (typeof mutation.value !== "string" || new TextEncoder().encode(mutation.value).byteLength > PAGE_MAX_BYTES)) {
-      throw new TypeError("Invalid or oversized page");
-    }
-    return {
-      hash: mutation.hash, visibility: mutation.visibility, key: mutation.key,
-      operation: "set", value: mutation.value,
-    };
-  });
-}
-
 async function invoke(
   hash: string,
   input: unknown,
@@ -397,7 +367,12 @@ async function invoke(
   }
   const worker = workerLease.worker;
   const started = performance.now();
-  const sessions = new Map<number, TransactionSession>();
+  const transactions = new TransactionCoordinator(storage, caller, TRANSACTION_LIMITS, (mutation: StateMutation) => {
+    if (mutation.operation === "set" && mutation.hash === PAGE_REDUCER_HASH && mutation.visibility === "public"
+      && (typeof mutation.value !== "string" || new TextEncoder().encode(mutation.value).byteLength > PAGE_MAX_BYTES)) {
+      throw new TypeError("Invalid or oversized page");
+    }
+  });
   let storageCharged = 0;
   let storageRepaid = 0;
 
@@ -409,7 +384,7 @@ async function invoke(
       clearTimeout(timer);
       worker.onmessage = null;
       worker.onerror = null;
-      sessions.clear();
+      transactions.clear();
       if (reusable) workerLease.release();
       else workerLease.discard();
       resolve(response);
@@ -425,60 +400,43 @@ async function invoke(
     worker.onmessage = event => {
       const message = event.data as WorkerRequest;
       if (message.type === "transaction-start") {
-        if (sessions.has(message.id)) {
-          worker.postMessage({ type: "transaction-start-result", id: message.id, ok: false, error: "Transaction already exists" });
-        } else {
-          sessions.set(message.id, { reducers: new Set(), reads: new Map() });
+        try {
+          transactions.begin(message.id);
           worker.postMessage({ type: "transaction-start-result", id: message.id, ok: true });
+        } catch (error) {
+          worker.postMessage({ type: "transaction-start-result", id: message.id, ok: false, error: String(error) });
         }
       } else if (message.type === "reducer-load") {
-        const session = sessions.get(message.id);
-        const reducer = storage.get(message.hash);
-        if (!session || !reducer || reducer.kind !== "reducer") {
-          worker.postMessage({
-            type: "reducer-result", requestId: message.requestId, ok: false,
-            error: !session ? "No active transaction" : `Unknown reducer: ${message.hash}`,
-          });
-        } else {
-          session.reducers.add(message.hash);
+        try {
+          const reducer = transactions.loadReducer(message.id, message.hash);
           worker.postMessage({ type: "reducer-result", requestId: message.requestId, ok: true, reducer });
+        } catch (error) {
+          worker.postMessage({ type: "reducer-result", requestId: message.requestId, ok: false, error: String(error) });
         }
       } else if (message.type === "state-read") {
-        const session = sessions.get(message.id);
-        if (!session || !session.reducers.has(message.hash)
-          || (message.visibility !== "private" && message.visibility !== "public")
-          || typeof message.key !== "string" || message.key.length > 1024) {
-          worker.postMessage({ type: "state-read-result", requestId: message.requestId, ok: false, error: "Invalid state read" });
-        } else {
-          const address = stateAddress(message.hash, message.visibility, message.key);
-          let read = session.reads.get(address);
-          if (!read) {
-            const value = storage.readState(message.hash, message.visibility, message.key);
-            read = { hash: message.hash, visibility: message.visibility, key: message.key, ...value };
-            session.reads.set(address, read);
-          }
-          worker.postMessage({
-            type: "state-read-result", requestId: message.requestId, ok: true,
-            found: read.found, value: read.value,
-          });
+        try {
+          const read = transactions.read(message.id, message.hash, message.visibility, message.key);
+          worker.postMessage({ type: "state-read-result", requestId: message.requestId, ok: true, ...read });
+        } catch (error) {
+          worker.postMessage({ type: "state-read-result", requestId: message.requestId, ok: false, error: String(error) });
         }
       } else if (message.type === "transaction-commit") {
-        const session = sessions.get(message.id);
-        if (!session) { worker.postMessage({ type: "commit-result", id: message.id, ok: false, error: "No active transaction" }); return; }
         try {
-          const mutations = checkedMutations(message.mutations, session.reducers);
-          const reads = [...session.reads.values()].map(({ hash, visibility, key, version }) => ({ hash, visibility, key, version }));
-          const settlement = storage.commitTransaction(caller, reads, mutations);
+          const settlement = transactions.commit(message.id, message.mutations);
           storageCharged += settlement.charged;
           storageRepaid += settlement.repaid;
           worker.postMessage({ type: "commit-result", id: message.id, ok: true });
         } catch (error) {
-          worker.postMessage({ type: "commit-result", id: message.id, ok: false, error: String(error) });
-        } finally {
-          sessions.delete(message.id);
+          worker.postMessage({
+            type: "commit-result",
+            id: message.id,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            code: error instanceof TransactionConflictError ? "transaction_conflict" : undefined,
+          });
         }
       } else if (message.type === "transaction-abort") {
-        sessions.delete(message.id);
+        transactions.abort(message.id);
       } else if (message.type === "publish") {
         try {
           const hash = validateSubmission(message.kind, message.code);
@@ -500,7 +458,13 @@ async function invoke(
           balance,
         }), true);
       } else if (message.type === "error") {
-        finish(json({ error: message.error, fuel: failedFuel(), balance: storage.balance(caller) }, 422), true);
+        const status = message.code === "transaction_conflict" ? 409 : 422;
+        finish(json({
+          error: message.error,
+          ...(message.code ? { code: message.code } : {}),
+          fuel: failedFuel(),
+          balance: storage.balance(caller),
+        }, status), true);
       }
     };
     worker.postMessage({
@@ -676,6 +640,9 @@ Bun.serve({
         },
       });
     }
+    if (request.method === "GET" && url.pathname === "/version") {
+      return json({ version: BOXOS_VERSION, runtime: BOXOS_RUNTIME_VERSION });
+    }
     if (request.method === "GET" && url.pathname === "/account") {
       try {
         const user = callerId(request);
@@ -684,8 +651,19 @@ Bun.serve({
     }
     if (request.method === "GET" && url.pathname === "/stats") {
       return json({
+        boxos: { version: BOXOS_VERSION, runtime: BOXOS_RUNTIME_VERSION },
         fuel: { initialUserFuel: INITIAL_USER_FUEL, runtimeFuelPerMillisecond: 1, maximumInvocation: MAX_FUEL },
-        storage: { fuelPerByte: STORAGE_FUEL_PER_BYTE, maximumValueBytes: MAX_STATE_VALUE_BYTES },
+        storage: {
+          fuelPerByte: STORAGE_FUEL_PER_BYTE,
+          maximumValueBytes: MAX_STATE_VALUE_BYTES,
+          transaction: {
+            maximumReducers: MAX_TRANSACTION_REDUCERS,
+            maximumReads: MAX_TRANSACTION_READS,
+            maximumReadBytes: MAX_TRANSACTION_READ_BYTES,
+            maximumMutations: MAX_TRANSACTION_MUTATIONS,
+            maximumWriteBytes: MAX_TRANSACTION_WRITE_BYTES,
+          },
+        },
         pages: { reducer: PAGE_REDUCER_HASH, maximumBytes: PAGE_MAX_BYTES },
       });
     }

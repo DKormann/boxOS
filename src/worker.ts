@@ -20,7 +20,7 @@ type Authorization = Readonly<{
   purpose: string;
   grantId: string;
 }>;
-type OperationResult = { ok: boolean; error?: string };
+type OperationResult = { ok: boolean; error?: string; code?: string };
 type TransactionStartResult = OperationResult & { type: "transaction-start-result"; id: number };
 type ReducerResult = OperationResult & { type: "reducer-result"; requestId: number; reducer?: StoredCode };
 type StateReadResult = OperationResult & {
@@ -35,6 +35,13 @@ type ParentMessage = Start | TransactionStartResult | ReducerResult | StateReadR
 
 type Pending<T> = { resolve: (value: T) => void; reject: (error: Error) => void };
 type CachedState = { found: boolean; value?: unknown };
+
+class WorkerOperationError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = "WorkerOperationError";
+  }
+}
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) =>
   (...values: unknown[]) => Promise<unknown>;
@@ -134,6 +141,7 @@ async function transaction(callback: unknown): Promise<unknown> {
   const stateLoads = new Map<string, Promise<CachedState>>();
   const mutations = new Map<string, StateMutation>();
   let invocationTail = Promise.resolve();
+  let invocationFailure: unknown;
   try {
     await new Promise<void>((resolve, reject) => {
       waitingStarts.set(id, { resolve, reject });
@@ -189,6 +197,7 @@ async function transaction(callback: unknown): Promise<unknown> {
         // transactions still run on separate workers in parallel, while local
         // ordering keeps transaction behavior deterministic.
         const invocation = invocationTail.then(async () => {
+          if (invocationFailure !== undefined) throw invocationFailure;
           const reducer = await loadReducer(hash);
           return cloneJson(await runReducer(
             reducer,
@@ -198,12 +207,19 @@ async function transaction(callback: unknown): Promise<unknown> {
             mutations,
           ), "Reducer result");
         });
-        invocationTail = invocation.then(() => undefined, () => undefined);
+        // Record failures on the ordered tail as well as rejecting the returned
+        // promise. The tail itself stays handled: awaited calls can throw into
+        // the callback, while a forgotten `await` is still checked before commit.
+        invocationTail = invocation.then(
+          () => undefined,
+          error => { invocationFailure ??= error; },
+        );
         return invocation;
       },
     });
     const result = cloneJson(await (callback as (transaction: typeof tx) => unknown)(tx), "Transaction result");
     await invocationTail;
+    if (invocationFailure !== undefined) throw invocationFailure;
     await new Promise<void>((resolve, reject) => {
       waitingCommits.set(id, { resolve, reject });
       message({ type: "transaction-commit", id, mutations: [...mutations.values()] });
@@ -345,14 +361,18 @@ async function run(start: Start): Promise<void> {
     }
     message({ type: "result", result: cloneJson(result, "Result") });
   } catch (error) {
-    message({ type: "error", error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+    message({
+      type: "error",
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      code: error instanceof WorkerOperationError ? error.code : undefined,
+    });
   }
 }
 
 function settle<T>(pending: Pending<T> | undefined, data: OperationResult, value: T): void {
   if (!pending) return;
   if (data.ok) pending.resolve(value);
-  else pending.reject(new Error(data.error ?? "Worker operation failed"));
+  else pending.reject(new WorkerOperationError(data.error ?? "Worker operation failed", data.code));
 }
 
 onmessage = (event: MessageEvent<ParentMessage>) => {

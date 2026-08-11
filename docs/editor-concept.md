@@ -62,7 +62,7 @@ Changing an upstream draft marks dependent drafts as changed. Publishing proceed
 No reference comments or separate manifest are required. The restricted JavaScript parser reports every 64-character code hash used as a string literal. Studio treats those literals as outgoing connections and attempts to inspect each target. For HTML pages, Studio scans for the same full hash literals.
 
 ```js
-return tx.invoke("22b2e192642c1098fc5a59222ada9233decbe93294f91f6d068d6e63e63d63c0", input);
+return tx.invoke("44dabe0ca198dc5804be21299d5ec61a0fa032ad3bb31a5adf038d6a1ddadf79", input);
 ```
 
 This keeps executable source authoritative and makes ordinary code directly inspectable. A hash assembled dynamically at runtime will not appear in the graph; Studio can simply label the node as having dynamic dependencies rather than introducing hidden metadata.

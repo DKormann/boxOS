@@ -2,6 +2,16 @@
 
 BOXOS stores restricted JavaScript by content hash and executes it with persistent reducer state. Production is available at `https://boxos.org`.
 
+## Version
+
+```http
+GET /version
+```
+
+Returns `{ version, runtime }`. `version` is the semantic BOXOS server/API release, currently `0.2.0`. `runtime` identifies the immutable execution semantics assigned to stored source, currently `1`. These versions are deliberately separate: the server can gain compatible routes or operational improvements without changing what an existing code hash means.
+
+The same pair appears under `boxos` in `GET /stats`. Clients can call `boxos.version()` without authentication.
+
 New to BOXOS? Start with the [application quickstart](/docs). Coding agents can fetch the compact publication contract from [`/agents`](/agents).
 
 ## Authentication and accounts
@@ -85,7 +95,7 @@ A successful response has this shape:
 A reducer receives `ctx` and `input`. It executes transactionally and can access only its own state.
 
 ```js
-let count = ctx.state.public.get("count") || 0;
+let count = await ctx.state.public.get("count") || 0;
 count += 1;
 ctx.state.public.set("count", count);
 return count;
@@ -97,8 +107,8 @@ Available reducer capabilities:
 - `ctx.authorization`: a runtime-verified signed account grant when its resource is this reducer; otherwise `undefined`.
 - `ctx.sha256(string)`: full hexadecimal SHA-256 hash.
 - `ctx.pageHash(string)`: 16-character page content ID.
-- `ctx.state.private.get/has/set/delete(key, value)`.
-- `ctx.state.public.get/has/set/delete(key, value)`.
+- `await ctx.state.private.get(key)` and `await ctx.state.private.has(key)`; `set` and `delete` buffer mutations synchronously.
+- `await ctx.state.public.get(key)` and `await ctx.state.public.has(key)`; `set` and `delete` buffer mutations synchronously.
 
 Public and private versions of a key are separate slots. Only the owning reducer can write either slot. Private values are visible only to the reducer. Public values can also be inspected without authentication:
 
@@ -124,12 +134,14 @@ Available procedure capabilities:
 - `ctx.caller`: original caller ID.
 - `ctx.fetch(url, options)`: returns `{ status, ok, headers, body }`.
 - `ctx.transaction(callback)`: opens a transaction.
-- `tx.invoke(reducerHash, input)`: invokes a reducer inside that transaction.
+- `await tx.invoke(reducerHash, input)`: invokes a reducer inside that transaction.
 - `ctx.validate(kind, code)`: validates reducer or procedure source without storing it.
 - `ctx.publish(kind, code)`: validates and permanently registers source, charged to the original caller.
 - `ctx.verify(publicKey, message, signature)`: verifies an Ed25519 signature over arbitrary UTF-8 text.
 
-All reducer calls in one transaction share a snapshot and commit atomically. Reducers called by a procedure see the procedure's original caller and any runtime-verified authorization whose resource matches that reducer. Publication is permanent and is not rolled back if the publishing procedure later fails.
+All reducer calls in one transaction share a lazy, key-level snapshot and commit atomically. State is loaded only when `get` or `has` is awaited, while writes remain buffered in the worker until commit. BOXOS validates the version of every key read; a concurrent change to one of those keys aborts the invocation with HTTP `409` and code `transaction_conflict`. Transactions touching unrelated keys can execute concurrently and only serialize for the short SQLite commit.
+
+Reducer invocations within one transaction are ordered, while separate invocations can run on different workers in parallel. Reducers called by a procedure see the procedure's original caller and any runtime-verified authorization whose resource matches that reducer. Publication is permanent and is not rolled back if the publishing procedure later fails.
 
 BOXOS ships immutable validation and publication procedures as bundled userspace code. Applications such as Studio can validate and publish code through normal procedure invocation; their immutable hashes are embedded in the bundled application source rather than exposed as kernel API metadata.
 
@@ -142,13 +154,15 @@ BOXOS ships immutable validation and publication procedures as bundled userspace
 - Maximum source: 128 KiB.
 - Maximum state value: 256 KiB.
 
+Transactions also have explicit reducer, read-set, and write-set limits. Discover the current values under `storage.transaction` in `GET /stats`; these bound coordinator and worker memory independently of the total database size. See [Transaction architecture](transactions.md) for the isolation contract and scaling path.
+
 Invocation fuel is reserved before a worker starts. Successful execution refunds unused runtime fuel. Errors, timeouts, and worker crashes refund nothing.
 
 Creating state charges for its key and serialized JSON value. Replacing state repays the old entry and charges the new entry. Deleting state always repays the deleting caller. Failed and rolled-back transactions do not receive storage repayments.
 
 Identity, profiles, startup pages, Todo, Friends, app publishing, and app installations are bundled userspace applications rather than kernel API metadata. Their source and immutable hashes live in the repository and can be inspected through `/code/<hash>`. Signed application accounts and runtime-verified capability grants are documented at `/docs/accounts`.
 
-Current kernel prices and limits are available from:
+The current BOXOS/runtime versions, kernel prices, and limits are available from:
 
 ```http
 GET /stats
@@ -201,7 +215,7 @@ const boxos = new BoxOSClient("https://boxos.org");
 
 Main methods:
 
-- `account()` and `balance()`
+- `version()`, `account()`, and `balance()`
 - `stats()`
 - `authorize(capabilities, purpose, resource)` and `verifyAuthorization(authorization)`
 - `startupCandidateUrl(pageId)` and `offerAsStartupPage(pageId)`
@@ -218,6 +232,7 @@ By default the client creates a bearer identity in the current browser origin's 
 
 ## Other routes
 
+- `GET /version`: BOXOS server/API and stored-code runtime versions.
 - `GET /`: project pitch, or the signed account's startup page after browser login.
 - `GET /about`: always show the ordinary stored pitch page.
 - `GET /start?candidate=<page-id>`: confirm an immutable startup page.

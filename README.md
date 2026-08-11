@@ -4,6 +4,8 @@
 
 BOXOS turns restricted JavaScript and ordinary HTML into persistent internet applications. Source is stored under the SHA-256 hash of its exact contents, making every backend function immutable, inspectable, and permanently addressable.
 
+**Current release: BOXOS 0.2.0 · runtime 1.** Query any server at `GET /version`. The BOXOS version identifies the server/API release; the runtime version identifies the permanent semantics assigned to stored source.
+
 ```text
 HTML page  ──invoke──▶  reducer  ──transaction──▶  private/public state
      │
@@ -45,7 +47,7 @@ https://cdj4ofshc6bwc4df.pages.boxos.org/
 When the app needs durable state, add a reducer:
 
 ```js
-let count = ctx.state.public.get("count") || 0;
+let count = await ctx.state.public.get("count") || 0;
 count += 1;
 ctx.state.public.set("count", count);
 return count;
@@ -106,6 +108,7 @@ Configuration:
 - [HTTP API and runtime reference](docs/api.md)
 - [Signed accounts and capabilities](docs/accounts.md)
 - [Architecture and trust model](docs/proposal.md)
+- [Transaction architecture](docs/transactions.md)
 - [Studio design](docs/editor-concept.md)
 - [Example applications](examples/)
 

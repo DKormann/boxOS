@@ -14,6 +14,8 @@ A **reducer** owns an isolated persistent keyspace. It reads and writes that sta
 
 A **procedure** coordinates external work. It can make fetch requests, validate and publish new immutable code, and open a transaction that composes multiple reducers. Calls in one transaction commit atomically and retain the identity of the original caller.
 
+Transactions use lazy key-level reads and buffered writes rather than copying the global state into a worker. Every observed key carries a durable version. Commit validates that compact read set and applies the write set in one short SQLite transaction; conflicting work aborts, while transactions on unrelated keys can execute concurrently. Reducer calls inside one transaction remain ordered for deterministic composition, but independent invocations can run across the worker pool in parallel. The complete concurrency contract and scaling path are described in [Transaction architecture](transactions.md).
+
 This split keeps durable state changes deterministic and inspectable while still allowing applications to interact with the wider web.
 
 ## Identity and economics

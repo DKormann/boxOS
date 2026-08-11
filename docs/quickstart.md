@@ -70,7 +70,7 @@ The resulting URL is permanent. Changing even one byte of the page creates a new
 Backend code is a restricted JavaScript function body. A reducer can read and update only its own private and public state:
 
 ```js
-let count = ctx.state.public.get("count") || 0;
+let count = await ctx.state.public.get("count") || 0;
 if (input.action == "increment") {
   count += 1;
   ctx.state.public.set("count", count);
