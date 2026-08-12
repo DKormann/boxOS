@@ -61,9 +61,9 @@ External effects are outside the transaction. Fetching a URL or publishing immut
 
 ## Runtime evolution
 
-A content address is useful only if stored source keeps the same meaning. Source without a marker is permanently assigned to BOXOS runtime 1. Future incompatible semantics must use a first-line marker such as `// boxos-runtime: 2`; because the marker is source, it changes the hash. A host must reject unsupported runtime versions rather than execute them approximately.
+The design goal is for a content address to include enough information to identify its execution semantics. The current experiment uses runtime 1 and recognizes a first-line marker such as `// boxos-runtime: 1`; a future runtime could place a different marker in source and therefore receive a different hash.
 
-Bug fixes may tighten validation of newly registered code, but already accepted source must remain executable with its assigned runtime semantics. This keeps runtime upgrades visible instead of turning immutable addresses into mutable deployments.
+This is an architectural direction, not a 0.2 compatibility commitment. During the design phase, stored source may stop executing and runtime semantics may change without a compatibility layer or migration.
 
 ## Durable representation and migration
 

@@ -1,5 +1,7 @@
 # BOXOS signed accounts and capabilities
 
+> **Experimental 0.2 warning:** signed accounts, browser keys, profiles, grants, reducer state, and account-manager origins have no continuity or durability guarantee. They may become inaccessible or be deleted during an update. Do not use BOXOS 0.2 as the only store for an identity or important data.
+
 ## Accounts and profiles
 
 A BOXOS invocation has two independent identities:

@@ -1,6 +1,8 @@
 # BOXOS documentation
 
-BOXOS stores restricted JavaScript by content hash and executes it with persistent reducer state. Production is available at `https://boxos.org`.
+BOXOS stores restricted JavaScript by content hash and executes it with persistent reducer state. An experimental hosted instance is available at `https://boxos.org`.
+
+> **Version 0.2 is disposable.** There are no API, runtime, data, account, origin, availability, or retention guarantees. Everything described below may change or be reset without migration. Content addressing describes the current model; it is not a promise that the hosted service will preserve anything.
 
 ## Version
 
@@ -8,7 +10,7 @@ BOXOS stores restricted JavaScript by content hash and executes it with persiste
 GET /version
 ```
 
-Returns `{ version, runtime }`. `version` is the semantic BOXOS server/API release, currently `0.2.0`. `runtime` identifies the immutable execution semantics assigned to stored source, currently `1`. These versions are deliberately separate: the server can gain compatible routes or operational improvements without changing what an existing code hash means.
+Returns `{ version, runtime }`. `version` identifies the current BOXOS server/API release, presently `0.2.0`; `runtime` identifies the current stored-code semantics, presently `1`. Neither is a compatibility promise during 0.2.
 
 The same pair appears under `boxos` in `GET /stats`. Clients can call `boxos.version()` without authentication.
 

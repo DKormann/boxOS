@@ -2,6 +2,8 @@
 
 Use this guide when a user says: **“Go to boxos.org and develop an app.”**
 
+> **BOXOS 0.2 has no durability or compatibility guarantees.** APIs, runtime semantics, hashes, state, accounts, pages, origins, and all hosted data may change or disappear without migration. Keep local copies of all source and data. Do not promise users that a current URL, account, reducer, or deployment will survive an update. The project is presently optimizing for design quality, not compatibility.
+
 BOXOS apps are single, immutable HTML documents. They may call immutable backend reducers and procedures. Prefer the smallest design that works: one self-contained page, plus a reducer only when durable shared state is required.
 
 ## Fast path
@@ -120,7 +122,7 @@ values[Number(values.length)] = next;
 - All reducer calls in one procedure transaction commit atomically.
 - Never trust an account ID in input for authorization.
 - For user-owned data, request a signed capability with `boxos.authorize(...)` and derive ownership from `ctx.authorization.account` inside the reducer.
-- A page revision gets a new page ID. A reducer stays stable as long as its exact source remains unchanged, so state can survive UI revisions.
+- Within the current implementation, a page revision gets a new page ID and unchanged reducer source keeps its hash. This is not a 0.2 retention or compatibility guarantee.
 
 ## Quality checklist
 

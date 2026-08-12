@@ -1,5 +1,7 @@
 # BOXOS architecture proposal
 
+> This document describes a target design, not a 0.2 durability promise. During the current design phase, every API, runtime semantic, hash, account, page, and stored value may change or be discarded without migration. Design clarity takes priority over compatibility.
+
 ## Idea
 
 BOXOS makes a backend from small, transparent pieces of restricted JavaScript.

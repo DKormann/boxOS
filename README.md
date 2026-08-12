@@ -4,7 +4,9 @@
 
 BOXOS turns restricted JavaScript and ordinary HTML into persistent internet applications. Source is stored under the SHA-256 hash of its exact contents, making every backend function immutable, inspectable, and permanently addressable.
 
-**Current release: BOXOS 0.2.0 · runtime 1.** Query any server at `GET /version`. The BOXOS version identifies the server/API release; the runtime version identifies the permanent semantics assigned to stored source.
+**Current release: BOXOS 0.2.0 · runtime 1.** Query any server at `GET /version`.
+
+> **0.2 stability warning:** BOXOS currently provides no durability or compatibility guarantees whatsoever. APIs, runtime behavior, hashes, pages, state, accounts, grants, browser origins, and stored data may change or be deleted without migration. Keep your own source and data. The present priority is the beauty of the long-term design, not preservation of current deployments.
 
 ```text
 HTML page  ──invoke──▶  reducer  ──transaction──▶  private/public state
@@ -55,7 +57,7 @@ return count;
 
 See the **[application quickstart](docs/quickstart.md)** for a complete publication script.
 
-> **Coding agents:** the production service publishes a compact onboarding contract at [`https://boxos.org/agents`](https://boxos.org/agents). It explains how to build, validate, publish, and report a BOXOS application without repository-specific knowledge.
+> **Coding agents:** the hosted experiment publishes a compact onboarding contract at [`https://boxos.org/agents`](https://boxos.org/agents). It explains how to build, validate, publish, and report a BOXOS application without repository-specific knowledge.
 
 ## Core primitives
 
@@ -108,6 +110,7 @@ Configuration:
 - [HTTP API and runtime reference](docs/api.md)
 - [Signed accounts and capabilities](docs/accounts.md)
 - [Architecture and trust model](docs/proposal.md)
+- [Development phase and stability policy](docs/development.md)
 - [Transaction architecture](docs/transactions.md)
 - [Studio design](docs/editor-concept.md)
 - [Example applications](examples/)

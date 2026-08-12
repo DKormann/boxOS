@@ -15,16 +15,21 @@
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="Build immutable web applications with transparent, permanent backend functions.">
+<meta name="description" content="BOXOS 0.2 is an experimental backend design built from transparent, content-addressed functions.">
 <link rel="help" href="/agents" type="text/markdown" title="BOXOS agent onboarding">
 <title>BOXOS — transparent, permanent functions</title>
 <style>
-:root{font:18px/1.5 system-ui,sans-serif;color:#24252a;background:#fafafa}*{box-sizing:border-box}body{margin:0}main{width:min(46rem,calc(100% - 2rem));margin:10vh auto}h1{font-size:3rem;margin:0}h2{font-size:1.4rem;font-weight:500;color:#555}.actions,.account-actions{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin:1.5rem 0}button,.button{display:inline-block;padding:.75rem 1rem;border:0;border-radius:.55rem;background:#4f46d8;color:white;font:600 15px system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e7e7ec;color:#333}nav{display:flex;gap:1rem;flex-wrap:wrap;margin-top:2rem}a{color:#4f46d8}.card{margin:1.5rem 0;padding:1.2rem;border:1px solid #ddd;border-radius:.8rem;background:white}.muted,#message{color:#707078}#loading{margin:20vh auto;text-align:center;color:#777}body.pending main{display:none}body:not(.pending) #loading{display:none}[hidden]{display:none!important}
+:root{font:18px/1.5 system-ui,sans-serif;color:#24252a;background:#fafafa}*{box-sizing:border-box}body{margin:0}main{width:min(46rem,calc(100% - 2rem));margin:10vh auto}h1{font-size:3rem;margin:0}h2{font-size:1.4rem;font-weight:500;color:#555}.actions,.account-actions{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin:1.5rem 0}button,.button{display:inline-block;padding:.75rem 1rem;border:0;border-radius:.55rem;background:#4f46d8;color:white;font:600 15px system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e7e7ec;color:#333}nav{display:flex;gap:1rem;flex-wrap:wrap;margin-top:2rem}a{color:#4f46d8}.card{margin:1.5rem 0;padding:1.2rem;border:1px solid #ddd;border-radius:.8rem;background:white}.muted,#message{color:#707078}.warning{border-color:#d97706;background:#fff7ed}.warning strong{color:#9a3412}#loading{margin:20vh auto;text-align:center;color:#777}body.pending main{display:none}body:not(.pending) #loading{display:none}[hidden]{display:none!important}
 </style>
 <body class="pending">
 <div id="loading">Opening BOXOS…</div>
 <main>
-  <header><h1>BOXOS</h1><h2>A tiny backend made of transparent, permanent functions.</h2></header>
+  <header><h1>BOXOS</h1><h2>An experiment in transparent, content-addressed functions.</h2></header>
+  <section class="card warning" aria-label="Version 0.2 stability warning">
+    <strong>BOXOS 0.2 is experimental and disposable.</strong>
+    <p>There are no durability or compatibility guarantees. APIs, runtime behavior, hashes, pages, state, accounts, grants, browser origins, and all hosted data may change or disappear without migration. Keep your own copies of anything you care about.</p>
+    <p>The current focus is the beauty and clarity of the design—not preserving today’s applications or data.</p>
+  </section>
   <section id="pitch">
     <p>Submit restricted JavaScript once. BOXOS stores it under the SHA-256 hash of its exact source, gives it persistent state, and lets anyone inspect what it does.</p>
     <p><strong>Reducers</strong> update isolated state transactionally. <strong>Procedures</strong> make network requests and compose reducers. Immutable HTML pages receive permanent addresses and their own browser origins.</p>
@@ -41,7 +46,7 @@
     <div class="account-actions"><button id="change" class="secondary">Change account</button><button id="clear" class="secondary">Clear startup page</button><button id="sign-out" class="secondary">Log out</button></div>
   </section>
   <p id="message"></p>
-  <nav><a href="/docs">Build an app</a><a href="/examples/studio">Studio</a><a href="/examples">Examples</a><a href="/docs/api">API</a><a href="https://github.com/DKormann/boxOS">GitHub</a></nav>
+  <nav><a href="/docs">Developer Guide</a><a href="/examples/studio">Studio</a><a href="/examples">Examples</a><a href="/docs/api">API</a><a href="https://github.com/DKormann/boxOS">GitHub</a></nav>
 </main>
 <script type="module">
 import { BoxOSClient } from "/client.js";

@@ -1,5 +1,7 @@
 # Build a BOXOS app
 
+> **BOXOS 0.2 is experimental and disposable.** No API, URL, hash, state, account, page, or hosted data is guaranteed to survive an update. Keep local copies of everything you create.
+
 BOXOS applications are immutable HTML pages backed by immutable reducers and procedures. You can start with one file, publish it, and receive a permanent URL—there is no project configuration or deployment service.
 
 > **Coding agent?** Read the compact, machine-friendly guide at [`/agents`](/agents). It contains the complete publication workflow and platform constraints.
@@ -98,7 +100,7 @@ Each page origin automatically receives a separate bearer fuel identity in `loca
 - **Page:** UI and browser-side behavior. Start here.
 - **Reducer:** durable transactional state, permissions, ownership, and public data.
 - **Procedure:** network requests, code publication, or one transaction spanning multiple reducers.
-- **Signed capability:** user-owned data that should survive across applications without trusting an account ID supplied as ordinary input.
+- **Signed capability:** share user-owned data across applications in the current model without trusting an account ID supplied as ordinary input.
 
 ## Important constraints
 
