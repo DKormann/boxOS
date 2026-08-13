@@ -11,28 +11,24 @@ get(blob ID) -> exact bytes
 
 The store does not classify content as code, HTML, manifests, images, or data. Interpretation belongs to an immutable reference to the blob.
 
-A blob ID must commit to the exact bytes using a domain-separated content-addressing scheme. The exact encoding and hash algorithm remain to be specified.
+A blob ID commits to the exact bytes using SHA-256 over the UTF-8 domain prefix `BOXOS:BLOB:0.3.0\0` followed by the bytes. It is represented as `blob_` followed by the lowercase hexadecimal digest.
 
 ## Box definition
 
-A box definition contains an immutable named method table. Each method independently references one source blob and declares the runtime that interprets it.
-
-Conceptually:
+A box definition contains one runtime, a caller-selected instance string, and an immutable named method table. The runtime is fixed across the complete box; each method references one source blob.
 
 ```json
 {
+  "runtime": "boxos-js/0.3.0",
+  "instance": "production-counter",
   "methods": {
-    "create": {
-      "runtime": "boxos-js/1",
-      "blob": "<blob-id>"
-    },
-    "remove": {
-      "runtime": "boxos-js/1",
-      "blob": "<blob-id>"
-    }
+    "create": { "blob": "<blob-id>" },
+    "remove": { "blob": "<blob-id>" }
   }
 }
 ```
+
+`instance` distinguishes boxes containing the same code. It is deliberately supplied by the creator rather than generated randomly. It may be a meaningful stable name, deployment identifier, or application-derived string. Reusing the same complete JSON definition identifies the same box.
 
 There is no method kind. In particular, methods are not classified as reducers or procedures. The same method model supports synchronous atomic state transitions and asynchronous effect orchestration.
 
@@ -40,17 +36,18 @@ There is no method kind. In particular, methods are not classified as reducers o
 
 Before a box becomes invocable, BOXOS must:
 
-1. decode and canonicalize its complete definition;
-2. validate all method names and reject duplicates;
+1. parse its complete JSON definition;
+2. validate the runtime, instance, and all method names;
 3. retrieve every referenced blob;
-4. verify that every declared runtime is supported;
+4. verify that the box runtime is supported;
 5. validate each method blob under that runtime;
 6. reject the complete box if any method is invalid;
-7. derive the box ID from a canonical identity object containing the validated definition and any creation fields the final identity design requires.
+7. serialize the parsed definition with plain `JSON.stringify`;
+8. derive the box ID from those exact UTF-8 bytes.
 
-The method table is permanently immutable within this model. Changing, adding, or removing a method creates a different box.
+The box ID is SHA-256 over `BOXOS:BOX:0.3.0\0` followed by the serialized definition, represented as `box_` and the lowercase hexadecimal digest. BOXOS 0.3.0 intentionally performs no canonicalization or key sorting. JSON object property order is therefore identity-significant.
 
-A box ID identifies both its immutable interface and its isolated state namespace. The exact derivation remains open, including whether an explicit creation salt is needed. No implementation should assume an answer until that decision is made.
+The method table and instance are permanently immutable. Changing code, runtime, method order, property order, or instance creates a different box identity. A new instance string creates an independent state namespace for otherwise identical code. Repeating the same serialized definition is idempotent.
 
 ## State ownership
 

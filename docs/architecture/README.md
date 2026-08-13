@@ -1,6 +1,6 @@
 # BOXOS architecture draft
 
-Status: **pre-implementation design for BOXOS 0.2**
+Status: **incremental implementation design for BOXOS 0.3.0**
 
 This folder defines the architecture agreed for the next implementation. It is intentionally incomplete. The current repository will eventually be discarded and rebuilt from these specifications, so these documents describe the intended system rather than the current code.
 
@@ -13,14 +13,18 @@ Nothing here is a compatibility, migration, availability, or data-retention prom
 ## Documents
 
 1. [Principles and vocabulary](principles.md)
-2. [Blobs, boxes, and methods](boxes.md)
-3. [Invocations and atomic state](execution.md)
-4. [Tasks and effects](tasks.md)
-5. [Accounts, signatures, and calls](accounts.md)
-6. [Fuel accounting](fuel.md)
-7. [Open decisions](open-decisions.md)
+2. [BOXOS values](values.md)
+3. [Blobs, boxes, and methods](boxes.md)
+4. [Invocations and atomic state](execution.md)
+5. [Tasks and effects](tasks.md)
+6. [Accounts, signatures, and calls](accounts.md)
+7. [Fuel accounting](fuel.md)
+8. [Hosted pages](pages.md)
+9. [Method language direction](language.md)
+10. [HTTP protocol 0.3.0](protocol.md)
+11. [Open decisions](open-decisions.md)
 
-The restricted method language will be specified separately after this architectural layer is accepted.
+The language document records the agreed initial restrictions and asynchronous model. Implementation proceeds in small layers; blobs and box definitions precede method execution.
 
 ## Normative language
 
@@ -34,11 +38,12 @@ The restricted method language will be specified separately after this architect
 These documents do not yet specify:
 
 - method-language syntax;
-- canonical encodings and cryptographic algorithms;
-- HTTP routes or browser SDK signatures;
-- physical storage layout;
+- signature algorithms and signed-command details;
+- invocation and browser SDK signatures;
+- scheduling and physical box-state layout;
 - scheduling algorithms;
 - durable messaging;
+- exact page ID encoding and hosting route;
 - account issuance or initial fuel allocation;
 - production security and operational policy.
 

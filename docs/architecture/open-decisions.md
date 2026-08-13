@@ -4,13 +4,6 @@ This file prevents provisional ideas from being mistaken for agreed architecture
 
 ## Architecture
 
-### Box identity
-
-The method table is immutable and belongs in the box identity. It remains undecided whether two creations with identical definitions identify one box or whether a creation salt permits independent state namespaces with identical behavior.
-
-### Box creation
-
-The canonical definition format, validation command, creator authority, initial state, and fuel cost are not specified.
 
 ### Self-reference and dependency cycles
 
@@ -24,50 +17,43 @@ Public state exists, but consistency guarantees, authentication, response limits
 
 Owned Tasks cannot outlive an invocation accidentally. A first-class durable `send` capability may be needed, but its persistence, delivery, retry, idempotency, failure, and fuel semantics are not designed.
 
-### Account replay protection
-
-Accounts need replay state. A strict monotonic nonce is minimal but complicates concurrent client commands. Alternatives such as bounded nonce windows or unique command IDs require comparison.
-
 ### Network domain
 
 Signed kernel commands must be bound to an intended BOXOS network or deployment. The identity and migration implications of that domain are unresolved.
 
-### Failure charging
+### Metering prices
 
-The treatment of unused purse fuel after application errors, timeouts, cancellation, runtime crashes, and transaction failure is not yet agreed.
+All terminal outcomes refund the reservation minus actual settled charges. The cost units and formulas for compute, requests, storage, calls, and failure cleanup remain unspecified.
+
+### Page identifiers
+
+Pages are fuel-charged hosted HTML blobs with short collision-checked IDs and isolated origins. The shortening length, alphabet, domain separation, hosting limits, and route shape remain implementation decisions.
 
 ## Language specification
 
-The language is the next major design phase. It must define:
+The agreed direction is recorded in [Method language direction](language.md): a restricted JavaScript-like method body, eager invocation-owned Tasks, top-level `await`, `.then` and `.catch` callbacks, no native Promise or user-declared async functions, and synchronous explicit atomic blocks enforced by both validator and runtime.
 
-- source grammar and runtime versioning;
-- method arguments, result, and context bindings;
-- the exact BOXOS value domain;
-- canonical serialization and size/depth limits;
-- `ctx.atomic` callback syntax and enforcement;
-- state APIs and visibility;
-- Task type and allowed callback operations;
-- top-level `await`;
-- whether user-declared async helpers exist;
-- `ctx.request`, `ctx.call`, and `ctx.all` signatures;
-- arbitrary signing and verification APIs;
-- use of private keys held in box state;
-- storage payer and refund selection;
-- errors and catchability;
+The complete language still must define:
+
+- source grammar;
+- complete BOXOS value validation;
+- JSON size and depth limits;
+- errors, catchability, and returned-Task failure;
+- object, array, number, Unicode, and string semantics;
+- request and response schemas;
+- APIs for keys, signing, transfer, and separately funded invocation;
+- storage refund selection;
 - deterministic computation primitives;
-- recursion, call depth, memory, and execution limits;
-- pure globally pinned helper libraries, if any;
-- prohibition of ambient authority and native async sources.
+- recursion, loop, stack, heap, source, and execution limits;
+- pure globally pinned helper libraries, if any.
 
 ## Protocol and SDK
 
 The architecture intentionally does not yet settle:
 
 - hash and signature algorithms;
-- canonical command encoding;
-- HTTP route names;
+- signed-command fields;
 - client key-storage policy;
-- wire error format;
 - streaming;
 - retry helpers;
 - method discovery and inspection APIs.
@@ -90,13 +76,11 @@ No method should be able to detect or depend on these choices.
 
 ## Questions to answer before rewriting
 
-1. What exact object is hashed to form a box ID?
-2. Can identical definitions create independent boxes?
-3. How is initial box state established atomically?
-4. What is the exact value and error model?
-5. What source language makes Tasks and synchronous atomic blocks enforceable and pleasant?
-6. What replay scheme supports concurrent signed commands safely?
-7. How does a box use a private key without accidentally exposing it as an ordinary return value or request argument?
-8. Which fuel costs are protocol semantics and which are deployment pricing?
-9. How are methods admitted, queued, timed out, and cancelled?
-10. Is durable messaging necessary in the first rewrite?
+1. How is initial box state established atomically?
+2. What complete grammar makes Tasks and synchronous atomic blocks enforceable and pleasant?
+3. How does a box use a private key without accidentally exposing it as an ordinary return value or request argument?
+4. Which fuel costs are protocol semantics and which are deployment pricing?
+5. How are methods admitted, queued, timed out, and cancelled?
+6. What happens when the method's returned Task rejects?
+7. Is durable messaging necessary in the first rewrite?
+8. Which page-hosting mechanism is smaller: a kernel handler or a built-in immutable box?

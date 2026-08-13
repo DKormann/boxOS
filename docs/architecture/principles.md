@@ -56,11 +56,11 @@ A synchronous state transition over the current box only. Atomic blocks from one
 
 ### Task
 
-A lazy BOXOS-owned asynchronous computation. Tasks are thenable for language ergonomics but are not native JavaScript promises.
+An eager BOXOS-owned asynchronous computation. Tasks are thenable for language ergonomics but are not native JavaScript promises. Every Task belongs to one invocation, which remains active until all of its Tasks settle.
 
 ### Account
 
-A public key, fuel balance, and replay state maintained by the kernel. Possession of the corresponding private key is complete authority to act as the account.
+A public key, fuel balance, and strict next nonce maintained by the kernel. Possession of the corresponding private key is complete authority to act as the account.
 
 ### Root caller
 
@@ -72,4 +72,4 @@ The box and method that initiated a child invocation, or absent for a root invoc
 
 ### Purse
 
-A bounded amount of fuel reserved for one invocation or child task. Purses prevent concurrent or nested work from spending the same fuel twice.
+A fixed bounded amount of fuel reserved for one invocation. All work continuing that invocation, including concurrent Tasks and child calls, spends from the same kernel-owned purse. Another account funds a separate invocation rather than recharging it.

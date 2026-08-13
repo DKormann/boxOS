@@ -7,7 +7,7 @@ An account is a kernel record containing:
 ```text
 public key
 fuel balance
-replay state
+next nonce
 ```
 
 Accounts are the only native owners of fuel. Boxes do not intrinsically have identities or balances.
@@ -31,7 +31,7 @@ A root invocation conceptually signs:
 ```text
 operation domain
 account public key
-replay value
+nonce
 box ID
 method name
 maximum fuel
@@ -39,7 +39,9 @@ arguments
 network or deployment domain
 ```
 
-The exact canonical encoding and replay scheme remain to be specified. The wire representation should contain only the canonical command and its signature.
+Runtime 1 uses a strict monotonically increasing nonce per account. A command is accepted only when its nonce equals the account's next nonce; successful acceptance advances it exactly once. This intentionally favors a small replay model over convenient concurrent submission from multiple clients. Clients must coordinate nonce allocation themselves.
+
+Commands are validated and serialized with plain `JSON.stringify`, then encoded as UTF-8 for signing. Property insertion order is significant. The wire representation contains only the command and its signature.
 
 The ergonomic client API may remain minimal:
 
@@ -71,16 +73,14 @@ This is the foundation for application-defined:
 - revocation registries;
 - multisignature policy.
 
-BOXOS does not impose one universal capability envelope. Applications must domain-separate and canonically encode their own signed messages.
+BOXOS does not impose one universal capability envelope. Applications must domain-separate their signed messages. Structured messages use validated plain `JSON.stringify` encoding.
 
 ## Cross-box calls
 
 A box may invoke another box, but every cross-box call is asynchronous and returns an owned Task:
 
 ```js
-let result = await ctx.call(targetBox, "lookup", args, {
-  maxFuel: 300
-});
+let result = await ctx.call(targetBox, "lookup", args);
 ```
 
 A child call:
@@ -90,7 +90,7 @@ A child call:
 - shares no heap or state transaction with the caller;
 - preserves the root caller account;
 - records the immediate calling box and method;
-- receives a bounded child purse;
+- spends from the root invocation's shared fixed purse;
 - returns a value or error to the parent Task.
 
 The target context can distinguish:
@@ -116,7 +116,9 @@ For narrow authority, the account should sign an application message bound to th
 
 ## Calling as another account
 
-Ordinary child calls continue the original invocation and need no additional private key. A box needs an account key only when it wants to create new authority—for example, to start a root operation as another account, spend that account's independent balance, transfer its fuel, or sign an application message.
+Ordinary child calls continue the original invocation and need no additional private key. A box needs an account key only when it wants to create new authority—for example, to start a separately funded invocation as another account, transfer that account's fuel, or sign an application message.
+
+A separately funded invocation has its own authenticated caller, fixed purse, and receipt. It remains an owned Task of the parent invocation for lifecycle purposes, but it does not recharge or share the parent's purse.
 
 The exact method-language API for using a key held in private state remains to be designed.
 

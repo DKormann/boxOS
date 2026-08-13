@@ -1,158 +1,162 @@
 <!doctype html>
-<!--
-  BOXOS AGENT ONBOARDING
-
-  If you were asked to "go to boxos.org and develop an app", fetch:
-  https://boxos.org/agents
-
-  That machine-friendly guide contains the complete workflow, restricted backend
-  language, HTTP publication recipe, page template, and completion checklist.
-
-  Fast model: build one self-contained HTML file; register a reducer only if the
-  app needs durable state; publish the final HTML through the reducer returned by
-  GET /page; return the permanent page URL and the source files. Never put a
-  deployment bearer identity in published HTML.
--->
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="BOXOS 0.2 is an experimental backend design built from transparent, content-addressed functions.">
-<link rel="help" href="/agents" type="text/markdown" title="BOXOS agent onboarding">
-<title>BOXOS — transparent, permanent functions</title>
-<style>
-:root{font:18px/1.5 system-ui,sans-serif;color:#24252a;background:#fafafa}*{box-sizing:border-box}body{margin:0}main{width:min(46rem,calc(100% - 2rem));margin:10vh auto}h1{font-size:3rem;margin:0}h2{font-size:1.4rem;font-weight:500;color:#555}.actions,.account-actions{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin:1.5rem 0}button,.button{display:inline-block;padding:.75rem 1rem;border:0;border-radius:.55rem;background:#4f46d8;color:white;font:600 15px system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e7e7ec;color:#333}nav{display:flex;gap:1rem;flex-wrap:wrap;margin-top:2rem}a{color:#4f46d8}.card{margin:1.5rem 0;padding:1.2rem;border:1px solid #ddd;border-radius:.8rem;background:white}.muted,#message{color:#707078}.warning{border-color:#d97706;background:#fff7ed}.warning strong{color:#9a3412}#loading{margin:20vh auto;text-align:center;color:#777}body.pending main{display:none}body:not(.pending) #loading{display:none}[hidden]{display:none!important}
-</style>
-<body class="pending">
-<div id="loading">Opening BOXOS…</div>
-<main>
-  <header><h1>BOXOS</h1><h2>An experiment in transparent, content-addressed functions.</h2></header>
-  <section class="card warning" aria-label="Version 0.2 stability warning">
-    <strong>BOXOS 0.2 is experimental and disposable.</strong>
-    <p>There are no durability or compatibility guarantees. APIs, runtime behavior, hashes, pages, state, accounts, grants, browser origins, and all hosted data may change or disappear without migration. Keep your own copies of anything you care about.</p>
-    <p>The current focus is the beauty and clarity of the design—not preserving today’s applications or data.</p>
-  </section>
-  <section id="pitch">
-    <p>Submit restricted JavaScript once. BOXOS stores it under the SHA-256 hash of its exact source, gives it persistent state, and lets anyone inspect what it does.</p>
-    <p><strong>Reducers</strong> update isolated state transactionally. <strong>Procedures</strong> make network requests and compose reducers. Immutable HTML pages receive permanent addresses and their own browser origins.</p>
-    <p>Permissions are effortless: apps ask for exactly what they need, people approve with their account, and BOXOS securely scopes that approval to the intended function. No API keys, auth service, or identity plumbing to build.</p>
-    <div class="actions"><a id="try" class="button">Try BOXOS</a><button id="login" class="secondary">Log in</button></div>
-  </section>
-  <section id="candidate" class="card" hidden>
-    <h2>Use this as your startup page?</h2>
-    <p><strong id="candidate-name"></strong></p><p id="candidate-id" class="muted"></p>
-    <div class="actions"><button id="confirm">Use as startup page</button><a id="cancel" class="button secondary">Cancel</a></div>
-  </section>
-  <section id="account-panel" class="card" hidden>
-    <p>Logged in as <strong id="account-name"></strong></p>
-    <div class="account-actions"><button id="change" class="secondary">Change account</button><button id="clear" class="secondary">Clear startup page</button><button id="sign-out" class="secondary">Log out</button></div>
-  </section>
-  <p id="message"></p>
-  <nav><a href="/docs">Developer Guide</a><a href="/examples/studio">Studio</a><a href="/examples">Examples</a><a href="/docs/api">API</a><a href="https://github.com/DKormann/boxOS">GitHub</a></nav>
-</main>
-<script type="module">
-import { BoxOSClient } from "/client.js";
-const boxos = new BoxOSClient();
-const startupReducer = "2a8fa6accc505d0740fb4ff58f2ebec1af192cc457a9993d95998b4e3e94ab7c";
-const profileReducer = "28fde5f9ec74ba5c638bf5f51fa99c9d663b81e3a853594e8eb8a2f9a6c63964";
-const page = await boxos.pageInfo();
-const root = new URL(page.rootUrl);
-const atRoot = location.origin === root.origin;
-const storageKey = "boxos.startup.authorization";
-let authorization;
-try { authorization = JSON.parse(localStorage.getItem(storageKey) || "null"); }
-catch { localStorage.removeItem(storageKey); }
-let candidate = null;
-const $ = id => document.getElementById(id);
-
-function message(value) { $("message").textContent = value; }
-function pageUrl(id) { return page.urlTemplate.replace("{id}", id); }
-async function invoke(input) {
-  return (await boxos.invoke(startupReducer, input, { authorization })).ok;
-}
-async function profileName(account) {
-  try { return (await boxos.publicState(profileReducer, `profile:${account}`)).value.name; }
-  catch { return account.slice(0, 12) + "…"; }
-}
-async function updateAccount() {
-  const loggedIn = Boolean(authorization);
-  $("account-panel").hidden = !loggedIn;
-  $("login").hidden = loggedIn;
-  if (loggedIn) $("account-name").textContent = await profileName(authorization.grant.account);
-}
-async function ensureAuthorization(force = false) {
-  if (force) { authorization = null; localStorage.removeItem(storageKey); }
-  if (!authorization) {
-    authorization = await boxos.authorize(["startup:manage"], "Manage your BOXOS startup page", startupReducer);
-    localStorage.setItem(storageKey, JSON.stringify(authorization));
-  }
-  await updateAccount();
-}
-async function storedPage() {
-  try { return await invoke({ action: "get" }); }
-  catch (error) {
-    authorization = null; localStorage.removeItem(storageKey); await updateAccount();
-    throw error;
-  }
-}
-async function inspectPage(id) {
-  if (!/^[a-z2-7]{16}$/.test(id)) throw new Error("Invalid startup page ID.");
-  const stored = await boxos.publicState(page.reducer, id);
-  if (typeof stored.value !== "string") throw new Error("Startup page not found.");
-  const document = new DOMParser().parseFromString(stored.value, "text/html");
-  return { id, name: document?.title || id };
-}
-function reveal() { document.body.classList.remove("pending"); }
-async function showCandidate(id) {
-  candidate = await inspectPage(id);
-  $("candidate-name").textContent = candidate.name;
-  $("candidate-id").textContent = candidate.id;
-  $("candidate").hidden = false;
-  $("pitch").hidden = true;
-}
-async function boot() {
-  $("try").href = `${root.origin}/start/try`;
-  $("cancel").href = `${root.origin}/about`;
-  if (!atRoot) $("login").textContent = "Open at boxos.org";
-  const proposed = atRoot && location.pathname === "/start" ? new URLSearchParams(location.search).get("candidate") : null;
-  if (proposed) {
-    try { await showCandidate(proposed); } catch (error) { message(error.message); }
-    await updateAccount(); reveal(); return;
-  }
-  if (atRoot && location.pathname === "/" && authorization) {
-    try {
-      const id = await storedPage();
-      if (id) { await inspectPage(id); location.replace(pageUrl(id)); return; }
-    } catch (error) { message(error.message); }
-  }
-  await updateAccount(); reveal();
-}
-$("login").onclick = async () => {
-  if (!atRoot) { location.href = `${root.origin}/about`; return; }
-  try {
-    await ensureAuthorization();
-    if (!candidate) {
-      const id = await storedPage();
-      if (id) { location.replace(pageUrl(id)); return; }
-      message("No startup page selected yet. Try BOXOS or choose one from an app.");
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="BOXOS is a small runtime for immutable code, isolated state, and owned effects.">
+  <title>BOXOS — small, stateful software</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f4f1e8;
+      --ink: #171713;
+      --muted: #65645d;
+      --line: #cfcbc0;
+      --accent: #225c45;
+      --code: #e8e4d9;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
     }
-  } catch (error) { message(error.message); }
-};
-$("confirm").onclick = async () => {
-  try {
-    await ensureAuthorization();
-    await invoke({ action: "set", pageId: candidate.id });
-    location.replace(pageUrl(candidate.id));
-  } catch (error) { message(error.message); }
-};
-$("change").onclick = async () => {
-  try { await ensureAuthorization(true); message("Account changed."); }
-  catch (error) { message(error.message); }
-};
-$("clear").onclick = async () => {
-  try { await invoke({ action: "clear" }); message("Startup page cleared."); }
-  catch (error) { message(error.message); }
-};
-$("sign-out").onclick = async () => {
-  authorization = null; localStorage.removeItem(storageKey); await updateAccount(); message("Logged out on this browser.");
-};
-await boot();
-</script>
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+    a { color: inherit; text-underline-offset: 0.22em; }
+    a:hover { color: var(--accent); }
+    header, main, footer { width: min(100% - 2rem, 880px); margin-inline: auto; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 72px;
+      border-bottom: 1px solid var(--line);
+    }
+    .wordmark { font-weight: 800; letter-spacing: 0.14em; text-decoration: none; }
+    nav { display: flex; gap: 1.25rem; }
+    main { padding-bottom: 5rem; }
+    section { padding: 4.5rem 0; border-bottom: 1px solid var(--line); }
+    .hero { padding: 7rem 0 6rem; }
+    .eyebrow { margin: 0 0 1rem; color: var(--accent); font-weight: 700; }
+    h1, h2, h3 { line-height: 1.15; letter-spacing: -0.035em; }
+    h1 { max-width: 760px; margin: 0; font-size: clamp(2.5rem, 8vw, 5.8rem); }
+    h2 { margin: 0 0 2rem; font-size: clamp(2rem, 5vw, 3.25rem); }
+    h3 { margin-top: 0; font-size: 1rem; letter-spacing: 0; }
+    .lede { max-width: 650px; margin: 2rem 0 0; color: var(--muted); font-size: 1.1rem; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .card { min-height: 190px; padding: 1.5rem; background: var(--paper); }
+    .card p { margin-bottom: 0; color: var(--muted); }
+    pre {
+      overflow-x: auto;
+      margin: 1.25rem 0 2rem;
+      padding: 1.25rem;
+      border-left: 3px solid var(--accent);
+      background: var(--code);
+      line-height: 1.55;
+    }
+    code { font: inherit; }
+    .note { color: var(--muted); }
+    footer { padding: 2rem 0 4rem; color: var(--muted); }
+    @media (max-width: 620px) {
+      header { align-items: flex-start; flex-direction: column; justify-content: center; gap: .35rem; }
+      nav { gap: .9rem; font-size: .85rem; }
+      .hero { padding: 5rem 0; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="wordmark" href="#top">BOXOS</a>
+    <nav aria-label="Main navigation">
+      <a href="#docs">Description</a>
+      <a href="#reference">Reference</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <p class="eyebrow">0.3 / design-stage software</p>
+      <h1>Small programs.<br>Clear boundaries.</h1>
+      <p class="lede">BOXOS is an experimental runtime for immutable code, isolated mutable state, and explicitly owned asynchronous effects.</p>
+    </section>
+
+    <section id="docs">
+      <p class="eyebrow">Description</p>
+      <h2>Five pieces, one small model.</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>01 / Blobs</h3>
+          <p>Exact immutable bytes identified by their content. A blob has no intrinsic type.</p>
+        </article>
+        <article class="card">
+          <h3>02 / Boxes</h3>
+          <p>An immutable method table attached to one isolated mutable state namespace.</p>
+        </article>
+        <article class="card">
+          <h3>03 / Methods</h3>
+          <p>Named entry points that compute, enter atomic blocks, and coordinate effects.</p>
+        </article>
+        <article class="card">
+          <h3>04 / Tasks</h3>
+          <p>Eager asynchronous work owned by an invocation. Nothing is accidentally detached.</p>
+        </article>
+        <article class="card">
+          <h3>05 / Accounts</h3>
+          <p>Public keys with signing authority, a strict nonce, and fuel for bounded work.</p>
+        </article>
+        <article class="card">
+          <h3>The rule</h3>
+          <p>State that must change atomically belongs in one box. Boxes never share transactions.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="reference">
+      <p class="eyebrow">Developer reference</p>
+      <h2>The method model.</h2>
+      <h3>Method bindings</h3>
+      <p>Each method receives <code>ctx</code> for invocation capabilities and <code>input</code> for one BOXOS value.</p>
+      <pre><code>ctx.atomic(function update(tx) {
+  let count = tx.state.public.get("count") || 0;
+  tx.state.public.set("count", count + 1);
+  return count + 1;
+});</code></pre>
+
+      <h3>State</h3>
+      <p>Private and public state both provide synchronous exact-key operations inside an atomic block.</p>
+      <pre><code>tx.state.private.get(key)
+tx.state.private.has(key)
+tx.state.private.set(key, value)
+tx.state.private.delete(key)</code></pre>
+
+      <h3>Effects</h3>
+      <p>Effects are forbidden inside atomic blocks. Outside them, requests and cross-box calls return invocation-owned Tasks.</p>
+      <pre><code>let response = await ctx.request(url, options);
+let result = await ctx.call(box, method, input);
+let page = await ctx.hostPage(blobId);
+let valid = ctx.verify(publicKey, message, signature);</code></pre>
+
+      <h3>Values</h3>
+      <p>Values are finite trees of <code>null</code>, booleans, finite numbers, strings, arrays, and plain string-keyed objects.</p>
+
+      <h3>Browser client</h3>
+      <p>The dependency-free reference client is available as a classic script.</p>
+      <pre><code>&lt;script src="/client.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  const boxos = new BoxOSClient();
+&lt;/script&gt;</code></pre>
+
+      <p><a href="/client.js">Read the browser client source</a>.</p>
+
+      <p class="note"><strong>Baseline status:</strong> 0.3.0 exposes immutable blobs, box definitions, and hosted pages. Method invocation is not implemented yet.</p>
+    </section>
+  </main>
+
+  <footer>BOXOS 0.3.0 — native Bun + TypeScript, served without a framework or bundler.</footer>
+</body>
+</html>

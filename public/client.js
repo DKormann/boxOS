@@ -1,179 +1,66 @@
-// Minimal browser client for BOXOS. No build step or dependencies required.
-export class BoxOSClient {
-  constructor(baseUrl = globalThis.location?.origin, options = {}) {
+// BOXOS 0.3.0 reference browser client. No dependencies or build step.
+class BoxOSClient {
+  constructor(baseUrl = globalThis.location?.origin) {
     if (!baseUrl) throw new TypeError("A BOXOS base URL is required");
     this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.identity = options.identity || loadIdentity(options.storageKey || "boxos.identity");
   }
 
-  version() {
-    return this.request("/version", {}, false);
-  }
-
-  async account() {
-    return this.request("/account");
-  }
-
-  async balance() {
-    return (await this.account()).balance;
-  }
-
-  stats() {
-    return this.request("/stats", {}, false);
-  }
-
-  async authorize(capabilities, purpose = "", resource = "") {
-    if (!Array.isArray(capabilities) || capabilities.length < 1 || capabilities.length > 20
-      || capabilities.some(value => typeof value !== "string" || !value || value.length > 200)) {
-      throw new TypeError("Capabilities must be one to twenty non-empty strings");
+  putBlob(bytes) {
+    if (typeof bytes === "string") bytes = new TextEncoder().encode(bytes);
+    if (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes)) {
+      throw new TypeError("Blob content must be a string, ArrayBuffer, or typed array");
     }
-    if (typeof purpose !== "string" || purpose.length > 500) throw new TypeError("Invalid authorization purpose");
-    if (!/^[a-f0-9]{64}$/.test(resource)) throw new TypeError("Authorization resource must be a reducer hash");
-    const expectedCapabilities = [...new Set(capabilities)].sort();
-    const popup = globalThis.open(`${this.baseUrl}/examples/accounts`, "boxos-accounts", "popup,width=560,height=720");
-    if (!popup) throw new BoxOSError("The account popup was blocked");
-    const requestId = crypto.randomUUID();
-    const grantId = crypto.randomUUID();
-    const request = { boxos: "authorize", requestId, grantId, capabilities, purpose, resource };
-    return await new Promise((resolve, reject) => {
-      const send = setInterval(() => { if (!popup.closed) popup.postMessage(request, "*"); }, 300);
-      const timeout = setTimeout(() => finish(new BoxOSError("Authorization timed out")), 5 * 60 * 1000);
-      const receive = event => {
-        if (event.source !== popup || event.data?.requestId !== requestId) return;
-        if (event.data.boxos === "authorization-denied") return finish(new BoxOSError("Authorization denied"));
-        if (event.data.boxos !== "authorization") return;
-        const authorization = event.data;
-        if (authorization.grant?.version !== 2 || authorization.grant?.audience !== globalThis.location.origin
-          || authorization.grant?.grantId !== grantId || authorization.grant?.purpose !== purpose
-          || authorization.grant?.resource !== resource || typeof authorization.publicKey !== "string"
-          || JSON.stringify(authorization.grant?.capabilities) !== JSON.stringify(expectedCapabilities)) {
-          return finish(new BoxOSError("Invalid authorization response"));
-        }
-        if (authorization.message !== canonicalJson(authorization.grant)) {
-          return finish(new BoxOSError("Authorization message is not canonical"));
-        }
-        finish(undefined, authorization);
-      };
-      const finish = (error, value) => {
-        clearInterval(send); clearTimeout(timeout); removeEventListener("message", receive); popup.close();
-        if (error) reject(error); else resolve(value);
-      };
-      addEventListener("message", receive);
-      popup.postMessage(request, "*");
-    });
+    return this.request("/blobs", { method: "POST", body: bytes });
   }
 
-  async startupCandidateUrl(pageId = globalThis.location?.hostname?.split(".")[0]) {
-    if (!/^[a-z2-7]{16}$/.test(pageId || "")) throw new TypeError("A startup page ID is required");
-    const page = await this.pageInfo();
-    return `${page.rootUrl}/start?candidate=${encodeURIComponent(pageId)}`;
+  async getBlob(id) {
+    const response = await fetch(`${this.baseUrl}/0.3.0/blobs/${encodeURIComponent(id)}`);
+    if (!response.ok) throw await BoxOSError.from(response);
+    return new Uint8Array(await response.arrayBuffer());
   }
 
-  async offerAsStartupPage(pageId) {
-    const url = await this.startupCandidateUrl(pageId);
-    globalThis.location.assign(url);
-  }
-
-  registerReducer(code) {
-    return this.register("reducers", code);
-  }
-
-  registerProcedure(code) {
-    return this.register("procedures", code);
-  }
-
-  async register(kind, code) {
-    if (typeof code !== "string") throw new TypeError("Code must be a string");
-    return this.request(`/${kind}`, { method: "POST", body: JSON.stringify({ code }) });
-  }
-
-  inspect(hash) {
-    return this.request(`/code/${encodeURIComponent(hash)}`, {}, false);
-  }
-
-  publicState(hash, key) {
-    return this.request(`/state/${encodeURIComponent(hash)}/${encodeURIComponent(key)}`, {}, false);
-  }
-
-  publicStateBatch(reads) {
-    if (!Array.isArray(reads) || reads.length < 1 || reads.length > 128) {
-      throw new TypeError("State batch must contain one to 128 reads");
-    }
-    return this.request("/state", { method: "POST", body: JSON.stringify({ reads }) }, false);
-  }
-
-  pageInfo() {
-    return this.request("/page", {}, false);
-  }
-
-  async publishPage(html, options = {}) {
-    if (typeof html !== "string") throw new TypeError("Page must be a string");
-    const info = await this.pageInfo();
-    if (new TextEncoder().encode(html).byteLength > info.maximumBytes) throw new TypeError("Page is too large");
-    const invocation = await this.invoke(info.reducer, html, options);
-    return { hash: invocation.ok, url: info.urlTemplate.replace("{id}", invocation.ok), fuel: invocation.fuel };
-  }
-
-  invoke(hash, input = null, options = {}) {
-    return this.request(`/invoke/${encodeURIComponent(hash)}`, {
+  createBox(definition) {
+    return this.request("/boxes", {
       method: "POST",
-      body: JSON.stringify({ input, fuel: options.fuel || 1000, authorization: options.authorization }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(definition),
     });
   }
 
-  async runReducer(code, input = null, options = {}) {
-    const registered = await this.registerReducer(code);
-    return this.invoke(registered.hash, input, options);
+  getBox(id) {
+    return this.request(`/boxes/${encodeURIComponent(id)}`);
   }
 
-  async runProcedure(code, input = null, options = {}) {
-    const registered = await this.registerProcedure(code);
-    return this.invoke(registered.hash, input, options);
+  hostPage(blob) {
+    return this.request("/pages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ blob }),
+    });
   }
 
-  async request(path, init = {}, authenticated = true) {
-    const headers = new Headers(init.headers);
-    if (init.body !== undefined) headers.set("content-type", "application/json");
-    if (authenticated) headers.set("authorization", `Bearer ${this.identity}`);
-    const response = await fetch(this.baseUrl + path, { ...init, headers });
-    const result = await response.json();
-    if (!response.ok) throw new BoxOSError(result.error || `HTTP ${response.status}`, response.status, result);
-    return result;
+  async request(path, init = {}) {
+    const response = await fetch(`${this.baseUrl}/0.3.0${path}`, init);
+    const value = await response.json();
+    if (!response.ok) throw new BoxOSError(value.error?.message || `HTTP ${response.status}`, response.status, value.error?.code);
+    return value;
   }
 }
 
-export class BoxOSError extends Error {
-  constructor(message, status, response) {
+class BoxOSError extends Error {
+  constructor(message, status, code) {
     super(message);
     this.name = "BoxOSError";
     this.status = status;
-    this.response = response;
+    this.code = code;
+  }
+
+  static async from(response) {
+    let value;
+    try { value = await response.json(); } catch { value = {}; }
+    return new BoxOSError(value.error?.message || `HTTP ${response.status}`, response.status, value.error?.code);
   }
 }
 
-function loadIdentity(storageKey) {
-  try {
-    const existing = globalThis.localStorage?.getItem(storageKey);
-    if (existing) return existing;
-    const identity = randomIdentity();
-    globalThis.localStorage?.setItem(storageKey, identity);
-    return identity;
-  } catch {
-    return randomIdentity();
-  }
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function randomIdentity() {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
+globalThis.BoxOSClient = BoxOSClient;
+globalThis.BoxOSError = BoxOSError;

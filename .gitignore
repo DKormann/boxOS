@@ -1,8 +1,0 @@
-tmp/
-node_modules/
-.env
-.DS_Store
-.idea/
-.vscode/
-*.log
-*.sqlite*
