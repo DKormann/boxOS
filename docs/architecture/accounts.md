@@ -12,6 +12,8 @@ next nonce
 
 Accounts are the only native owners of fuel. Boxes do not intrinsically have identities or balances.
 
+In 0.3.0, registering a previously unseen Ed25519 public key creates its account with 1,000,000,000 fuel and nonce 0. This generous faucet is deliberate initial deployment policy. Registering the same key again is idempotent and does not reset its record.
+
 Possession of an account's private key is complete authority to:
 
 1. invoke a box method as that account;

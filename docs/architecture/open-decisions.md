@@ -9,10 +9,6 @@ This file prevents provisional ideas from being mistaken for agreed architecture
 
 A method may need to know its own box ID, but deriving an ID from a table containing that ID is circular. References between newly defined boxes present the same issue. The model needs an explicit rule rather than ad hoc placeholders.
 
-### Public state reads
-
-Public state exists, but consistency guarantees, authentication, response limits, caching, and whether reads consume fuel remain open.
-
 ### Durable messaging
 
 Owned Tasks cannot outlive an invocation accidentally. A first-class durable `send` capability may be needed, but its persistence, delivery, retry, idempotency, failure, and fuel semantics are not designed.

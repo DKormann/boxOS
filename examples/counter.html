@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOXOS counter</title>
+  <link rel="stylesheet" href="/boxos.css">
+  <style>
+    body { display: grid; place-items: center; }
+    main { width: min(100% - 2rem, 32rem); padding: 3rem; border: 1px solid var(--boxos-line); background: var(--boxos-surface); }
+    h1 { margin-top: 0; font-size: clamp(2rem, 9vw, 4rem); letter-spacing: -.06em; }
+    p { color: var(--boxos-muted); }
+    output { display: block; margin: 2rem 0; color: var(--boxos-accent); font-size: 5rem; font-weight: 800; line-height: 1; }
+    #status { min-height: 1.5em; font-size: .8rem; }
+  </style>
+  <script src="/client.js" defer></script>
+  <script defer>
+    addEventListener("DOMContentLoaded", async function () {
+      const client = new BoxOSClient();
+      const count = document.querySelector("#count");
+      const button = document.querySelector("#increment");
+      const status = document.querySelector("#status");
+      let box;
+
+      async function increment() {
+        button.disabled = true;
+        status.textContent = "";
+        try {
+          const response = await client.invoke(box, "increment", null, 1000000);
+          count.value = response.result;
+          status.textContent = `spent ${response.receipt.spent} fuel`;
+        } catch (error) {
+          status.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      try {
+        const index = await client.request("/examples");
+        const example = index.examples.find(function (item) { return item.name === "counter"; });
+        if (!example || !example.box) throw new Error("Counter box is not published");
+        box = example.box;
+        const state = await client.getPublicState(box, "count");
+        count.value = state.found ? state.value : 0;
+        button.addEventListener("click", function () { void increment(); });
+        button.disabled = false;
+      } catch (error) {
+        status.textContent = error.message;
+        button.disabled = true;
+      }
+    });
+  </script>
+</head>
+<body>
+  <main>
+    <p>BOXOS 0.3.0 example</p>
+    <h1>Counter box</h1>
+    <p>This value is owned by a real BOXOS box and changed through a signed invocation and atomic state block.</p>
+    <output id="count" aria-live="polite">…</output>
+    <button id="increment" type="button" disabled>Increment</button>
+    <p id="status" role="status"></p>
+  </main>
+</body>
+</html>

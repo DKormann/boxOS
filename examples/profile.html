@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOXOS profile</title><link rel="stylesheet" href="/boxos.css"><script src="/client.js"></script>
+  <style>
+    body { max-width: 38rem; margin: 5rem auto; padding: 0 1rem; }
+    section { padding: 1.5rem; border: 1px solid var(--boxos-line); background: var(--boxos-surface); }
+    input { width: 100%; margin: .5rem 0 1rem; }
+    #status { min-height: 2em; color: var(--boxos-muted); }
+  </style>
+</head>
+<body>
+  <h1>Public profile</h1><p>Create a public username tied to a wallet public key.</p>
+  <section>
+    <p id="identity">No wallet account connected.</p>
+    <button id="connect">Login</button>
+    <form id="form" hidden><label>Username<input id="username" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label><button>Save public profile</button></form>
+    <p id="status" role="status"></p>
+  </section>
+<script>
+(async function () {
+  const client = new BoxOSClient(), status = document.querySelector("#status"), form = document.querySelector("#form");
+  const examples = (await client.request("/examples")).examples;
+  const profile = examples.find(function (item) { return item.name === "profile"; });
+  const wallet = examples.find(function (item) { return item.name === "wallet"; });
+  if (!profile || !profile.box || !wallet) throw new Error("Profile examples are not published");
+  const app = await client.account();
+  const grantKey = "boxos:profile:grant:0.3.0"; let authorization;
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  if (fragment.has("boxos-grant")) {
+    const returned = JSON.parse(fragment.get("boxos-grant"));
+    const state = sessionStorage.getItem("boxos:profile:state");
+    if (returned.state !== state) throw new Error("Wallet response state did not match");
+    localStorage.setItem(grantKey, JSON.stringify(returned)); history.replaceState(null, "", location.pathname); authorization = returned;
+  } else { authorization = JSON.parse(localStorage.getItem(grantKey) || "null"); }
+  function connected() {
+    if (!authorization) return;
+    document.querySelector("#identity").innerHTML = "Connected wallet account: <code>" + authorization.account + "</code>";
+    form.hidden = false;
+  }
+  document.querySelector("#connect").onclick = function () {
+    const state = crypto.randomUUID(); sessionStorage.setItem("boxos:profile:state", state);
+    const request = { permission: "manage:profile", subject: app.publicKey, audience: profile.box, state: state, returnUrl: location.origin + location.pathname };
+    location.href = wallet.localUrl + "/?request=" + encodeURIComponent(JSON.stringify(request));
+  };
+  form.onsubmit = async function (event) {
+    event.preventDefault(); if (!authorization) return;
+    status.textContent = "Saving…";
+    try {
+      const response = await client.invoke(profile.box, "set", { username: document.querySelector("#username").value, account: authorization.account, grant: authorization.grant, signature: authorization.signature });
+      status.textContent = "Published " + response.result.username + " for " + response.result.publicKey;
+    } catch (error) { status.textContent = error.message; }
+  };
+  connected();
+})().catch(function (error) { document.querySelector("#status").textContent = error.message; });
+</script>
+</body></html>

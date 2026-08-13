@@ -5,16 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="BOXOS is a small runtime for immutable code, isolated state, and owned effects.">
   <title>BOXOS — small, stateful software</title>
+  <link rel="stylesheet" href="/boxos.css">
   <style>
     :root {
-      color-scheme: light;
-      --paper: #f4f1e8;
-      --ink: #171713;
-      --muted: #65645d;
-      --line: #cfcbc0;
-      --accent: #225c45;
-      --code: #e8e4d9;
-      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      --paper: var(--boxos-background);
+      --ink: var(--boxos-text);
+      --muted: var(--boxos-muted);
+      --line: var(--boxos-line);
+      --accent: var(--boxos-accent);
+      --code: var(--boxos-surface-raised);
     }
 
     * { box-sizing: border-box; }
@@ -29,6 +28,7 @@
     a { color: inherit; text-underline-offset: 0.22em; }
     a:hover { color: var(--accent); }
     header, main, footer { width: min(100% - 2rem, 880px); margin-inline: auto; }
+    main, section, .card { text-align: center; }
     header {
       display: flex;
       align-items: center;
@@ -153,7 +153,7 @@ let valid = ctx.verify(publicKey, message, signature);</code></pre>
 
       <p><a href="/client.js">Read the browser client source</a>.</p>
 
-      <p class="note"><strong>Baseline status:</strong> 0.3.0 exposes immutable blobs, box definitions, and hosted pages. Method invocation is not implemented yet.</p>
+      <p class="note"><strong>Baseline status:</strong> 0.3.0 exposes immutable blobs, validated box definitions, isolated synchronous invocation, atomic state, accounts, and hosted pages.</p>
     </section>
   </main>
 

@@ -1,0 +1,28 @@
+{
+  "about": {
+    "page": "about.html"
+  },
+  "counter": {
+    "page": "counter.html",
+    "box": {
+      "runtime": "boxos-js/0.3.0",
+      "instance": "counter-example",
+      "methods": {
+        "increment": { "source": "counter.increment.js" }
+      }
+    }
+  },
+  "profile": {
+    "page": "profile.html",
+    "box": {
+      "runtime": "boxos-js/0.3.0",
+      "instance": "profile-example",
+      "methods": {
+        "set": { "source": "profile.set.js" }
+      }
+    }
+  },
+  "wallet": {
+    "page": "wallet.html"
+  }
+}

@@ -63,7 +63,16 @@ Every implementation must enforce finite limits on:
 - object key count;
 - string and key byte length.
 
-The exact initial values are implementation policy for 0.3.0, but limit failures must reject the containing operation rather than truncate or silently transform the value.
+The initial implementation limits are:
+
+- 1 MiB total JSON-encoded bytes;
+- 32 levels of nesting below the root value;
+- 10,000 array elements;
+- 10,000 object keys;
+- 256 KiB UTF-8 per string;
+- 1,024 UTF-8 bytes per object or state key.
+
+Limit failures reject the containing operation rather than truncate or silently transform the value. These values remain deployment policy rather than stable protocol guarantees.
 
 ## JSON encoding
 

@@ -1,0 +1,60 @@
+:root {
+  color-scheme: dark light;
+  --boxos-background: #070b14;
+  --boxos-surface: #0e1628;
+  --boxos-surface-raised: #14213a;
+  --boxos-text: #f7f9fc;
+  --boxos-muted: #9aa8bf;
+  --boxos-line: #263653;
+  --boxos-accent: #4c8dff;
+  --boxos-accent-hover: #72a6ff;
+  --boxos-on-accent: #ffffff;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+html { min-height: 100%; background: var(--boxos-background); }
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--boxos-text);
+  background: var(--boxos-background);
+  text-align: center;
+  line-height: 1.6;
+}
+a { color: var(--boxos-accent); text-underline-offset: .2em; }
+a:hover { color: var(--boxos-accent-hover); }
+button, input, select, textarea { font: inherit; }
+button, input, select, textarea { border-radius: .45rem; }
+button {
+  padding: .72rem 1.05rem;
+  border: 1px solid transparent;
+  color: var(--boxos-on-accent);
+  background: var(--boxos-accent);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--boxos-accent-hover); }
+button:disabled { opacity: .55; cursor: wait; }
+input, select, textarea {
+  padding: .7rem;
+  border: 1px solid var(--boxos-line);
+  color: var(--boxos-text);
+  background: var(--boxos-surface);
+}
+section, main { margin-inline: auto; }
+code { overflow-wrap: anywhere; }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --boxos-background: #ffffff;
+    --boxos-surface: #f5f8fc;
+    --boxos-surface-raised: #eaf1fb;
+    --boxos-text: #0a1020;
+    --boxos-muted: #526079;
+    --boxos-line: #cbd7e8;
+    --boxos-accent: #155dcc;
+    --boxos-accent-hover: #084ba9;
+    --boxos-on-accent: #ffffff;
+  }
+}

@@ -4,6 +4,17 @@ BOXOS ties its HTTP API version directly to the BOXOS release. All API routes fo
 
 The initial server uses Bun's SQLite backend. `BOXOS_DB_URL` selects the database and defaults to `sqlite://boxos.sqlite`.
 
+## Accounts and development faucet
+
+```text
+POST /0.3.0/accounts
+GET  /0.3.0/accounts/:publicKey
+```
+
+Registration accepts `{ "publicKey": "<base64url Ed25519 key>" }`. A previously unseen key receives 1,000,000,000 fuel and nonce 0. Registration is idempotent and never resets fuel or nonce. This intentionally generous public faucet is initial deployment policy, not a scarcity or abuse-prevention mechanism.
+
+`BoxOSClient` creates an extractable Ed25519 key locally on first use, stores its private JWK in that origin's local storage, sends only the public key to BOXOS, and exposes registration through its `ready` promise and `account()` method. This simple initial key storage is not a production wallet security claim.
+
 ## Blobs
 
 ```text
@@ -39,7 +50,73 @@ Creation accepts a JSON box definition:
 }
 ```
 
-Only these fields are accepted. An instance is a creator-selected, non-random string. Method names match `[a-z][a-z0-9_-]{0,63}` and every referenced blob must exist. Runtime source validation will be enabled with method execution; the current storage layer validates the definition and references.
+Only these fields are accepted. An instance is a creator-selected, non-random string. Method names match `[a-z][a-z0-9_-]{0,63}` and every referenced blob must exist.
+
+Box creation decodes every method blob as strict UTF-8 and parses it as the restricted `boxos-js/0.3.0` subset. The complete box is rejected when any source is invalid. Validation happens before storage even though invocation execution is not exposed yet.
+
+After validation, BOXOS serializes the definition once with `JSON.stringify` and stores those exact bytes in the generic blob store. The response identifies both the box and definition blob:
+
+```json
+{
+  "id": "box_<sha256>",
+  "definitionBlob": "blob_<sha256>",
+  "definition": {}
+}
+```
+
+SQLite stores box-wide metadata in `boxes` and the validated `(box, method) -> source blob` index in `box_methods`. Invocation can therefore resolve a method directly without decoding or parsing the definition again. The definition blob remains authoritative; these tables are validated indexes over it.
+
+## Invocations
+
+```text
+POST /0.3.0/invocations
+```
+
+The body contains a command and its base64url Ed25519 signature:
+
+```json
+{
+  "command": {
+    "publicKey": "<account key>",
+    "nonce": 0,
+    "box": "box_<sha256>",
+    "method": "increment",
+    "maxFuel": 1000000,
+    "input": null
+  },
+  "signature": "<signature>"
+}
+```
+
+The signed bytes are the UTF-8 prefix `BOXOS:INVOKE:0.3.0\0` followed by plain `JSON.stringify(command)`. Commands use the account's strict next nonce. BOXOS reserves `maxFuel`, executes the method, refunds unused fuel, and returns a receipt.
+
+Invocation resolves source through `box_methods`; it does not parse the box definition or source again. Each invocation executes in a fresh Bun Worker with a one-second deadline. The host passes only copied BOXOS values and a frozen synchronous `ctx.atomic` capability. Native globals are inaccessible to validated source, and the worker is terminated after settlement.
+
+Invocations of one box are serialized, so at most one invocation worker for a box can access its state at a time. During `ctx.atomic`, exact-key reads are served synchronously from committed SQLite state and writes are buffered in the worker. Reads after a buffered write observe that write. If the callback succeeds, only its write set is validated and applied in one short SQLite transaction; if it throws, the write set is discarded. Public readers therefore observe either the state before or after the commit, never a partial transition. No complete box-state snapshot is loaded or rewritten.
+
+A runtime flag remains active through the callback and commit. Nested atomic blocks are rejected, and asynchronous or external effect capabilities reject while this flag is active. A later method error does not discard earlier successful blocks.
+
+Runtime 1 now provides eager owned Tasks for `ctx.request`, `ctx.call`, and `ctx.hostPage`, with top-level `await`, `.then`, and `.catch`. Invocation settlement waits for every owned Task, including unreturned Tasks. Cross-box calls preserve the root caller, identify the immediate calling box and method, and execute through the target box's ordinary serialized queue. Calls are limited to depth 16; a call to a box already in the active lineage is rejected because it would deadlock the initial per-box serialization model. Child-call work is lifecycle-owned by the root invocation, although detailed shared-purse metering is not yet implemented.
+
+Initial metering is intentionally simple: successful work costs `10000 + source bytes`, ordinary method failure costs `20000 + source bytes`, and a deadline consumes the reserved purse. All costs are capped by `maxFuel`.
+
+## Public state reads
+
+```text
+GET /0.3.0/boxes/:box/state/public/:key
+```
+
+Public state is readable without authentication, invocation, or fuel. Keys are URL-encoded exact strings of at most 1024 UTF-8 bytes. Responses distinguish an absent key from a stored `null` value:
+
+```json
+{ "found": true, "value": 42 }
+```
+
+```json
+{ "found": false }
+```
+
+Reads use SQLite transaction visibility and therefore observe a complete committed atomic state, never a partial transition. Responses use `cache-control: no-store`. Private state has no corresponding public route.
 
 ## Hosted pages
 
@@ -69,13 +146,15 @@ A new mapping costs `100000 + 100 × HTML bytes` fuel. Re-hosting it costs 1000 
 
 `GET https://<page-id>.boxos.org/` serves the exact blob as immutable HTML. Other paths are not served. Deployment requires wildcard DNS and TLS for `*.boxos.org`.
 
-Boxes will access the same kernel operation through the owned effect `ctx.hostPage(blobId)` when invocation execution is available.
+Boxes access the same kernel operation through the owned effect `ctx.hostPage(blobId)`.
 
 Core BOXOS routes such as `/client.js` and `/0.3.0/...` are also available on a page origin. This lets a hosted page use BOXOS without cross-origin requests while unknown non-root paths still return 404.
 
 ## Startup examples
 
-The server discovers every `examples/*.html` file and publishes it through the normal blob and page hosting operations during startup. `examples/about.html` is also served as the main server landing page, so the landing page contains no server-source template. Publication is idempotent. The filename without `.html` is its example name. The example index mirrors the folder on each startup, while old immutable blobs and pages remain retained.
+The server reads `examples/manifest.json` during startup. This explicit manifest maps each example name to an HTML page and, optionally, an inline box description whose methods reference source files. The publisher stores those files as blobs and submits ordinary page and box definitions through the same validation paths as HTTP clients. Publication is idempotent and the generated example index is deployment metadata kept in memory; immutable blobs, boxes, and pages remain retained normally.
+
+`examples/about.html` is the required `about` entry and is also served as the main server landing page, so the landing page contains no server-source template. The counter entry references `counter.html` and an inline box definition using `counter.increment.js`. Its page reads `state.public` directly and invokes the real `increment` box method with the browser account; there is no read method, counter-specific route, table, or server function.
 
 ```text
 GET /0.3.0/examples
@@ -94,7 +173,7 @@ The dependency-free browser client source is served from `/client.js` as a class
 </script>
 ```
 
-It exposes `putBlob`, `getBlob`, `createBox`, `getBox`, and `hostPage`. Its source is the protocol's minimal executable reference, not a separate compatibility layer.
+It exposes `putBlob`, `getBlob`, `createBox`, `getBox`, `getPublicState`, `invoke`, and `hostPage`. Its source is the protocol's minimal executable reference, not a separate compatibility layer.
 
 ## JSON and errors
 

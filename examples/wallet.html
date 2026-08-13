@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOXOS reference wallet</title>
+  <link rel="stylesheet" href="/boxos.css"><script src="/client.js"></script>
+  <style>
+    body { max-width: 42rem; margin: 4rem auto; padding: 0 1rem; }
+    section { margin: 2rem 0; padding: 1.5rem; border: 1px solid var(--boxos-line); background: var(--boxos-surface); }
+    input, select { width: 100%; margin: .4rem 0 1rem; }
+    ul { padding: 0; list-style: none; } .muted { color: var(--boxos-muted); } #status { min-height: 1.5em; color: var(--boxos-muted); }
+  </style>
+</head>
+<body>
+  <h1>Reference wallet</h1>
+  <p class="muted">This is an ordinary immutable BOXOS page. It has no special authority. Keys remain in this page origin's local storage; account names come from the public profile box.</p>
+  <section id="request" hidden>
+    <h2>Permission request</h2>
+    <p><strong id="permission"></strong></p><p>Requested for <code id="subject"></code></p>
+    <label>Account<select id="accounts"></select></label>
+    <button id="approve">Approve and return</button>
+  </section>
+  <section>
+    <h2>Accounts</h2>
+    <label>Public username<input id="name" maxlength="32" pattern="[A-Za-z0-9_-]+" placeholder="username"></label>
+    <button id="create">Create account</button>
+    <p id="status" role="status"></p><ul id="list"></ul>
+  </section>
+<script>
+(async function () {
+  const client = new BoxOSClient();
+  const examples = (await client.request("/examples")).examples;
+  const profile = examples.find(function (item) { return item.name === "profile"; });
+  if (!profile || !profile.box) throw new Error("Profile box is not published");
+  const key = "boxos:wallet:0.3.0", status = document.querySelector("#status");
+  let records = JSON.parse(localStorage.getItem(key) || "[]");
+  const list = document.querySelector("#list"), select = document.querySelector("#accounts");
+  function save() { localStorage.setItem(key, JSON.stringify(records)); }
+  function base64url(bytes) { let binary = ""; bytes.forEach(function (byte) { binary += String.fromCharCode(byte); }); return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+  async function sign(record, message) {
+    const privateKey = await crypto.subtle.importKey("jwk", record.privateJwk, { name: "Ed25519" }, false, ["sign"]);
+    const prefix = new TextEncoder().encode("BOXOS:MESSAGE:0.3.0\0"), body = new TextEncoder().encode(JSON.stringify(message));
+    const bytes = new Uint8Array(prefix.length + body.length); bytes.set(prefix); bytes.set(body, prefix.length);
+    return base64url(new Uint8Array(await crypto.subtle.sign("Ed25519", privateKey, bytes)));
+  }
+  async function names() {
+    const result = [];
+    for (const record of records) {
+      try {
+        const state = await client.getPublicState(profile.box, record.publicKey);
+        result.push(state.found && state.value.username ? state.value.username : record.publicKey.slice(0, 12) + "…");
+      } catch { result.push(record.publicKey.slice(0, 12) + "…"); }
+    }
+    return result;
+  }
+  async function render() {
+    const labels = await names(); list.textContent = ""; select.textContent = "";
+    records.forEach(function (record, index) {
+      const item = document.createElement("li"); item.textContent = labels[index] + " — " + record.publicKey; list.append(item);
+      const option = document.createElement("option"); option.value = index; option.textContent = labels[index] + " — " + record.publicKey.slice(0, 12) + "…"; select.append(option);
+    });
+  }
+  document.querySelector("#create").onclick = async function () {
+    const username = document.querySelector("#name").value.trim();
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(username)) return status.textContent = "Choose a username using letters, numbers, _ or -";
+    status.textContent = "Creating account and profile…";
+    try {
+      const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+      const privateJwk = await crypto.subtle.exportKey("jwk", keys.privateKey), publicJwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
+      await client.request("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ publicKey: publicJwk.x }) });
+      const record = { publicKey: publicJwk.x, privateJwk: privateJwk };
+      const app = await client.account();
+      const grant = { domain: "boxos-profile-grant/0.3.0", account: record.publicKey, subject: app.publicKey, audience: profile.box, permission: "manage:profile" };
+      const signature = await sign(record, grant);
+      await client.invoke(profile.box, "set", { username: username, account: record.publicKey, grant: grant, signature: signature });
+      records.push(record); save(); document.querySelector("#name").value = ""; status.textContent = "Account created"; await render();
+    } catch (error) { status.textContent = error.message; }
+  };
+  const params = new URLSearchParams(location.search); let request;
+  try { request = JSON.parse(params.get("request") || "null"); } catch {}
+  if (request && request.permission === "manage:profile" && typeof request.returnUrl === "string" && typeof request.subject === "string" && typeof request.audience === "string" && typeof request.state === "string") {
+    document.querySelector("#request").hidden = false; document.querySelector("#permission").textContent = request.permission; document.querySelector("#subject").textContent = request.subject;
+    document.querySelector("#approve").onclick = async function () {
+      if (!records.length) return alert("Create an account first");
+      const record = records[Number(select.value)];
+      const grant = { domain: "boxos-profile-grant/0.3.0", account: record.publicKey, subject: request.subject, audience: request.audience, permission: request.permission };
+      const result = { state: request.state, account: record.publicKey, grant: grant, signature: await sign(record, grant) };
+      location.href = request.returnUrl + "#boxos-grant=" + encodeURIComponent(JSON.stringify(result));
+    };
+  }
+  await render();
+})().catch(function (error) { document.querySelector("#status").textContent = error.message; });
+</script>
+</body></html>

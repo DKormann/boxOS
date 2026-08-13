@@ -1,6 +1,6 @@
 # Method language direction
 
-Status: agreed semantic constraints for the first language. The exact grammar and standard library still require a dedicated specification before implementation.
+Status: semantic constraints plus the initial 0.3.0 source validator and invocation runtime. The complete standard library and full resource accounting remain to be implemented.
 
 ## Goal
 
@@ -33,9 +33,9 @@ There is no reducer/procedure declaration or method kind.
 
 ## Initial synchronous language
 
-Runtime 1 should include only a small conventional core:
+The 0.3.0 validator accepts only a small conventional core:
 
-- `let` and `const` bindings;
+- `let` and `const` bindings (`var` is rejected);
 - named synchronous function declarations;
 - synchronous function expressions for callbacks;
 - lexical closures local to one invocation;
@@ -48,7 +48,7 @@ Runtime 1 should include only a small conventional core:
 - arithmetic, comparisons, and boolean operators;
 - explicitly exposed deterministic string, JSON, and math operations.
 
-Arrow functions, classes, generators, iterators, destructuring, spread, regular expressions, dynamic property metaprogramming, and other convenience syntax should remain out until they have a clear need and complete semantics.
+Arrow functions, classes, generators, iterators, destructuring, spread, regular expressions, template literals, computed properties other than numeric array indexing, dynamic property metaprogramming, and other convenience syntax are rejected. Dangerous properties including `constructor`, `prototype`, and `__proto__` are rejected. Undeclared names, `eval`, `Function`, `globalThis`, imports, and host globals are rejected.
 
 Mutable globals and module state are forbidden. Closures cannot outlive their invocation because every callback belongs to its invocation's Task scope.
 

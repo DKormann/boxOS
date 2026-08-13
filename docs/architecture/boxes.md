@@ -49,6 +49,8 @@ The box ID is SHA-256 over `BOXOS:BOX:0.3.0\0` followed by the serialized defini
 
 The method table and instance are permanently immutable. Changing code, runtime, method order, property order, or instance creates a different box identity. A new instance string creates an independent state namespace for otherwise identical code. Repeating the same serialized definition is idempotent.
 
+The exact serialized definition bytes are also stored in the generic blob store. SQLite materializes two validated indexes: `boxes` records the box ID, definition blob, runtime, and instance; `box_methods` maps each box and method name directly to its source blob. Invocation uses the method index and never reparses the definition. The immutable definition blob remains the authoritative inspectable representation.
+
 ## State ownership
 
 A box has one state namespace divided into two visibility classes:
@@ -56,7 +58,7 @@ A box has one state namespace divided into two visibility classes:
 - **private:** readable only by methods of that box through an atomic block;
 - **public:** also readable through a public read interface.
 
-Only methods of the box may mutate either class. “Private” is an access-control property, not encryption from the BOXOS operator or runtime.
+Only methods of the box may mutate either class. “Private” is an access-control property, not encryption from the BOXOS operator or runtime. Public values are readable by exact key through the unauthenticated HTTP API without creating an invocation or consuming fuel. A read observes one committed SQLite state and distinguishes a missing key from a stored `null`.
 
 State provides exact-key operations only:
 

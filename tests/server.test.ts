@@ -29,6 +29,27 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(html).toContain("Developer reference");
     expect(html).toContain("Baseline status");
 
+    const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const publicJwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
+    const accountResponse = await fetch(`http://localhost:${port}/0.3.0/accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ publicKey: publicJwk.x }),
+    });
+    expect(accountResponse.status).toBe(201);
+    const account = await accountResponse.json();
+    expect(account.publicKey).toBe(publicJwk.x);
+    expect(account.fuel).toBe(1_000_000_000);
+    expect(account.nonce).toBe(0);
+
+    const repeatedAccount = await fetch(`http://localhost:${port}/0.3.0/accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ publicKey: publicJwk.x }),
+    });
+    expect(repeatedAccount.status).toBe(200);
+    expect((await repeatedAccount.json()).created).toBe(false);
+
     const blob = await fetch(`http://localhost:${port}/0.3.0/blobs`, {
       method: "POST",
       body: "return input;",
@@ -89,26 +110,259 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(box.status).toBe(201);
     const createdBox = await box.json();
     expect(createdBox.id).toMatch(/^box_[0-9a-f]{64}$/);
+    expect(createdBox.definitionBlob).toMatch(/^blob_[0-9a-f]{64}$/);
+
+    const definitionBlob = await fetch(`http://localhost:${port}/0.3.0/blobs/${createdBox.definitionBlob}`);
+    expect(await definitionBlob.text()).toBe(JSON.stringify(definition));
 
     const storedBox = await fetch(`http://localhost:${port}/0.3.0/boxes/${createdBox.id}`);
-    expect((await storedBox.json()).definition).toEqual(definition);
+    const inspectedBox = await storedBox.json();
+    expect(inspectedBox.definitionBlob).toBe(createdBox.definitionBlob);
+    expect(inspectedBox.definition).toEqual(definition);
+
+    const repeatedBox = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(definition),
+    });
+    expect(repeatedBox.status).toBe(200);
+    expect((await repeatedBox.json()).id).toBe(createdBox.id);
+
+    async function putSource(source: string) {
+      const response = await fetch(`http://localhost:${port}/0.3.0/blobs`, { method: "POST", body: source });
+      return await response.json();
+    }
+    const atomicBlob = await putSource("return ctx.atomic(function update(tx) { let value = tx.state.public.get(\"count\") || 0; tx.state.public.set(\"count\", value + 1); return value + 1; });");
+    const commitThenFailBlob = await putSource("ctx.atomic(function update(tx) { tx.state.public.set(\"count\", 3); return null; }); throw \"failure after commit\";");
+    const rollbackBlob = await putSource("try { ctx.atomic(function update(tx) { tx.state.public.set(\"temporary\", true); throw \"rollback\"; }); } catch (error) {} return ctx.atomic(function read(tx) { return tx.state.public.has(\"temporary\"); });");
+    const nestedBlob = await putSource("return ctx.atomic(function outer(tx) { return ctx.atomic(function inner(other) { return null; }); });");
+    const atomicBox = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runtime: "boxos-js/0.3.0",
+        instance: "valid-atomic",
+        methods: {
+          increment: { blob: atomicBlob.id },
+          commit_then_fail: { blob: commitThenFailBlob.id },
+          rollback: { blob: rollbackBlob.id },
+          nested: { blob: nestedBlob.id },
+        },
+      }),
+    });
+    expect(atomicBox.status).toBe(201);
+    const createdAtomicBox = await atomicBox.json();
+
+    async function invoke(method: string, nonce: number, box = createdAtomicBox.id, input: unknown = null) {
+      const command = {
+        publicKey: publicJwk.x,
+        nonce,
+        box,
+        method,
+        maxFuel: 1_000_000,
+        input,
+      };
+      const domain = new TextEncoder().encode("BOXOS:INVOKE:0.3.0\0");
+      const body = new TextEncoder().encode(JSON.stringify(command));
+      const message = new Uint8Array(domain.length + body.length);
+      message.set(domain);
+      message.set(body, domain.length);
+      const signatureBytes = new Uint8Array(await crypto.subtle.sign("Ed25519", keys.privateKey, message.buffer as ArrayBuffer));
+      let binary = "";
+      for (const byte of signatureBytes) binary += String.fromCharCode(byte);
+      const signature = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return fetch(`http://localhost:${port}/0.3.0/invocations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command, signature }),
+      });
+    }
+
+    const firstInvocation = await invoke("increment", 0);
+    expect(firstInvocation.status).toBe(200);
+    const firstResult = await firstInvocation.json();
+    expect(firstResult.result).toBe(1);
+    expect(firstResult.receipt.nonce).toBe(1);
+
+    const secondInvocation = await invoke("increment", 1);
+    expect(secondInvocation.status).toBe(200);
+    expect((await secondInvocation.json()).result).toBe(2);
+
+    const publicCount = await fetch(`http://localhost:${port}/0.3.0/boxes/${createdAtomicBox.id}/state/public/count`);
+    expect(publicCount.headers.get("cache-control")).toBe("no-store");
+    expect(await publicCount.json()).toEqual({ found: true, value: 2 });
+    const missingPublicState = await fetch(`http://localhost:${port}/0.3.0/boxes/${createdAtomicBox.id}/state/public/missing`);
+    expect(await missingPublicState.json()).toEqual({ found: false });
+
+    const replay = await invoke("increment", 1);
+    expect(replay.status).toBe(409);
+
+    // Atomic blocks commit independently, while a throwing block itself rolls back.
+    const committedFailure = await invoke("commit_then_fail", 2);
+    expect(committedFailure.status).toBe(422);
+    expect((await committedFailure.json()).error.code).toBe("method_failed");
+    expect(await (await fetch(`http://localhost:${port}/0.3.0/boxes/${createdAtomicBox.id}/state/public/count`)).json()).toEqual({ found: true, value: 3 });
+
+    const rollback = await invoke("rollback", 3);
+    expect(rollback.status).toBe(200);
+    expect((await rollback.json()).result).toBe(false);
+    expect(await (await fetch(`http://localhost:${port}/0.3.0/boxes/${createdAtomicBox.id}/state/public/temporary`)).json()).toEqual({ found: false });
+
+    const nested = await invoke("nested", 4);
+    expect(nested.status).toBe(422);
+    expect((await nested.json()).error.message).toContain("Nested atomic blocks");
+
+    const inspectBlob = await putSource("return { input: input, root: ctx.rootCaller, immediate: ctx.immediateCaller };");
+    const childIncrementBlob = await putSource("return ctx.atomic(function update(tx) { let value = tx.state.public.get(\"effects\") || 0; tx.state.public.set(\"effects\", value + 1); return value + 1; });");
+    const childBoxResponse = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtime: "boxos-js/0.3.0", instance: "effect-child", methods: {
+        inspect: { blob: inspectBlob.id }, increment: { blob: childIncrementBlob.id },
+      } }),
+    });
+    expect(childBoxResponse.status).toBe(201);
+    const childBox = await childBoxResponse.json();
+    const callBlob = await putSource("return await ctx.call(input.box, input.method, input.value);");
+    const detachedCallBlob = await putSource("ctx.call(input.box, \"increment\", null); return \"body complete\";");
+    const atomicEffectBlob = await putSource("return ctx.atomic(function update(tx) { return ctx.call(input.box, \"inspect\", null); });");
+    const hostPageBlob = await putSource("return await ctx.hostPage(input);");
+    const requestBlob = await putSource("let response = await ctx.request(input); return { status: response.status, ok: response.ok };");
+    const parentBoxResponse = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtime: "boxos-js/0.3.0", instance: "effect-parent", methods: {
+        call: { blob: callBlob.id }, detached_call: { blob: detachedCallBlob.id },
+        atomic_effect: { blob: atomicEffectBlob.id }, host_page: { blob: hostPageBlob.id }, request: { blob: requestBlob.id },
+      } }),
+    });
+    expect(parentBoxResponse.status).toBe(201);
+    const parentBox = await parentBoxResponse.json();
+
+    const childCall = await invoke("call", 5, parentBox.id, { box: childBox.id, method: "inspect", value: 42 });
+    expect(childCall.status).toBe(200);
+    expect((await childCall.json()).result).toEqual({
+      input: 42, root: publicJwk.x, immediate: { box: parentBox.id, method: "call" },
+    });
+
+    const detachedCall = await invoke("detached_call", 6, parentBox.id, { box: childBox.id });
+    expect(detachedCall.status).toBe(200);
+    expect((await detachedCall.json()).result).toBe("body complete");
+    expect(await (await fetch(`http://localhost:${port}/0.3.0/boxes/${childBox.id}/state/public/effects`)).json()).toEqual({ found: true, value: 1 });
+
+    const atomicEffect = await invoke("atomic_effect", 7, parentBox.id, { box: childBox.id });
+    expect(atomicEffect.status).toBe(422);
+    expect((await atomicEffect.json()).error.message).toContain("Effects are not allowed");
+
+    const hostedByMethod = await invoke("host_page", 8, parentBox.id, htmlBlob.id);
+    expect(hostedByMethod.status).toBe(200);
+    expect((await hostedByMethod.json()).result.id).toBe(page.id);
+
+    const requested = await invoke("request", 9, parentBox.id, `http://localhost:${port}/0.3.0/accounts/${publicJwk.x}`);
+    expect(requested.status).toBe(200);
+    expect((await requested.json()).result).toEqual({ status: 200, ok: true });
+
+    const unsafeBlobResponse = await fetch(`http://localhost:${port}/0.3.0/blobs`, {
+      method: "POST",
+      body: "return globalThis.process.env;",
+    });
+    const unsafeBlob = await unsafeBlobResponse.json();
+    const unsafeBox = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runtime: "boxos-js/0.3.0",
+        instance: "unsafe",
+        methods: { escape: { blob: unsafeBlob.id } },
+      }),
+    });
+    expect(unsafeBox.status).toBe(400);
+    expect((await unsafeBox.json()).error.code).toBe("invalid_method_source");
+
+    const constructorBlobResponse = await fetch(`http://localhost:${port}/0.3.0/blobs`, {
+      method: "POST",
+      body: "return input.constructor.constructor(\"return process\")();",
+    });
+    const constructorBlob = await constructorBlobResponse.json();
+    const constructorBox = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runtime: "boxos-js/0.3.0",
+        instance: "constructor-escape",
+        methods: { escape: { blob: constructorBlob.id } },
+      }),
+    });
+    expect(constructorBox.status).toBe(400);
 
     const client = await fetch(`http://localhost:${port}/client.js`);
     expect(client.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
     expect(await client.text()).toContain("class BoxOSClient");
+    const stylesheet = await fetch(`http://localhost:${port}/boxos.css`);
+    expect(stylesheet.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    const css = await stylesheet.text();
+    expect(css).toContain("color-scheme: dark light");
+    expect(css).toContain("prefers-color-scheme: light");
 
     const examplesResponse = await fetch(`http://localhost:${port}/0.3.0/examples`);
     const examples = await examplesResponse.json();
-    expect(examples.examples).toHaveLength(1);
-    expect(examples.examples[0].name).toBe("about");
-    expect(examples.examples[0].url).toMatch(/^https:\/\/[a-z2-7]{32}\.boxos\.org$/);
-    expect(examples.examples[0].localUrl).toMatch(new RegExp(`^http://[a-z2-7]{32}\\.localhost:${port}$`));
+    expect(examples.examples).toHaveLength(4);
+    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "counter", "profile", "wallet"]);
+    const aboutExample = examples.examples.find((example: { name: string }) => example.name === "about");
+    const counterExample = examples.examples.find((example: { name: string }) => example.name === "counter");
+    const profileExample = examples.examples.find((example: { name: string }) => example.name === "profile");
+    const walletExample = examples.examples.find((example: { name: string }) => example.name === "wallet");
+    expect(aboutExample.url).toMatch(/^https:\/\/[a-z2-7]{32}\.boxos\.org$/);
+    expect(aboutExample.localUrl).toMatch(new RegExp(`^http://[a-z2-7]{32}\\.localhost:${port}$`));
+    expect(aboutExample.box).toBeNull();
+    expect(counterExample.box).toMatch(/^box_[0-9a-f]{64}$/);
+    expect(profileExample.box).toMatch(/^box_[0-9a-f]{64}$/);
+    expect(walletExample.box).toBeNull();
 
-    const aboutHost = new URL(examples.examples[0].url).hostname;
+    const walletKeys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const walletPublic = await crypto.subtle.exportKey("jwk", walletKeys.publicKey);
+    const grant = {
+      domain: "boxos-profile-grant/0.3.0", account: walletPublic.x, subject: publicJwk.x,
+      audience: profileExample.box, permission: "manage:profile",
+    };
+    const grantPrefix = new TextEncoder().encode("BOXOS:MESSAGE:0.3.0\0");
+    const grantBody = new TextEncoder().encode(JSON.stringify(grant));
+    const grantBytes = new Uint8Array(grantPrefix.length + grantBody.length);
+    grantBytes.set(grantPrefix); grantBytes.set(grantBody, grantPrefix.length);
+    const grantSignatureBytes = new Uint8Array(await crypto.subtle.sign("Ed25519", walletKeys.privateKey, grantBytes));
+    let grantBinary = "";
+    for (const byte of grantSignatureBytes) grantBinary += String.fromCharCode(byte);
+    const grantSignature = btoa(grantBinary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const profileSet = await invoke("set", 10, profileExample.box, {
+      username: "alice", account: walletPublic.x, grant, signature: grantSignature,
+    });
+    expect(profileSet.status).toBe(200);
+    expect((await profileSet.json()).result).toEqual({ username: "alice", publicKey: walletPublic.x });
+    expect(await (await fetch(`http://localhost:${port}/0.3.0/boxes/${profileExample.box}/state/public/${walletPublic.x}`)).json())
+      .toEqual({ found: true, value: { username: "alice", publicKey: walletPublic.x } });
+
+    const counterBox = await fetch(`http://localhost:${port}/0.3.0/boxes/${counterExample.box}`);
+    expect(Object.keys((await counterBox.json()).definition.methods)).toEqual(["increment"]);
+
+    const aboutHost = new URL(aboutExample.url).hostname;
     const publishedAbout = await fetch(`http://localhost:${port}/`, { headers: { host: aboutHost } });
     expect(await publishedAbout.text()).toContain("Small programs.");
     const pageClient = await fetch(`http://localhost:${port}/client.js`, { headers: { host: aboutHost } });
     expect(await pageClient.text()).toContain("class BoxOSClient");
+    const pageStyles = await fetch(`http://localhost:${port}/boxos.css`, { headers: { host: aboutHost } });
+    expect(await pageStyles.text()).toContain("--boxos-accent");
+
+    const counterHost = new URL(counterExample.url).hostname;
+    const counterPage = await fetch(`http://localhost:${port}/`, { headers: { host: counterHost } });
+    const counterHtml = await counterPage.text();
+    expect(counterHtml).toContain("Counter box");
+    expect(counterHtml).toContain("client.getPublicState(box, \"count\")");
+    expect(counterHtml).toContain("client.invoke(box, \"increment\"");
+
+    const profilePage = await fetch(`${profileExample.localUrl}/`);
+    expect(await profilePage.text()).toContain("manage:profile");
+    const walletPage = await fetch(`${walletExample.localUrl}/`);
+    const walletHtml = await walletPage.text();
+    expect(walletHtml).toContain("ordinary immutable BOXOS page");
+    expect(walletHtml).toContain("BOXOS:MESSAGE:0.3.0");
 
     const counterBypass = await fetch(`http://localhost:${port}/0.3.0/examples/counter`, { method: "POST" });
     expect(counterBypass.status).toBe(404);
