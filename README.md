@@ -111,7 +111,9 @@ Configuration:
 - [Signed accounts and capabilities](docs/accounts.md)
 - [Architecture and trust model](docs/proposal.md)
 - [Development phase and stability policy](docs/development.md)
+- [Next architecture specification](docs/architecture/README.md)
 - [Transaction architecture](docs/transactions.md)
+- [Unified methods and owned tasks](docs/methods-and-tasks.md)
 - [Studio design](docs/editor-concept.md)
 - [Example applications](examples/)
 
