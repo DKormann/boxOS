@@ -319,21 +319,22 @@ async function verifyInvocation(publicKey: string, command: Record<string, unkno
   }
 }
 
-const boxQueues = new Map<string, Promise<void>>();
+const boxAtomicQueues = new Map<string, Promise<void>>();
 
-async function inBoxQueue<T>(box: string, operation: () => Promise<T>): Promise<T> {
-  const previous = boxQueues.get(box) ?? Promise.resolve();
-  let release = () => {};
-  const gate = new Promise<void>(resolve => { release = resolve; });
+async function acquireBoxAtomicLock(box: string): Promise<() => void> {
+  const previous = boxAtomicQueues.get(box) ?? Promise.resolve();
+  let unlock = () => {};
+  const gate = new Promise<void>(resolve => { unlock = resolve; });
   const tail = previous.then(() => gate);
-  boxQueues.set(box, tail);
+  boxAtomicQueues.set(box, tail);
   await previous;
-  try {
-    return await operation();
-  } finally {
-    release();
-    if (boxQueues.get(box) === tail) boxQueues.delete(box);
-  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unlock();
+    if (boxAtomicQueues.get(box) === tail) boxAtomicQueues.delete(box);
+  };
 }
 
 function stateVisibility(value: unknown): value is StateVisibility {
@@ -434,7 +435,7 @@ function effectError(error: unknown): { message: string } {
   return { message: error instanceof Error ? error.message : "Effect failed" };
 }
 
-async function externalRequest(args: Record<string, unknown>): Promise<BoxValue> {
+async function externalRequest(args: Record<string, unknown>, invocationSignal: AbortSignal): Promise<BoxValue> {
   if (typeof args.url !== "string" || args.url.length > 2048) throw new TypeError("Request URL must be a string of at most 2048 characters");
   const url = new URL(args.url);
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new TypeError("Requests require an HTTP or HTTPS URL");
@@ -455,19 +456,49 @@ async function externalRequest(args: Record<string, unknown>): Promise<BoxValue>
   const body = isRecord(options) && options.body !== undefined ? options.body : undefined;
   if (body !== undefined && typeof body !== "string") throw new TypeError("Request body must be a string");
   if (typeof body === "string" && utf8Length(body) > 256 * 1024) throw new TypeError("Request body is too large");
-  const response = await fetch(url, { method, headers, body, redirect: "error", signal: AbortSignal.timeout(750) });
-  const responseBody = await response.text();
+  const requestController = new AbortController();
+  const abortRequest = () => requestController.abort(invocationSignal.reason);
+  invocationSignal.addEventListener("abort", abortRequest, { once: true });
+  const requestTimer = setTimeout(() => requestController.abort(new Error("Request deadline exceeded")), 750);
+  let response: Response;
+  let responseBody: string;
+  try {
+    response = await fetch(url, { method, headers, body, redirect: "error", signal: requestController.signal });
+    responseBody = await response.text();
+  } finally {
+    clearTimeout(requestTimer);
+    invocationSignal.removeEventListener("abort", abortRequest);
+  }
   if (utf8Length(responseBody) > 256 * 1024) throw new TypeError("Response body is too large");
   const responseHeaders: Record<string, string> = Object.create(null);
   response.headers.forEach((value, name) => { responseHeaders[name] = value; });
   return copyBoxValue({ status: response.status, ok: response.ok, headers: responseHeaders, body: responseBody });
 }
 
-async function executeMethod(box: string, method: string, source: string, input: BoxValue, context: InvocationContext): Promise<ExecutionResult> {
+async function executeMethod(
+  box: string,
+  method: string,
+  source: string,
+  input: BoxValue,
+  context: InvocationContext,
+  parentSignal?: AbortSignal,
+): Promise<ExecutionResult> {
   const worker = new Worker(new URL("./worker.ts", import.meta.url).href);
   const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
   const dataBuffer = new SharedArrayBuffer(BOX_VALUE_LIMITS.encodedBytes + 1024);
   let pendingRpc = Promise.resolve();
+  let releaseAtomicLock: (() => void) | null = null;
+  const invocationController = new AbortController();
+  const hostEffects = new Set<Promise<unknown>>();
+  const abortFromParent = () => invocationController.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+
+  function trackHostEffect<T>(effect: Promise<T>): Promise<T> {
+    hostEffects.add(effect);
+    void effect.then(() => hostEffects.delete(effect), () => hostEffects.delete(effect));
+    return effect;
+  }
 
   return await new Promise<ExecutionResult>(resolve => {
     let settled = false;
@@ -475,18 +506,39 @@ async function executeMethod(box: string, method: string, source: string, input:
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      invocationController.abort(new Error(!result.ok && result.timeout ? "Invocation deadline exceeded" : "Invocation settled"));
       worker.terminate();
-      // A deadline may terminate a worker while its final commit is in flight.
-      // Keep the per-box queue until that storage operation has settled.
+      // A deadline may terminate a worker while an atomic read, commit, or lock
+      // acquisition is in flight. Settle it before releasing this atomic session.
       await pendingRpc;
+      releaseAtomicLock?.();
+      releaseAtomicLock = null;
+      while (hostEffects.size > 0) await Promise.allSettled([...hostEffects]);
+      parentSignal?.removeEventListener("abort", abortFromParent);
+      parentSignal?.removeEventListener("abort", cancelFromParent);
       resolve(result);
     };
     const timer = setTimeout(() => { void finish({ ok: false, error: "Method deadline exceeded", timeout: true }); }, 1_000);
+    const cancelFromParent = () => { void finish({ ok: false, error: "Parent invocation cancelled", timeout: true }); };
+    if (parentSignal?.aborted) cancelFromParent();
+    else parentSignal?.addEventListener("abort", cancelFromParent, { once: true });
 
     worker.onmessage = event => {
       const message = event.data;
-      if (message?.type === "state.read") {
-        if (!stateVisibility(message.visibility) || !stateKey(message.key)) {
+      if (message?.type === "state.begin") {
+        if (releaseAtomicLock !== null) {
+          settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic session is already active" }, true);
+        } else {
+          pendingRpc = acquireBoxAtomicLock(box).then(
+            release => {
+              releaseAtomicLock = release;
+              settleWorkerRpc(controlBuffer, dataBuffer, { acquired: true });
+            },
+            () => settleWorkerRpc(controlBuffer, dataBuffer, { error: "Could not acquire atomic lock" }, true),
+          );
+        }
+      } else if (message?.type === "state.read") {
+        if (releaseAtomicLock === null || !stateVisibility(message.visibility) || !stateKey(message.key)) {
           settleWorkerRpc(controlBuffer, dataBuffer, { error: "Invalid atomic state read" }, true);
         } else {
           pendingRpc = readStateKey(box, message.visibility, message.key).then(
@@ -495,14 +547,36 @@ async function executeMethod(box: string, method: string, source: string, input:
           );
         }
       } else if (message?.type === "state.commit") {
-        try {
-          const writes = normalizeStateWrites(message.writes);
-          pendingRpc = commitStateWrites(box, writes).then(
-            () => settleWorkerRpc(controlBuffer, dataBuffer, { committed: true }),
-            () => settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic state commit failed" }, true),
-          );
-        } catch {
-          settleWorkerRpc(controlBuffer, dataBuffer, { error: "Invalid atomic write set" }, true);
+        if (releaseAtomicLock === null) {
+          settleWorkerRpc(controlBuffer, dataBuffer, { error: "No atomic session is active" }, true);
+        } else {
+          try {
+            const writes = normalizeStateWrites(message.writes);
+            pendingRpc = commitStateWrites(box, writes).then(
+              () => {
+                releaseAtomicLock?.();
+                releaseAtomicLock = null;
+                settleWorkerRpc(controlBuffer, dataBuffer, { committed: true });
+              },
+              () => {
+                releaseAtomicLock?.();
+                releaseAtomicLock = null;
+                settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic state commit failed" }, true);
+              },
+            );
+          } catch {
+            releaseAtomicLock();
+            releaseAtomicLock = null;
+            settleWorkerRpc(controlBuffer, dataBuffer, { error: "Invalid atomic write set" }, true);
+          }
+        }
+      } else if (message?.type === "state.abort") {
+        if (releaseAtomicLock === null) {
+          settleWorkerRpc(controlBuffer, dataBuffer, { error: "No atomic session is active" }, true);
+        } else {
+          releaseAtomicLock();
+          releaseAtomicLock = null;
+          settleWorkerRpc(controlBuffer, dataBuffer, { aborted: true });
         }
       } else if (message?.type === "effect" && Number.isSafeInteger(message.id) && typeof message.effect === "string" && isRecord(message.args)) {
         const reply = (ok: boolean, value: unknown) => {
@@ -510,8 +584,9 @@ async function executeMethod(box: string, method: string, source: string, input:
             ? { type: "effect.result", id: message.id, ok: true, value: copyBoxValue(value) }
             : { type: "effect.result", id: message.id, ok: false, error: effectError(value) });
         };
-        void (async () => {
-          if (message.effect === "request") return await externalRequest(message.args);
+        const hostEffect = trackHostEffect((async () => {
+          if (invocationController.signal.aborted) throw new Error("Invocation cancelled");
+          if (message.effect === "request") return await externalRequest(message.args, invocationController.signal);
           if (message.effect === "verify") {
             const publicKey = message.args.publicKey;
             const signature = message.args.signature;
@@ -538,7 +613,6 @@ async function executeMethod(box: string, method: string, source: string, input:
               throw new TypeError("Invalid cross-box call target");
             }
             if (context.lineage.length >= 16) throw new Error("Cross-box call depth exceeded");
-            if (context.lineage.includes(target)) throw new Error("Cross-box call cycle would deadlock a serialized box");
             const childSource = await methodSource(target, targetMethod);
             if (childSource === null) throw new Error("Target box method not found");
             const childContext: InvocationContext = {
@@ -548,12 +622,13 @@ async function executeMethod(box: string, method: string, source: string, input:
               immediateCaller: { box, method },
               lineage: [...context.lineage, target],
             };
-            const child = await inBoxQueue(target, () => executeMethod(target, targetMethod, childSource, copyBoxValue(message.args.input), childContext));
+            const child = await executeMethod(target, targetMethod, childSource, copyBoxValue(message.args.input), childContext, invocationController.signal);
             if (!child.ok) throw new Error(child.error);
             return child.result;
           }
           throw new Error("Unknown BOXOS effect");
-        })().then(value => reply(true, value), error => reply(false, error));
+        })());
+        void hostEffect.then(value => reply(true, value), error => reply(false, error));
       } else if (message?.type === "result") {
         if (message.ok) {
           try {
@@ -627,7 +702,7 @@ async function invokeBox(request: Request): Promise<Response> {
   let execution: ExecutionResult;
   try {
     const context: InvocationContext = { rootCaller: command.publicKey, box: command.box, method: command.method, immediateCaller: null, lineage: [command.box] };
-    execution = await inBoxQueue(command.box, () => executeMethod(command.box as string, command.method as string, source, input, context));
+    execution = await executeMethod(command.box as string, command.method as string, source, input, context);
     spent = execution.ok ? Math.min(command.maxFuel as number, 10_000 + sourceBytes.length) : execution.timeout ? command.maxFuel as number : Math.min(command.maxFuel as number, 20_000 + sourceBytes.length);
   } catch (error) {
     execution = { ok: false, error: error instanceof Error ? error.message : "Invocation failed" };
@@ -836,11 +911,10 @@ const server = Bun.serve({
     if (request.method === "GET" && url.pathname === "/client.js") {
       return staticFile("public/client.js", "text/javascript; charset=utf-8");
     }
-    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/boxos") {
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/boxos-cli.js") {
       return new Response(request.method === "HEAD" ? null : Bun.file("bin/boxos"), {
         headers: {
-          "content-type": "text/javascript; charset=utf-8",
-          "content-disposition": "attachment; filename=boxos",
+          "content-type": "text/plain; charset=utf-8",
           "cache-control": "no-cache",
           "x-content-type-options": "nosniff",
         },

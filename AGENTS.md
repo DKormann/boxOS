@@ -7,7 +7,7 @@ BOXOS is a Bun/TypeScript prototype for immutable blobs and pages, isolated stat
 A repository checkout already contains `bin/boxos`. From a running or deployed BOXOS server, download the same dependency-free Bun executable:
 
 ```sh
-curl -fsSL "$BOXOS_URL/boxos" -o boxos
+curl -fsSL "$BOXOS_URL/boxos-cli.js" -o boxos
 chmod +x boxos
 ./boxos --help
 ```
@@ -109,7 +109,7 @@ Start with:
 Runtime discovery:
 
 ```sh
-curl -fsSL "$BOXOS_URL/boxos" -o boxos
+curl -fsSL "$BOXOS_URL/boxos-cli.js" -o boxos
 bin/boxos --help
 curl "$BOXOS_URL/0.3.0/examples"
 curl "$BOXOS_URL/0.3.0/accounts/PUBLIC_KEY"

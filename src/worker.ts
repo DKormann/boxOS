@@ -94,22 +94,44 @@ self.onmessage = (initialEvent: MessageEvent<InvocationRequest>) => {
     return promise;
   }
 
+  const taskPromises = new WeakMap<BoxTask, Promise<BoxValue>>();
+
+  function isNativeContinuation(value: unknown): value is (value: BoxValue) => unknown {
+    return typeof value === "function" && value.name === "" && value.length === 1 &&
+      Function.prototype.toString.call(value).includes("[native code]");
+  }
+
   class BoxTask {
-    readonly #promise: Promise<BoxValue>;
-    constructor(promise: Promise<BoxValue>) { this.#promise = track(promise); Object.freeze(this); }
+    constructor(promise: Promise<BoxValue>) {
+      taskPromises.set(this, track(promise));
+      Object.freeze(this);
+    }
     then(onFulfilled?: unknown, onRejected?: unknown): BoxTask {
-      const promise = this.#promise.then(
+      if (atomicActive) throw new Error("Tasks cannot be derived inside ctx.atomic");
+      const source = taskPromises.get(this)!;
+      // `await task` calls then with native resolve/reject continuations. Their
+      // return value is undefined and is not a BOXOS callback result or Task.
+      if (isNativeContinuation(onFulfilled) && isNativeContinuation(onRejected)) {
+        void source.then(
+          value => onFulfilled(copyBoxValue(value)),
+          error => onRejected(copyBoxValue(error)),
+        );
+        return undefined as unknown as BoxTask;
+      }
+      const promise = source.then(
         value => typeof onFulfilled === "function" ? adopt(onFulfilled(copyBoxValue(value))) : value,
         error => typeof onRejected === "function" ? adopt(onRejected(copyBoxValue(error))) : Promise.reject(error),
       ).then(copyBoxValue);
       return new BoxTask(promise);
     }
-    catch(onRejected: unknown): BoxTask { return this.then(undefined, onRejected); }
-    internal(): Promise<BoxValue> { return this.#promise; }
+    catch(onRejected: unknown): BoxTask {
+      if (atomicActive) throw new Error("Tasks cannot be derived inside ctx.atomic");
+      return this.then(undefined, onRejected);
+    }
   }
 
   function adopt(value: unknown): Promise<BoxValue> {
-    if (value instanceof BoxTask) return value.internal();
+    if (value instanceof BoxTask) return taskPromises.get(value)!;
     return Promise.resolve(copyBoxValue(value));
   }
 
@@ -162,6 +184,7 @@ self.onmessage = (initialEvent: MessageEvent<InvocationRequest>) => {
         if (atomicActive) throw new Error("Nested atomic blocks are not allowed");
         atomicActive = true;
         let active = true;
+        let sessionOpen = false;
         const publicWrites = new Map<string, StateWrite>();
         const privateWrites = new Map<string, StateWrite>();
         const tx = Object.freeze({ state: Object.freeze({
@@ -169,12 +192,22 @@ self.onmessage = (initialEvent: MessageEvent<InvocationRequest>) => {
           private: stateNamespace(request, "private", privateWrites, () => active),
         }) });
         try {
+          workerRpc(request, { type: "state.begin" });
+          sessionOpen = true;
           const raw = callback(tx);
           if (raw instanceof BoxTask) throw new Error("Atomic callbacks cannot return Tasks");
           const value = copyBoxValue(raw);
-          workerRpc(request, { type: "state.commit", writes: [...publicWrites.values(), ...privateWrites.values()] });
+          try {
+            workerRpc(request, { type: "state.commit", writes: [...publicWrites.values(), ...privateWrites.values()] });
+          } finally {
+            // The host ends the session on every commit outcome.
+            sessionOpen = false;
+          }
           return value;
         } finally {
+          if (sessionOpen) {
+            try { workerRpc(request, { type: "state.abort" }); } catch { /* host termination also releases the lock */ }
+          }
           active = false;
           atomicActive = false;
         }
@@ -187,7 +220,7 @@ self.onmessage = (initialEvent: MessageEvent<InvocationRequest>) => {
     void execute(ctx, copyBoxValue(request.input), safeJSON, safeMath(), String, Number).then(
       async raw => {
         try {
-          const value = raw instanceof BoxTask ? await raw.internal() : copyBoxValue(raw);
+          const value = raw instanceof BoxTask ? await taskPromises.get(raw)! : copyBoxValue(raw);
           candidate = { ok: true, value: copyBoxValue(value) };
         } catch (error) { candidate = { ok: false, error: (errorValue(error) as { message: string }).message }; }
         methodSettled = true;

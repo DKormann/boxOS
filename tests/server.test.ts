@@ -4,6 +4,14 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
   const port = String(41000 + Math.floor(Math.random() * 1000));
   const databasePath = `/tmp/boxos-${crypto.randomUUID()}.sqlite`;
   const cliConfigPath = `/tmp/boxos-cli-${crypto.randomUUID()}`;
+  const slowServer = Bun.serve({
+    port: 0,
+    async fetch() {
+      await Bun.sleep(600);
+      return new Response("slow response");
+    },
+  });
+  const slowUrl = `http://localhost:${slowServer.port}/`;
   const process = Bun.spawn(["bun", "src/server.ts"], {
     env: { ...Bun.env, PORT: port, BOXOS_DB_URL: `sqlite://${databasePath}` },
     stdout: "ignore",
@@ -219,10 +227,11 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
 
     const inspectBlob = await putSource("return { input: input, root: ctx.rootCaller, immediate: ctx.immediateCaller };");
     const childIncrementBlob = await putSource("return ctx.atomic(function update(tx) { let value = tx.state.public.get(\"effects\") || 0; tx.state.public.set(\"effects\", value + 1); return value + 1; });");
+    const delayedCommitBlob = await putSource("await ctx.request(input.url); return ctx.atomic(function update(tx) { tx.state.public.set(\"late\", true); return true; });");
     const childBoxResponse = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ runtime: "boxos-js/0.3.0", instance: "effect-child", methods: {
-        inspect: { blob: inspectBlob.id }, increment: { blob: childIncrementBlob.id },
+        inspect: { blob: inspectBlob.id }, increment: { blob: childIncrementBlob.id }, delayed_commit: { blob: delayedCommitBlob.id },
       } }),
     });
     expect(childBoxResponse.status).toBe(201);
@@ -232,11 +241,20 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     const atomicEffectBlob = await putSource("return ctx.atomic(function update(tx) { return ctx.call(input.box, \"inspect\", null); });");
     const hostPageBlob = await putSource("return await ctx.hostPage(input);");
     const requestBlob = await putSource("let response = await ctx.request(input); return { status: response.status, ok: response.ok };");
+    const echoBlob = await putSource("return input;");
+    const selfCallBlob = await putSource("return await ctx.call(ctx.box, \"echo\", input);");
+    const taskThenBlob = await putSource("return ctx.call(ctx.box, \"echo\", input).then(function pass(value) { return value; });");
+    const atomicTaskBlob = await putSource("let task = ctx.call(input.box, \"inspect\", null); return ctx.atomic(function update(tx) { task.then(function pass(value) { return value; }); return null; });");
+    const cancelChildBlob = await putSource("await ctx.request(input.url); return await ctx.call(input.box, \"delayed_commit\", input);");
+    const awaitRejectedBlob = await putSource("try { await ctx.call(ctx.box, \"missing\", null); } catch (error) { return error.message; }");
     const parentBoxResponse = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ runtime: "boxos-js/0.3.0", instance: "effect-parent", methods: {
         call: { blob: callBlob.id }, detached_call: { blob: detachedCallBlob.id },
         atomic_effect: { blob: atomicEffectBlob.id }, host_page: { blob: hostPageBlob.id }, request: { blob: requestBlob.id },
+        echo: { blob: echoBlob.id }, self_call: { blob: selfCallBlob.id }, task_then: { blob: taskThenBlob.id },
+        atomic_task: { blob: atomicTaskBlob.id }, cancel_child: { blob: cancelChildBlob.id },
+        await_rejected: { blob: awaitRejectedBlob.id },
       } }),
     });
     expect(parentBoxResponse.status).toBe(201);
@@ -264,6 +282,28 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     const requested = await invoke("request", 9, parentBox.id, `http://localhost:${port}/0.3.0/accounts/${publicJwk.x}`);
     expect(requested.status).toBe(200);
     expect((await requested.json()).result).toEqual({ status: 200, ok: true });
+
+    // A call may re-enter the same box because invocations no longer hold its atomic lock.
+    const selfCall = await invoke("self_call", 10, parentBox.id, "same box");
+    expect(selfCall.status).toBe(200);
+    expect((await selfCall.json()).result).toBe("same box");
+
+    const taskThen = await invoke("task_then", 11, parentBox.id, "then result");
+    expect(taskThen.status).toBe(200);
+    expect((await taskThen.json()).result).toBe("then result");
+
+    const atomicTask = await invoke("atomic_task", 12, parentBox.id, { box: childBox.id });
+    expect(atomicTask.status).toBe(422);
+    expect((await atomicTask.json()).error.message).toContain("Tasks cannot be derived inside ctx.atomic");
+
+    const awaitRejected = await invoke("await_rejected", 13, parentBox.id);
+    expect(awaitRejected.status).toBe(200);
+    expect((await awaitRejected.json()).result).toContain("Target box method not found");
+
+    const cancelledChild = await invoke("cancel_child", 14, parentBox.id, { box: childBox.id, url: slowUrl });
+    expect(cancelledChild.status).toBe(408);
+    await Bun.sleep(700);
+    expect(await (await fetch(`http://localhost:${port}/0.3.0/boxes/${childBox.id}/state/public/late`)).json()).toEqual({ found: false });
 
     const unsafeBlobResponse = await fetch(`http://localhost:${port}/0.3.0/blobs`, {
       method: "POST",
@@ -298,8 +338,9 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     });
     expect(constructorBox.status).toBe(400);
 
-    const cliDownload = await fetch(`http://localhost:${port}/boxos`);
-    expect(cliDownload.headers.get("content-disposition")).toBe("attachment; filename=boxos");
+    const cliDownload = await fetch(`http://localhost:${port}/boxos-cli.js`);
+    expect(cliDownload.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(cliDownload.headers.get("content-disposition")).toBeNull();
     expect(await cliDownload.text()).toStartWith("#!/usr/bin/env bun");
 
     const agentGuide = await fetch(`http://localhost:${port}/AGENTS.md`);
@@ -365,7 +406,7 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     let grantBinary = "";
     for (const byte of grantSignatureBytes) grantBinary += String.fromCharCode(byte);
     const grantSignature = btoa(grantBinary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    const profileSet = await invoke("set", 10, profileExample.box, {
+    const profileSet = await invoke("set", 15, profileExample.box, {
       username: "alice", account: walletPublic.x, grant, signature: grantSignature,
     });
     expect(profileSet.status).toBe(200);
@@ -409,6 +450,7 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(missing.status).toBe(404);
   } finally {
     process.kill();
+    slowServer.stop(true);
     await process.exited;
     await Bun.file(databasePath).delete();
     await rm(cliConfigPath, { recursive: true, force: true });

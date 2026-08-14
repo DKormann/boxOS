@@ -2,10 +2,10 @@
 
 `bin/boxos` is the dependency-free Bun CLI for people, scripts, CI jobs, and coding agents. Commands emit JSON on stdout and return a nonzero status with a structured error on failure.
 
-A server exposes the same executable at `/boxos`:
+A server exposes the same source as browser-readable plain text at `/boxos-cli.js`:
 
 ```sh
-curl -fsSL https://boxos.org/boxos -o boxos
+curl -fsSL https://boxos.org/boxos-cli.js -o boxos
 chmod +x boxos
 ./boxos --help
 ```
