@@ -40,6 +40,8 @@ bunx tsc --noEmit
 
 The server stores data in `boxos.sqlite` by default. Set `BOXOS_DB_URL` to another Bun SQLite URL when needed.
 
+Production defaults to `https://boxos.org`. Set `BOXOS_PUBLIC_URL` to the public origin when deploying under another domain, for example `https://boxos.example`. Hosted pages require wildcard DNS and TLS for `*.boxos.example`. Behind a reverse proxy, preserve `Host` or send `X-Forwarded-Host`, and send `X-Forwarded-Proto`, so redirects and example-to-wallet flows stay on that deployment.
+
 Implemented routes:
 
 ```text

@@ -60,7 +60,7 @@
   document.querySelector("#connect").onclick = function () {
     const state = crypto.randomUUID(); sessionStorage.setItem("boxos:profile:state", state);
     const request = { permissions: ["public-profile"], subject: app.publicKey, state: state, returnUrl: location.origin + location.pathname };
-    location.href = wallet.localUrl + "/?request=" + encodeURIComponent(JSON.stringify(request));
+    location.href = wallet.currentUrl + "/?request=" + encodeURIComponent(JSON.stringify(request));
   };
   form.onsubmit = async function (event) {
     event.preventDefault(); if (!authorization) return;

@@ -146,7 +146,7 @@ The response contains its 32-character lowercase base32 page ID, immutable origi
 
 A new mapping costs `100000 + 100 × HTML bytes` fuel. Re-hosting it costs 1000 fuel and returns `created: false`. Fuel is reported but cannot be debited until accounts are implemented.
 
-`GET https://<page-id>.boxos.org/` serves the exact blob as immutable HTML. Other paths are not served. Deployment requires wildcard DNS and TLS for `*.boxos.org`.
+`GET https://<page-id>.boxos.org/` serves the exact blob as immutable HTML. Other paths are not served. The default public origin is `https://boxos.org`; another deployment sets `BOXOS_PUBLIC_URL` to its root origin and provides wildcard DNS and TLS for page subdomains. Reverse proxies preserve `Host` or send `X-Forwarded-Host`, and send the original protocol in `X-Forwarded-Proto`.
 
 Boxes access the same kernel operation through the owned effect `ctx.hostPage(blobId)`.
 
@@ -162,7 +162,7 @@ The server reads `examples/manifest.json` during startup. This explicit manifest
 GET /0.3.0/examples
 ```
 
-returns the published names, immutable production URLs, and `.localhost` development URLs. Startup also logs both forms. Bun's default port produces addresses such as `http://<page-id>.localhost:3000`.
+returns each published name, box ID, canonical `url`, deployment-relative `currentUrl`, and a `localUrl` only on localhost. Pages use `currentUrl` when linking to another example origin, so wallet redirects remain on the server that delivered the page. Startup also logs canonical and localhost forms. Bun's default port produces addresses such as `http://<page-id>.localhost:3000`.
 
 ## Reference client
 

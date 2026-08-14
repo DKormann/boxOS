@@ -24,6 +24,10 @@ if (development && Bun.env.BOXOS_HOT_CHILD !== "1") {
 const api = "/0.3.0";
 const runtime = "boxos-js/0.3.0";
 const initialAccountFuel = 1_000_000_000;
+const configuredPublicUrl = new URL(Bun.env.BOXOS_PUBLIC_URL ?? "https://boxos.org");
+if (configuredPublicUrl.pathname !== "/" || configuredPublicUrl.search || configuredPublicUrl.hash) {
+  throw new Error("BOXOS_PUBLIC_URL must be an origin without a path, query, or fragment");
+}
 const database = new Bun.SQL(Bun.env.BOXOS_DB_URL ?? "sqlite://boxos.sqlite", {
   max: 1,
 });
@@ -641,7 +645,7 @@ async function hostPage(blobId: string): Promise<{ id: string; blob: string; ori
   return {
     id,
     blob: blobId,
-    origin: `https://${id}.boxos.org`,
+    origin: pageUrlAtOrigin(configuredPublicUrl, id),
     fuel: created ? 100_000 + bytes.length * 100 : 1_000,
     created,
   };
@@ -681,9 +685,8 @@ async function servePage(id: string, head: boolean): Promise<Response> {
 }
 
 function hostedPageId(request: Request): string | undefined {
-  const host = (request.headers.get("host") ?? new URL(request.url).hostname).toLowerCase().split(":")[0];
-  const match = /^([a-z2-7]{32})\.(?:boxos\.org|localhost)$/.exec(host);
-  return match?.[1];
+  const hostname = requestAddress(request).hostname;
+  return /^([a-z2-7]{32})\./.exec(hostname)?.[1];
 }
 
 type PublishedExample = { name: string; pageId: string; url: string; box: string | null };
@@ -747,32 +750,49 @@ async function publishExamples(): Promise<PublishedExample[]> {
   return published;
 }
 
-function localRequest(request: Request): boolean {
+function requestAddress(request: Request): URL {
   const requestUrl = new URL(request.url);
-  const host = (request.headers.get("host") ?? requestUrl.host).split(":")[0] ?? "";
-  return host === "localhost" || host.endsWith(".localhost");
+  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const protocol = forwardedProtocol === "http" || forwardedProtocol === "https" ? `${forwardedProtocol}:` : requestUrl.protocol;
+  const host = forwardedHost || request.headers.get("host") || requestUrl.host;
+  return new URL(`${protocol}//${host}`);
+}
+
+function deploymentRoot(request: Request): URL {
+  const address = requestAddress(request);
+  const pagePrefix = /^[a-z2-7]{32}\.(.+)$/.exec(address.hostname);
+  if (pagePrefix) address.hostname = pagePrefix[1]!;
+  return address;
+}
+
+function pageUrlAtOrigin(root: URL, pageId: string): string {
+  const page = new URL(root.origin);
+  page.hostname = `${pageId}.${page.hostname}`;
+  return page.origin;
+}
+
+function localRequest(request: Request): boolean {
+  return deploymentRoot(request).hostname === "localhost";
 }
 
 function boxosRoot(request: Request): string {
-  const requestUrl = new URL(request.url);
-  const port = requestUrl.port ? `:${requestUrl.port}` : "";
-  return localRequest(request) ? `${requestUrl.protocol}//localhost${port}/` : "https://boxos.org/";
+  return `${deploymentRoot(request).origin}/`;
 }
 
 function exampleUrl(request: Request, example: PublishedExample): string {
-  const requestUrl = new URL(request.url);
-  const port = requestUrl.port ? `:${requestUrl.port}` : "";
-  return localRequest(request) ? `${requestUrl.protocol}//${example.pageId}.localhost${port}` : example.url;
+  return pageUrlAtOrigin(deploymentRoot(request), example.pageId);
 }
 
 function listExamples(request: Request): Response {
-  const requestUrl = new URL(request.url);
-  const port = requestUrl.port ? `:${requestUrl.port}` : "";
+  const root = deploymentRoot(request);
+  const local = root.hostname === "localhost";
   return json({
     examples: publishedExamples.map(example => ({
       name: example.name,
       url: example.url,
-      localUrl: `${requestUrl.protocol}//${example.pageId}.localhost${port}`,
+      currentUrl: pageUrlAtOrigin(root, example.pageId),
+      localUrl: local ? pageUrlAtOrigin(root, example.pageId) : null,
       box: example.box,
     })),
   });

@@ -15,10 +15,10 @@ return ctx.atomic(function groups(tx) {
     if (!found) { group.members.push(input.target); tx.state.private.set("group:" + input.group, group); let otherKey = "groups:" + input.target; let other = tx.state.private.get(otherKey) || []; other.push(input.group); tx.state.private.set(otherKey, other); }
   } else if (input.action == "send") {
     let group = tx.state.private.get("group:" + input.group);
-    if (!group || typeof input.text != "string" || input.text.length < 1 || input.text.length > 2000) throw "Invalid group message";
+    if (!group || typeof input.text != "string" || input.text.length < 1 || input.text.length > 2000 || typeof input.sentAt != "number") throw "Invalid group message";
     let member = false; let i = 0; while (i < group.members.length) { if (group.members[Number(i)] == input.account) member = true; i = i + 1; }
     if (!member) throw "You are not a group member";
-    group.messages.push({ id: input.id, from: input.account, text: input.text }); tx.state.private.set("group:" + input.group, group);
+    group.messages.push({ id: input.id, from: input.account, text: input.text, sentAt: input.sentAt }); tx.state.private.set("group:" + input.group, group);
   } else if (input.action != "view") throw "Unknown group action";
   let result = []; let i = 0; while (i < ids.length) { let group = tx.state.private.get("group:" + ids[Number(i)]); if (group) result.push(group); i = i + 1; }
   return result;

@@ -372,8 +372,8 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
 
     const examplesResponse = await fetch(`http://localhost:${port}/0.3.0/examples`);
     const examples = await examplesResponse.json();
-    expect(examples.examples).toHaveLength(10);
-    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "app-explorer", "counter", "profile", "social", "social-graph", "social-messages", "social-groups", "wallet", "super-boxo-bros"]);
+    expect(examples.examples).toHaveLength(9);
+    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "app-explorer", "counter", "profile", "social", "social-graph", "social-messages", "social-groups", "wallet"]);
     const aboutExample = examples.examples.find((example: { name: string }) => example.name === "about");
     const appExplorerExample = examples.examples.find((example: { name: string }) => example.name === "app-explorer");
     const tryBoxos = await fetch(`http://localhost:${port}/examples/app-explorer`, { redirect: "manual" });
@@ -384,6 +384,7 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     const socialExample = examples.examples.find((example: { name: string }) => example.name === "social");
     const walletExample = examples.examples.find((example: { name: string }) => example.name === "wallet");
     expect(aboutExample.url).toMatch(/^https:\/\/[a-z2-7]{32}\.boxos\.org$/);
+    expect(aboutExample.currentUrl).toBe(aboutExample.localUrl);
     expect(aboutExample.localUrl).toMatch(new RegExp(`^http://[a-z2-7]{32}\\.localhost:${port}$`));
     expect(aboutExample.box).toBeNull();
     expect(appExplorerExample.box).toMatch(/^box_[0-9a-f]{64}$/);
@@ -391,6 +392,24 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(profileExample.box).toMatch(/^box_[0-9a-f]{64}$/);
     expect(socialExample.box).toBeNull();
     expect(walletExample.box).toBeNull();
+
+    const deployedExamplesResponse = await fetch(`http://localhost:${port}/0.3.0/examples`, {
+      headers: { host: "demo.example.test", "x-forwarded-proto": "https" },
+    });
+    const deployedExamples = (await deployedExamplesResponse.json()).examples;
+    const deployedProfile = deployedExamples.find((example: { name: string }) => example.name === "profile");
+    const deployedWallet = deployedExamples.find((example: { name: string }) => example.name === "wallet");
+    expect(deployedProfile.currentUrl).toMatch(/^https:\/\/[a-z2-7]{32}\.demo\.example\.test$/);
+    expect(deployedWallet.currentUrl).toMatch(/^https:\/\/[a-z2-7]{32}\.demo\.example\.test$/);
+    expect(deployedWallet.localUrl).toBeNull();
+    expect(deployedWallet.url).toMatch(/^https:\/\/[a-z2-7]{32}\.boxos\.org$/);
+    const deployedWalletRedirect = await fetch(`http://localhost:${port}/examples/wallet`, {
+      headers: { host: "demo.example.test", "x-forwarded-proto": "https" }, redirect: "manual",
+    });
+    expect(deployedWalletRedirect.headers.get("location")).toBe(deployedWallet.currentUrl);
+    const deployedProfileHost = new URL(deployedProfile.currentUrl).hostname;
+    const deployedProfilePage = await fetch(`http://localhost:${port}/`, { headers: { host: deployedProfileHost } });
+    expect(await deployedProfilePage.text()).toContain("wallet.currentUrl");
 
     const walletKeys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const walletPublic = await crypto.subtle.exportKey("jwk", walletKeys.publicKey);
@@ -424,7 +443,9 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(await pageClient.text()).toContain("class BoxOSClient");
     const pageStyles = await fetch(`http://localhost:${port}/boxos.css`, { headers: { host: aboutHost } });
     expect(await pageStyles.text()).toContain("--boxos-accent");
-    const aboutRedirect = await fetch(`http://localhost:${port}/about`, { headers: { host: aboutHost }, redirect: "manual" });
+    const aboutRedirect = await fetch(`http://localhost:${port}/about`, {
+      headers: { host: aboutHost, "x-forwarded-proto": "https" }, redirect: "manual",
+    });
     expect(aboutRedirect.headers.get("location")).toBe("https://boxos.org/");
 
     const counterHost = new URL(counterExample.url).hostname;
@@ -437,6 +458,18 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
 
     const profilePage = await fetch(`${profileExample.localUrl}/`);
     expect(await profilePage.text()).toContain("public-profile");
+    const socialPage = await fetch(`${socialExample.localUrl}/`);
+    const socialHtml = await socialPage.text();
+    expect(socialHtml).toContain("id=\"history\"");
+    expect(socialHtml).toContain("id=\"account\"");
+    expect(socialHtml).toContain("id=\"newChat\"");
+    expect(socialHtml).toContain("public-profile");
+    expect(socialHtml).toContain("direct:");
+    expect(socialHtml).toContain("group:");
+    expect(socialHtml).toContain("sentAt:Date.now()");
+    expect(socialHtml).toContain('params.get("to")||params.get("person")');
+    expect(socialHtml).toContain("Copy ID");
+
     const walletPage = await fetch(`${walletExample.localUrl}/`);
     const walletHtml = await walletPage.text();
     expect(walletHtml).toContain("Create or restore an account");
