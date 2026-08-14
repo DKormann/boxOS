@@ -20,9 +20,21 @@ bun src/server.ts --dev
 
 Changes to `src/server.ts` restart the server. The client and example HTML are read on each request, so changes to those files appear on refresh without restarting. Production startup does not enable hot reload.
 
+## Agent and CLI usage
+
+The dependency-free CLI manages local Ed25519 accounts, deploys pages and app manifests, invokes methods, and signs application grants:
+
+```sh
+bin/boxos account create --name deployer
+bin/boxos deploy page ./index.html
+```
+
+See [AGENTS.md](AGENTS.md) for the agent fast path and [docs/cli.md](docs/cli.md) for the complete command reference.
+
 ## Check
 
 ```sh
+bun test
 bunx tsc --noEmit
 ```
 

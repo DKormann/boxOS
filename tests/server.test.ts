@@ -1,6 +1,9 @@
+import { rm } from "node:fs/promises";
+
 test("serves the BOXOS homepage and rejects unknown paths", async () => {
   const port = String(41000 + Math.floor(Math.random() * 1000));
   const databasePath = `/tmp/boxos-${crypto.randomUUID()}.sqlite`;
+  const cliConfigPath = `/tmp/boxos-cli-${crypto.randomUUID()}`;
   const process = Bun.spawn(["bun", "src/server.ts"], {
     env: { ...Bun.env, PORT: port, BOXOS_DB_URL: `sqlite://${databasePath}` },
     stdout: "ignore",
@@ -28,6 +31,8 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(html).toContain("BOXOS");
     expect(html).toContain("Developer reference");
     expect(html).toContain("Baseline status");
+    expect(html).toContain("BOXOS AGENTS: start here");
+    expect(html).toContain("href=\"/AGENTS.md\"");
 
     const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const publicJwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
@@ -293,9 +298,31 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     });
     expect(constructorBox.status).toBe(400);
 
+    const cliDownload = await fetch(`http://localhost:${port}/boxos`);
+    expect(cliDownload.headers.get("content-disposition")).toBe("attachment; filename=boxos");
+    expect(await cliDownload.text()).toStartWith("#!/usr/bin/env bun");
+
+    const agentGuide = await fetch(`http://localhost:${port}/AGENTS.md`);
+    expect(agentGuide.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+    expect(await agentGuide.text()).toContain("# BOXOS agent guide");
+
     const client = await fetch(`http://localhost:${port}/client.js`);
     expect(client.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
     expect(await client.text()).toContain("class BoxOSClient");
+    async function cli(...command: string[]) {
+      const child = Bun.spawn(["bin/boxos", "--url", `http://localhost:${port}`, ...command], {
+        env: { ...Bun.env, BOXOS_CONFIG_DIR: cliConfigPath }, stdout: "pipe", stderr: "pipe",
+      });
+      const value = await new Response(child.stdout).json();
+      expect(await child.exited).toBe(0);
+      return value;
+    }
+    const cliAccount = await cli("account", "create", "--name", "agent");
+    expect(cliAccount.publicKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const cliPage = await cli("deploy", "page", "examples/about.html");
+    expect(cliPage.page).toMatch(/^[a-z2-7]{32}$/);
+    expect(cliPage.blob).toMatch(/^blob_[0-9a-f]{64}$/);
+
     const stylesheet = await fetch(`http://localhost:${port}/boxos.css`);
     expect(stylesheet.headers.get("content-type")).toBe("text/css; charset=utf-8");
     const css = await stylesheet.text();
@@ -304,24 +331,31 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
 
     const examplesResponse = await fetch(`http://localhost:${port}/0.3.0/examples`);
     const examples = await examplesResponse.json();
-    expect(examples.examples).toHaveLength(4);
-    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "counter", "profile", "wallet"]);
+    expect(examples.examples).toHaveLength(9);
+    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "app-explorer", "counter", "profile", "social", "social-graph", "social-messages", "social-groups", "wallet"]);
     const aboutExample = examples.examples.find((example: { name: string }) => example.name === "about");
+    const appExplorerExample = examples.examples.find((example: { name: string }) => example.name === "app-explorer");
+    const tryBoxos = await fetch(`http://localhost:${port}/examples/app-explorer`, { redirect: "manual" });
+    expect(tryBoxos.status).toBe(302);
+    expect(tryBoxos.headers.get("location")).toBe(appExplorerExample.localUrl);
     const counterExample = examples.examples.find((example: { name: string }) => example.name === "counter");
     const profileExample = examples.examples.find((example: { name: string }) => example.name === "profile");
+    const socialExample = examples.examples.find((example: { name: string }) => example.name === "social");
     const walletExample = examples.examples.find((example: { name: string }) => example.name === "wallet");
     expect(aboutExample.url).toMatch(/^https:\/\/[a-z2-7]{32}\.boxos\.org$/);
     expect(aboutExample.localUrl).toMatch(new RegExp(`^http://[a-z2-7]{32}\\.localhost:${port}$`));
     expect(aboutExample.box).toBeNull();
+    expect(appExplorerExample.box).toMatch(/^box_[0-9a-f]{64}$/);
     expect(counterExample.box).toMatch(/^box_[0-9a-f]{64}$/);
     expect(profileExample.box).toMatch(/^box_[0-9a-f]{64}$/);
+    expect(socialExample.box).toBeNull();
     expect(walletExample.box).toBeNull();
 
     const walletKeys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const walletPublic = await crypto.subtle.exportKey("jwk", walletKeys.publicKey);
     const grant = {
-      domain: "boxos-profile-grant/0.3.0", account: walletPublic.x, subject: publicJwk.x,
-      audience: profileExample.box, permission: "manage:profile",
+      domain: "boxos-grant/0.3.0", account: walletPublic.x, subject: publicJwk.x,
+      permission: "public-profile",
     };
     const grantPrefix = new TextEncoder().encode("BOXOS:MESSAGE:0.3.0\0");
     const grantBody = new TextEncoder().encode(JSON.stringify(grant));
@@ -349,19 +383,23 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(await pageClient.text()).toContain("class BoxOSClient");
     const pageStyles = await fetch(`http://localhost:${port}/boxos.css`, { headers: { host: aboutHost } });
     expect(await pageStyles.text()).toContain("--boxos-accent");
+    const aboutRedirect = await fetch(`http://localhost:${port}/about`, { headers: { host: aboutHost }, redirect: "manual" });
+    expect(aboutRedirect.headers.get("location")).toBe("https://boxos.org/");
 
     const counterHost = new URL(counterExample.url).hostname;
     const counterPage = await fetch(`http://localhost:${port}/`, { headers: { host: counterHost } });
     const counterHtml = await counterPage.text();
     expect(counterHtml).toContain("Counter box");
+    expect(counterHtml).toContain("class=\"app-brand\" href=\"/about\"");
     expect(counterHtml).toContain("client.getPublicState(box, \"count\")");
     expect(counterHtml).toContain("client.invoke(box, \"increment\"");
 
     const profilePage = await fetch(`${profileExample.localUrl}/`);
-    expect(await profilePage.text()).toContain("manage:profile");
+    expect(await profilePage.text()).toContain("public-profile");
     const walletPage = await fetch(`${walletExample.localUrl}/`);
     const walletHtml = await walletPage.text();
-    expect(walletHtml).toContain("ordinary immutable BOXOS page");
+    expect(walletHtml).toContain("Create or restore an account");
+    expect(walletHtml).toContain("Save your recovery key");
     expect(walletHtml).toContain("BOXOS:MESSAGE:0.3.0");
 
     const counterBypass = await fetch(`http://localhost:${port}/0.3.0/examples/counter`, { method: "POST" });
@@ -373,5 +411,6 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     process.kill();
     await process.exited;
     await Bun.file(databasePath).delete();
+    await rm(cliConfigPath, { recursive: true, force: true });
   }
 });

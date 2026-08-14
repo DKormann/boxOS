@@ -1,9 +1,9 @@
 if (!input || typeof input.username != "string" || input.username.length < 1 || input.username.length > 32) {
   throw "Username must contain between 1 and 32 characters";
 }
-if (!input.grant || input.grant.domain != "boxos-profile-grant/0.3.0" ||
-    input.grant.permission != "manage:profile" || input.grant.subject != ctx.rootCaller ||
-    input.grant.audience != ctx.box || input.grant.account != input.account) {
+if (!input.grant || input.grant.domain != "boxos-grant/0.3.0" ||
+    input.grant.permission != "public-profile" || input.grant.subject != ctx.rootCaller ||
+    input.grant.account != input.account) {
   throw "Invalid profile grant";
 }
 let valid = await ctx.verify(input.account, input.grant, input.signature);

@@ -2,6 +2,16 @@
   "about": {
     "page": "about.html"
   },
+  "app-explorer": {
+    "page": "app-explorer.html",
+    "box": {
+      "runtime": "boxos-js/0.3.0",
+      "instance": "app-explorer-example",
+      "methods": {
+        "manage": { "source": "app-explorer.manage.js" }
+      }
+    }
+  },
   "counter": {
     "page": "counter.html",
     "box": {
@@ -20,6 +30,33 @@
       "methods": {
         "set": { "source": "profile.set.js" }
       }
+    }
+  },
+  "social": {
+    "page": "social.html"
+  },
+  "social-graph": {
+    "page": "social.html",
+    "box": {
+      "runtime": "boxos-js/0.3.0",
+      "instance": "social-graph-example",
+      "methods": { "manage": { "source": "social.graph.js" } }
+    }
+  },
+  "social-messages": {
+    "page": "social.html",
+    "box": {
+      "runtime": "boxos-js/0.3.0",
+      "instance": "social-messages-example",
+      "methods": { "manage": { "source": "social.messages.js" } }
+    }
+  },
+  "social-groups": {
+    "page": "social.html",
+    "box": {
+      "runtime": "boxos-js/0.3.0",
+      "instance": "social-groups-example",
+      "methods": { "manage": { "source": "social.groups.js" } }
     }
   },
   "wallet": {

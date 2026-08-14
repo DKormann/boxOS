@@ -767,6 +767,24 @@ async function publishExamples(): Promise<PublishedExample[]> {
   return published;
 }
 
+function localRequest(request: Request): boolean {
+  const requestUrl = new URL(request.url);
+  const host = (request.headers.get("host") ?? requestUrl.host).split(":")[0] ?? "";
+  return host === "localhost" || host.endsWith(".localhost");
+}
+
+function boxosRoot(request: Request): string {
+  const requestUrl = new URL(request.url);
+  const port = requestUrl.port ? `:${requestUrl.port}` : "";
+  return localRequest(request) ? `${requestUrl.protocol}//localhost${port}/` : "https://boxos.org/";
+}
+
+function exampleUrl(request: Request, example: PublishedExample): string {
+  const requestUrl = new URL(request.url);
+  const port = requestUrl.port ? `:${requestUrl.port}` : "";
+  return localRequest(request) ? `${requestUrl.protocol}//${example.pageId}.localhost${port}` : example.url;
+}
+
 function listExamples(request: Request): Response {
   const requestUrl = new URL(request.url);
   const port = requestUrl.port ? `:${requestUrl.port}` : "";
@@ -811,12 +829,27 @@ const server = Bun.serve({
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/") {
       const response = await servePage(aboutExample.pageId, request.method === "HEAD");
       response.headers.set("cache-control", "no-cache");
-      response.headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+      response.headers.set("content-security-policy", "default-src 'none'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
       response.headers.set("referrer-policy", "no-referrer");
       return response;
     }
     if (request.method === "GET" && url.pathname === "/client.js") {
       return staticFile("public/client.js", "text/javascript; charset=utf-8");
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/boxos") {
+      return new Response(request.method === "HEAD" ? null : Bun.file("bin/boxos"), {
+        headers: {
+          "content-type": "text/javascript; charset=utf-8",
+          "content-disposition": "attachment; filename=boxos",
+          "cache-control": "no-cache",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/AGENTS.md") {
+      return new Response(request.method === "HEAD" ? null : Bun.file("AGENTS.md"), {
+        headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" },
+      });
     }
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/boxos.css") {
       const response = await getBlob(stylesheetBlob, request.method === "HEAD");
@@ -841,6 +874,13 @@ const server = Bun.serve({
       }
       if (request.method === "POST" && url.pathname === `${api}/pages`) return await createPage(request);
       if (request.method === "GET" && url.pathname === `${api}/examples`) return listExamples(request);
+      if (request.method === "GET" && url.pathname === "/about") return Response.redirect(boxosRoot(request), 302);
+      if (request.method === "GET" && url.pathname.startsWith("/examples/")) {
+        const name = decodeURIComponent(url.pathname.slice("/examples/".length));
+        const example = publishedExamples.find(item => item.name === name);
+        if (!example) return problem(404, "example_not_found", "Example not found");
+        return Response.redirect(exampleUrl(request, example), 302);
+      }
     } catch (error) {
       console.error(error);
       return problem(500, "internal_error", "The server could not complete the request");

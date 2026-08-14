@@ -4,20 +4,21 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BOXOS profile</title><link rel="stylesheet" href="/boxos.css"><script src="/client.js"></script>
   <style>
-    body { max-width: 38rem; margin: 5rem auto; padding: 0 1rem; }
-    section { padding: 1.5rem; border: 1px solid var(--boxos-line); background: var(--boxos-surface); }
-    input { width: 100%; margin: .5rem 0 1rem; }
-    #status { min-height: 2em; color: var(--boxos-muted); }
+    body { display:grid; place-items:center; padding:1rem; }
+    main { width:min(30rem,100%); padding:2rem; text-align:center; }
+    input { width:100%; margin:.5rem 0 1rem; }
+    #status { min-height:2em; color:var(--boxos-muted); }
   </style>
 </head>
 <body>
-  <h1>Public profile</h1><p>Create a public username tied to a wallet public key.</p>
-  <section>
-    <p id="identity">No wallet account connected.</p>
+  <a class="app-brand" href="/about">BOXOS</a>
+  <main class="card app-header">
+    <h1>Public profile</h1><p>Create a public username tied to a wallet public key.</p>
+    <p id="identity">No account selected.</p>
     <button id="connect">Login</button>
     <form id="form" hidden><label>Username<input id="username" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label><button>Save public profile</button></form>
     <p id="status" role="status"></p>
-  </section>
+  </main>
 <script>
 (async function () {
   const client = new BoxOSClient(), status = document.querySelector("#status"), form = document.querySelector("#form");
@@ -32,16 +33,33 @@
     const returned = JSON.parse(fragment.get("boxos-grant"));
     const state = sessionStorage.getItem("boxos:profile:state");
     if (returned.state !== state) throw new Error("Wallet response state did not match");
-    localStorage.setItem(grantKey, JSON.stringify(returned)); history.replaceState(null, "", location.pathname); authorization = returned;
+    const signed = returned.grants && returned.grants.find(function (item) { return item.grant.permission === "public-profile"; });
+    if (!signed) throw new Error("Wallet did not return public-profile permission");
+    authorization = { account: returned.account, grant: signed.grant, signature: signed.signature };
+    localStorage.setItem(grantKey, JSON.stringify(authorization)); history.replaceState(null, "", location.pathname);
   } else { authorization = JSON.parse(localStorage.getItem(grantKey) || "null"); }
-  function connected() {
+  async function connected() {
     if (!authorization) return;
-    document.querySelector("#identity").innerHTML = "Connected wallet account: <code>" + authorization.account + "</code>";
+    const identity = document.querySelector("#identity");
+    const username = document.querySelector("#username");
+    document.querySelector("#connect").textContent = "Switch account";
     form.hidden = false;
+    try {
+      const stored = await client.getPublicState(profile.box, authorization.account);
+      if (stored.found && stored.value && typeof stored.value.username === "string") {
+        username.value = stored.value.username;
+        identity.innerHTML = "Logged in as <strong></strong><span class=\"muted\"></span>";
+        identity.querySelector("strong").textContent = stored.value.username;
+        identity.querySelector("span").textContent = " — " + authorization.account.slice(0, 12) + "…";
+        return;
+      }
+    } catch {}
+    identity.innerHTML = "Logged in as <code></code>";
+    identity.querySelector("code").textContent = authorization.account;
   }
   document.querySelector("#connect").onclick = function () {
     const state = crypto.randomUUID(); sessionStorage.setItem("boxos:profile:state", state);
-    const request = { permission: "manage:profile", subject: app.publicKey, audience: profile.box, state: state, returnUrl: location.origin + location.pathname };
+    const request = { permissions: ["public-profile"], subject: app.publicKey, state: state, returnUrl: location.origin + location.pathname };
     location.href = wallet.localUrl + "/?request=" + encodeURIComponent(JSON.stringify(request));
   };
   form.onsubmit = async function (event) {
@@ -49,10 +67,11 @@
     status.textContent = "Saving…";
     try {
       const response = await client.invoke(profile.box, "set", { username: document.querySelector("#username").value, account: authorization.account, grant: authorization.grant, signature: authorization.signature });
-      status.textContent = "Published " + response.result.username + " for " + response.result.publicKey;
+      status.textContent = "Profile saved.";
+      await connected();
     } catch (error) { status.textContent = error.message; }
   };
-  connected();
+  await connected();
 })().catch(function (error) { document.querySelector("#status").textContent = error.message; });
 </script>
 </body></html>
