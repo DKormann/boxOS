@@ -1,6 +1,9 @@
+import { AtomicCoordinator, isStateKey, isStateVisibility } from "./atomic.ts";
 import { base32, contentIdentifier, decodeBase64Url, domainBytes, exactBuffer, sha256Domain, utf8 } from "./encoding.ts";
+import { InvocationScope } from "./invocation-scope.ts";
 import { validateMethodCode } from "./parser.ts";
-import { BOX_VALUE_LIMITS, type BoxValue, copyBoxValue, parseBoxValue, stringifyBoxValue, utf8Length } from "./values.ts";
+import { BOX_VALUE_LIMITS, type BoxValue, copyBoxValue, parseBoxValue, utf8Length } from "./values.ts";
+import type { WorkerToHostMessage } from "./worker-protocol.ts";
 
 const development = Bun.argv.includes("--dev");
 
@@ -304,10 +307,6 @@ async function getPublicState(box: string, encodedKey: string): Promise<Response
     : { found: false }, 200, { "cache-control": "no-store" });
 }
 
-type StateVisibility = "public" | "private";
-type StateWrite = { visibility: StateVisibility; key: string; operation: "set"; value: BoxValue } |
-  { visibility: StateVisibility; key: string; operation: "delete" };
-
 async function verifyInvocation(publicKey: string, command: Record<string, unknown>, signature: string): Promise<boolean> {
   if (!/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
   try {
@@ -319,83 +318,7 @@ async function verifyInvocation(publicKey: string, command: Record<string, unkno
   }
 }
 
-const boxAtomicQueues = new Map<string, Promise<void>>();
-
-async function acquireBoxAtomicLock(box: string): Promise<() => void> {
-  const previous = boxAtomicQueues.get(box) ?? Promise.resolve();
-  let unlock = () => {};
-  const gate = new Promise<void>(resolve => { unlock = resolve; });
-  const tail = previous.then(() => gate);
-  boxAtomicQueues.set(box, tail);
-  await previous;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    unlock();
-    if (boxAtomicQueues.get(box) === tail) boxAtomicQueues.delete(box);
-  };
-}
-
-function stateVisibility(value: unknown): value is StateVisibility {
-  return value === "public" || value === "private";
-}
-
-function stateKey(value: unknown): value is string {
-  return typeof value === "string" && utf8Length(value) <= BOX_VALUE_LIMITS.keyBytes;
-}
-
-async function readStateKey(box: string, visibility: StateVisibility, key: string): Promise<{ found: boolean; value?: BoxValue }> {
-  const row = (await database`
-    SELECT value FROM box_state WHERE box_id = ${box} AND visibility = ${visibility} AND key = ${key}
-  `)[0];
-  return typeof row?.value === "string" ? { found: true, value: parseBoxValue(row.value) } : { found: false };
-}
-
-function normalizeStateWrites(value: unknown): StateWrite[] {
-  if (!Array.isArray(value) || value.length > BOX_VALUE_LIMITS.objectKeys) throw new TypeError("Invalid atomic write set");
-  const writes: StateWrite[] = [];
-  const keys = new Set<string>();
-  for (const item of value) {
-    if (!isRecord(item) || !stateVisibility(item.visibility) || !stateKey(item.key) ||
-        (item.operation !== "set" && item.operation !== "delete")) {
-      throw new TypeError("Invalid atomic write");
-    }
-    const identity = `${item.visibility}\0${item.key}`;
-    if (keys.has(identity)) throw new TypeError("Duplicate atomic write");
-    keys.add(identity);
-    const allowed = item.operation === "set" ? ["visibility", "key", "operation", "value"] : ["visibility", "key", "operation"];
-    if (Object.keys(item).length !== allowed.length || Object.keys(item).some(key => !allowed.includes(key))) {
-      throw new TypeError("Invalid atomic write fields");
-    }
-    if (item.operation === "set") writes.push({ visibility: item.visibility, key: item.key, operation: "set", value: copyBoxValue(item.value) });
-    else writes.push({ visibility: item.visibility, key: item.key, operation: "delete" });
-  }
-  return writes;
-}
-
-async function commitStateWrites(box: string, writes: StateWrite[]): Promise<void> {
-  await database`BEGIN`;
-  try {
-    for (const write of writes) {
-      if (write.operation === "set") {
-        await database`
-          INSERT INTO box_state (box_id, visibility, key, value)
-          VALUES (${box}, ${write.visibility}, ${write.key}, ${stringifyBoxValue(write.value)})
-          ON CONFLICT (box_id, visibility, key) DO UPDATE SET value = excluded.value
-        `;
-      } else {
-        await database`
-          DELETE FROM box_state WHERE box_id = ${box} AND visibility = ${write.visibility} AND key = ${write.key}
-        `;
-      }
-    }
-    await database`COMMIT`;
-  } catch (error) {
-    await database`ROLLBACK`;
-    throw error;
-  }
-}
+const atomicCoordinator = new AtomicCoordinator(database);
 
 const rpcEncoder = new TextEncoder();
 
@@ -486,19 +409,7 @@ async function executeMethod(
   const worker = new Worker(new URL("./worker.ts", import.meta.url).href);
   const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
   const dataBuffer = new SharedArrayBuffer(BOX_VALUE_LIMITS.encodedBytes + 1024);
-  let pendingRpc = Promise.resolve();
-  let releaseAtomicLock: (() => void) | null = null;
-  const invocationController = new AbortController();
-  const hostEffects = new Set<Promise<unknown>>();
-  const abortFromParent = () => invocationController.abort(parentSignal?.reason);
-  if (parentSignal?.aborted) abortFromParent();
-  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
-
-  function trackHostEffect<T>(effect: Promise<T>): Promise<T> {
-    hostEffects.add(effect);
-    void effect.then(() => hostEffects.delete(effect), () => hostEffects.delete(effect));
-    return effect;
-  }
+  const scope = new InvocationScope(parentSignal);
 
   return await new Promise<ExecutionResult>(resolve => {
     let settled = false;
@@ -506,100 +417,94 @@ async function executeMethod(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      invocationController.abort(new Error(!result.ok && result.timeout ? "Invocation deadline exceeded" : "Invocation settled"));
+      scope.cancel(new Error(!result.ok && result.timeout ? "Invocation deadline exceeded" : "Invocation settled"));
       worker.terminate();
-      // A deadline may terminate a worker while an atomic read, commit, or lock
-      // acquisition is in flight. Settle it before releasing this atomic session.
-      await pendingRpc;
-      releaseAtomicLock?.();
-      releaseAtomicLock = null;
-      while (hostEffects.size > 0) await Promise.allSettled([...hostEffects]);
-      parentSignal?.removeEventListener("abort", abortFromParent);
-      parentSignal?.removeEventListener("abort", cancelFromParent);
+      await scope.settle();
+      scope.signal.removeEventListener("abort", cancelFromScope);
       resolve(result);
     };
     const timer = setTimeout(() => { void finish({ ok: false, error: "Method deadline exceeded", timeout: true }); }, 1_000);
-    const cancelFromParent = () => { void finish({ ok: false, error: "Parent invocation cancelled", timeout: true }); };
-    if (parentSignal?.aborted) cancelFromParent();
-    else parentSignal?.addEventListener("abort", cancelFromParent, { once: true });
+    const cancelFromScope = () => { void finish({ ok: false, error: "Parent invocation cancelled", timeout: true }); };
+    if (scope.signal.aborted) cancelFromScope();
+    else scope.signal.addEventListener("abort", cancelFromScope, { once: true });
 
     worker.onmessage = event => {
-      const message = event.data;
+      const message = event.data as WorkerToHostMessage;
       if (message?.type === "state.begin") {
-        if (releaseAtomicLock !== null) {
+        if (scope.atomic !== null) {
           settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic session is already active" }, true);
         } else {
-          pendingRpc = acquireBoxAtomicLock(box).then(
-            release => {
-              releaseAtomicLock = release;
-              settleWorkerRpc(controlBuffer, dataBuffer, { acquired: true });
+          const session = atomicCoordinator.createSession(box);
+          scope.setAtomic(session);
+          const operation = session.acquire().then(
+            () => settleWorkerRpc(controlBuffer, dataBuffer, { acquired: true }),
+            () => {
+              scope.setAtomic(null);
+              settleWorkerRpc(controlBuffer, dataBuffer, { error: "Could not acquire atomic lock" }, true);
             },
-            () => settleWorkerRpc(controlBuffer, dataBuffer, { error: "Could not acquire atomic lock" }, true),
           );
+          scope.setPendingRpc(operation);
         }
       } else if (message?.type === "state.read") {
-        if (releaseAtomicLock === null || !stateVisibility(message.visibility) || !stateKey(message.key)) {
+        const session = scope.atomic;
+        if (session === null || !isStateVisibility(message.visibility) || !isStateKey(message.key)) {
           settleWorkerRpc(controlBuffer, dataBuffer, { error: "Invalid atomic state read" }, true);
         } else {
-          pendingRpc = readStateKey(box, message.visibility, message.key).then(
+          const operation = session.read(message.visibility, message.key).then(
             value => settleWorkerRpc(controlBuffer, dataBuffer, value),
             () => settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic state read failed" }, true),
           );
+          scope.setPendingRpc(operation);
         }
       } else if (message?.type === "state.commit") {
-        if (releaseAtomicLock === null) {
+        const session = scope.atomic;
+        if (session === null) {
           settleWorkerRpc(controlBuffer, dataBuffer, { error: "No atomic session is active" }, true);
         } else {
-          try {
-            const writes = normalizeStateWrites(message.writes);
-            pendingRpc = commitStateWrites(box, writes).then(
-              () => {
-                releaseAtomicLock?.();
-                releaseAtomicLock = null;
-                settleWorkerRpc(controlBuffer, dataBuffer, { committed: true });
-              },
-              () => {
-                releaseAtomicLock?.();
-                releaseAtomicLock = null;
-                settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic state commit failed" }, true);
-              },
-            );
-          } catch {
-            releaseAtomicLock();
-            releaseAtomicLock = null;
-            settleWorkerRpc(controlBuffer, dataBuffer, { error: "Invalid atomic write set" }, true);
-          }
+          const operation = session.commit(message.writes).then(
+            () => {
+              scope.setAtomic(null);
+              settleWorkerRpc(controlBuffer, dataBuffer, { committed: true });
+            },
+            () => {
+              scope.setAtomic(null);
+              settleWorkerRpc(controlBuffer, dataBuffer, { error: "Atomic state commit failed" }, true);
+            },
+          );
+          scope.setPendingRpc(operation);
         }
       } else if (message?.type === "state.abort") {
-        if (releaseAtomicLock === null) {
+        const session = scope.atomic;
+        if (session === null) {
           settleWorkerRpc(controlBuffer, dataBuffer, { error: "No atomic session is active" }, true);
         } else {
-          releaseAtomicLock();
-          releaseAtomicLock = null;
+          session.abort();
+          scope.setAtomic(null);
           settleWorkerRpc(controlBuffer, dataBuffer, { aborted: true });
         }
       } else if (message?.type === "effect" && Number.isSafeInteger(message.id) && typeof message.effect === "string" && isRecord(message.args)) {
+        const args = message.args;
         const reply = (ok: boolean, value: unknown) => {
           if (!settled) worker.postMessage(ok
             ? { type: "effect.result", id: message.id, ok: true, value: copyBoxValue(value) }
             : { type: "effect.result", id: message.id, ok: false, error: effectError(value) });
         };
-        const hostEffect = trackHostEffect((async () => {
-          if (invocationController.signal.aborted) throw new Error("Invocation cancelled");
-          if (message.effect === "request") return await externalRequest(message.args, invocationController.signal);
+        const hostEffect = scope.trackEffect((async () => {
+          if (scope.signal.aborted) throw new Error("Invocation cancelled");
+          if (message.effect === "request") return await externalRequest(args, scope.signal);
           if (message.effect === "verify") {
-            const publicKey = message.args.publicKey;
-            const signature = message.args.signature;
+            const publicKey = args.publicKey;
+            const signature = args.signature;
             if (!validPublicKey(publicKey) || typeof signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
             try {
               const key = await crypto.subtle.importKey("raw", exactBuffer(decodeBase64Url(publicKey)), { name: "Ed25519" }, false, ["verify"]);
-              const body = utf8(JSON.stringify(copyBoxValue(message.args.message)));
+              const body = utf8(JSON.stringify(copyBoxValue(args.message)));
               return await crypto.subtle.verify("Ed25519", key, exactBuffer(decodeBase64Url(signature)), exactBuffer(domainBytes("MESSAGE", body)));
             } catch { return false; }
           }
           if (message.effect === "hostPage") {
-            if (typeof message.args.blob !== "string") throw new TypeError("ctx.hostPage requires a blob ID");
-            const page = await hostPage(message.args.blob);
+            if (typeof args.blob !== "string") throw new TypeError("ctx.hostPage requires a blob ID");
+            const page = await hostPage(args.blob);
             if (page instanceof Response) {
               const value = await page.json();
               throw new Error(value?.error?.message ?? "Page hosting failed");
@@ -607,8 +512,8 @@ async function executeMethod(
             return copyBoxValue(page);
           }
           if (message.effect === "call") {
-            const target = message.args.box;
-            const targetMethod = message.args.method;
+            const target = args.box;
+            const targetMethod = args.method;
             if (typeof target !== "string" || typeof targetMethod !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(targetMethod)) {
               throw new TypeError("Invalid cross-box call target");
             }
@@ -622,7 +527,7 @@ async function executeMethod(
               immediateCaller: { box, method },
               lineage: [...context.lineage, target],
             };
-            const child = await executeMethod(target, targetMethod, childSource, copyBoxValue(message.args.input), childContext, invocationController.signal);
+            const child = await executeMethod(target, targetMethod, childSource, copyBoxValue(args.input), childContext, scope.signal);
             if (!child.ok) throw new Error(child.error);
             return child.result;
           }

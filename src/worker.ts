@@ -1,26 +1,9 @@
 import { BOX_VALUE_LIMITS, type BoxValue, copyBoxValue, parseBoxValue, stringifyBoxValue, utf8Length } from "./values.ts";
-
-type StateVisibility = "public" | "private";
-type StateWrite = { visibility: StateVisibility; key: string; operation: "set"; value: BoxValue } |
-  { visibility: StateVisibility; key: string; operation: "delete" };
-type InvocationContext = {
-  rootCaller: string;
-  box: string;
-  method: string;
-  immediateCaller: { box: string; method: string } | null;
-};
-type InvocationRequest = {
-  source: string;
-  input: BoxValue;
-  context: InvocationContext;
-  controlBuffer: SharedArrayBuffer;
-  dataBuffer: SharedArrayBuffer;
-};
-type EffectResponse = { type: "effect.result"; id: number; ok: boolean; value?: unknown; error?: unknown };
+import type { EffectResultMessage, InvocationWorkerRequest, StateVisibility, StateWrite } from "./worker-protocol.ts";
 
 const decoder = new TextDecoder();
 
-function workerRpc(request: InvocationRequest, message: unknown): Record<string, unknown> {
+function workerRpc(request: InvocationWorkerRequest, message: unknown): Record<string, unknown> {
   const control = new Int32Array(request.controlBuffer);
   const data = new Uint8Array(request.dataBuffer);
   Atomics.store(control, 0, 0);
@@ -40,7 +23,7 @@ function workerRpc(request: InvocationRequest, message: unknown): Record<string,
   return response as Record<string, unknown>;
 }
 
-function stateNamespace(request: InvocationRequest, visibility: StateVisibility, writes: Map<string, StateWrite>, active: () => boolean) {
+function stateNamespace(request: InvocationWorkerRequest, visibility: StateVisibility, writes: Map<string, StateWrite>, active: () => boolean) {
   function checkKey(key: unknown): asserts key is string {
     if (!active()) throw new Error("Atomic transaction is no longer active");
     if (typeof key !== "string" || utf8Length(key) > BOX_VALUE_LIMITS.keyBytes) {
@@ -72,7 +55,7 @@ function safeMath(): Readonly<Record<string, number | ((...values: number[]) => 
   return Object.freeze(result);
 }
 
-self.onmessage = (initialEvent: MessageEvent<InvocationRequest>) => {
+self.onmessage = (initialEvent: MessageEvent<InvocationWorkerRequest>) => {
   const request = initialEvent.data;
   let atomicActive = false;
   let nextEffectId = 1;
@@ -153,7 +136,7 @@ self.onmessage = (initialEvent: MessageEvent<InvocationRequest>) => {
       : { type: "result", ok: false, error: candidate.error });
   }
 
-  self.onmessage = (event: MessageEvent<EffectResponse>) => {
+  self.onmessage = (event: MessageEvent<EffectResultMessage>) => {
     const message = event.data;
     if (message?.type !== "effect.result" || !Number.isInteger(message.id)) return;
     const pending = pendingEffects.get(message.id);

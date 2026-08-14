@@ -372,8 +372,8 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
 
     const examplesResponse = await fetch(`http://localhost:${port}/0.3.0/examples`);
     const examples = await examplesResponse.json();
-    expect(examples.examples).toHaveLength(9);
-    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "app-explorer", "counter", "profile", "social", "social-graph", "social-messages", "social-groups", "wallet"]);
+    expect(examples.examples).toHaveLength(10);
+    expect(examples.examples.map((example: { name: string }) => example.name)).toEqual(["about", "app-explorer", "counter", "profile", "social", "social-graph", "social-messages", "social-groups", "wallet", "super-boxo-bros"]);
     const aboutExample = examples.examples.find((example: { name: string }) => example.name === "about");
     const appExplorerExample = examples.examples.find((example: { name: string }) => example.name === "app-explorer");
     const tryBoxos = await fetch(`http://localhost:${port}/examples/app-explorer`, { redirect: "manual" });

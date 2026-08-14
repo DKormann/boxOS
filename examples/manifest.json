@@ -61,5 +61,8 @@
   },
   "wallet": {
     "page": "wallet.html"
+  },
+  "super-boxo-bros": {
+    "page": "super-boxo-bros.html"
   }
 }
