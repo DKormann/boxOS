@@ -7,6 +7,7 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS schema_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
   version INTEGER NOT NULL
 ) STRICT;
 
@@ -93,10 +94,10 @@ export function openDatabase(filename: string): Database {
   database.exec(SCHEMA)
 
   const row = database.query<{ version: number }>(
-    "SELECT version FROM schema_meta LIMIT 1",
+    "SELECT version FROM schema_meta WHERE id = 1",
   ).get()
   if (row == null) {
-    database.query("INSERT INTO schema_meta (version) VALUES (?)").run(DATABASE_VERSION)
+    database.query("INSERT OR IGNORE INTO schema_meta (id, version) VALUES (1, ?)").run(DATABASE_VERSION)
   } else if (row.version != DATABASE_VERSION) {
     database.close()
     throw new Error(`Unsupported database version ${row.version}; expected ${DATABASE_VERSION}`)

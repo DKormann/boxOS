@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
 import { stringifyBoxValue } from "../src/core/values.ts"
+import { EffectDispatcher } from "../src/effects/dispatcher.ts"
 import { executeTurn } from "../src/execution/turn.ts"
 import {
   isValidCallbackCode,
@@ -144,6 +145,74 @@ test("invoke persists validated callbacks atomically with the turn", () => {
     expect(rejected.ok).toBe(false)
     expect(database.query("SELECT value FROM box_state WHERE key = 'rolled-back'").get()).toBe(null)
     expect(database.query<{ count: number }>("SELECT count(*) AS count FROM effects").get()?.count).toBe(1)
+  } finally {
+    database.close()
+  }
+})
+
+test("the effect dispatcher invokes a target box and resumes the origin callback", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    installBox(database)
+    database.query("INSERT INTO boxes (id, definition, created_at) VALUES (?, ?, ?)").run(
+      "box-b",
+      "{}",
+      Date.now(),
+    )
+    database.query("INSERT INTO box_methods (box_id, name, source) VALUES (?, ?, ?)").run(
+      "box-b",
+      "work",
+      `
+        ctx.storage.public.set("called", input.value);
+        return { answer: input.value + 1 };
+      `,
+    )
+
+    const origin = executeTurn(database, methodTurn(
+      "dispatch-origin",
+      `
+        ctx.invoke(
+          "box-b",
+          "work",
+          { value: 41 },
+          function completed(result, context) {
+            ctx.storage.private.set(context.key, result.answer);
+          },
+          { key: "answer" }
+        );
+        return null;
+      `,
+    ))
+    expect(origin.ok).toBe(true)
+
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "inline-worker",
+      async execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
+        return executeTurn(database, turn)
+      },
+    })
+    const dispatcher = new EffectDispatcher(database, scheduler)
+    expect(await dispatcher.dispatchNext()).toBe(true)
+    expect(await dispatcher.dispatchNext()).toBe(false)
+
+    expect(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = 'box-b' AND visibility = 'public' AND key = 'called'",
+    ).get()?.value).toBe("41")
+    expect(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = 'box-a' AND visibility = 'private' AND key = 'answer'",
+    ).get()?.value).toBe("42")
+    expect(database.query<{ status: string }>("SELECT status FROM effects").get()?.status).toBe("succeeded")
+    expect(database.query<{ status: string }>(
+      "SELECT status FROM effect_callbacks",
+    ).get()?.status).toBe("completed")
+
+    // Explicit redelivery reuses persisted target and callback turn results.
+    const effectId = database.query<{ id: string }>("SELECT id FROM effects").get()!.id
+    await dispatcher.dispatch(effectId)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM turns WHERE id LIKE '%:invoke' OR id LIKE '%:success'",
+    ).get()?.count).toBe(2)
   } finally {
     database.close()
   }

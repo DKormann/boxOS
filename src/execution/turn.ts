@@ -2,10 +2,10 @@ import type { Database } from "bun:sqlite"
 import { copyBoxValue, parseBoxValue, stringifyBoxValue, validateBoxKey, type BoxValue } from "../core/values.ts"
 import { validateCallbackCode } from "../language/parser.ts"
 import { compileCallback, compileMethod, type RuntimeContext, type RuntimeStorage } from "./native.ts"
+import { BOXOS_RUNTIME_VERSION } from "../version.ts"
 import type { WorkerTurn, WorkerTurnResult } from "../workers/scheduler.ts"
 
 type Visibility = "public" | "private"
-const RUNTIME_VERSION = "0.3.2"
 const functionToString = Function.prototype.toString
 
 function checkedName(value: unknown, description: string): string {
@@ -85,7 +85,7 @@ function context(database: Database, turn: WorkerTurn): RuntimeContext {
         effectId,
         callbackSource,
         stringifyBoxValue(callbackContext),
-        RUNTIME_VERSION,
+        BOXOS_RUNTIME_VERSION,
       )
     },
     storage: Object.freeze({
@@ -131,7 +131,7 @@ export function executeTurn(database: Database, turn: WorkerTurn): WorkerTurnRes
           copyBoxValue(procedure.result),
           copyBoxValue(procedure.context),
         )
-      const result = copyBoxValue(value)
+      const result = value === undefined ? null : copyBoxValue(value)
       database.query(
         "UPDATE turns SET status = 'succeeded', result = ?, finished_at = ? WHERE id = ?",
       ).run(stringifyBoxValue(result), Date.now(), turn.id)

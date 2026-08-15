@@ -82,7 +82,7 @@ only their explicit arguments and approved runtime bindings in scope.
 
 Each box method gets as first argument a ctx. this offers different kinds of effects:
  - storage: read and write to private and public storage of that box
- - invoke(boxid, methodname, argument, callback): invokes another box with pure data
+ - invoke(boxid, methodname, argument, callback, callbackContext): invokes another box with pure data and optionally resumes the callback with explicit durable context
  - message(clientid, message): messages a client session
  - publish(kind: "box" | "blob" | "page" | "account", args): creates a public entity
  - transfer(senderPub, privkey, receiverPub): transfer fuel if you have 
