@@ -3,8 +3,11 @@ import type { BoxValue } from "../core/values.ts"
 export type WorkerTurn = {
   id: string
   boxId: string
-  source: string
-  input: BoxValue
+  account: string
+  clientId: string | null
+  procedure:
+    | { kind: "method"; source: string; input: BoxValue }
+    | { kind: "callback"; source: string; result: BoxValue; context: BoxValue }
 }
 
 export type WorkerTurnResult =

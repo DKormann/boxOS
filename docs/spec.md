@@ -69,9 +69,16 @@ Boxos defines a safe subset of JS to be available to define Box methods.
 particularly not allowed:
  - using undefined global variables
  - classes, inheritance, prototypes
- - runtime code evaluation
+ - user-controlled runtime code evaluation
  - async
  - general effects
+
+Validated code runs natively as JavaScript inside its assigned worker; Boxos does
+not interpret it. The trusted worker runtime may compile a validated method or
+callback using runtime-captured intrinsics. Compilation must happen only after
+successful validation, and dynamic compilation facilities such as `eval` and
+`Function` are never exposed to box code. Methods and callbacks execute with
+only their explicit arguments and approved runtime bindings in scope.
 
 Each box method gets as first argument a ctx. this offers different kinds of effects:
  - storage: read and write to private and public storage of that box

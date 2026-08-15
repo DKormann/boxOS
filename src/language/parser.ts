@@ -11,7 +11,7 @@ const KEYWORDS = new Set([
 
 const FORBIDDEN_PROPERTIES = new Set([
   "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
-  "__proto__", "arguments", "callee", "caller", "constructor", "eval", "prototype",
+  "__proto__", "arguments", "callee", "caller", "constructor", "eval", "prototype", "random",
 ]);
 
 // Some JavaScript reserved words are not grammar keywords in this small language.
