@@ -1,11 +1,18 @@
 import type { Database } from "bun:sqlite"
 import { parseBoxValue, stringifyBoxValue, type BoxValue } from "../core/values.ts"
+import {
+  publishAccount,
+  publishBox,
+  publishPage,
+  publishTextBlob,
+} from "../operations/operations.ts"
 import { BOXOS_RUNTIME_VERSION } from "../version.ts"
 import type { BoxScheduler, WorkerTurn, WorkerTurnResult } from "../workers/scheduler.ts"
 
 type EffectRow = {
   id: string
   origin_box_id: string
+  kind: string
   status: "pending" | "dispatched" | "succeeded" | "failed"
   arguments: string
   result: string | null
@@ -80,33 +87,7 @@ export class EffectDispatcher {
           ).run(effectId)
         }
 
-        let result: WorkerTurnResult
-        try {
-          const args = invocationArguments(effect.arguments)
-          const method = this.database.query<{ source: string }>(
-            "SELECT source FROM box_methods WHERE box_id = ? AND name = ?",
-          ).get(args.boxId, args.method)
-          if (!method) {
-            result = { ok: false, error: `Unknown method ${args.boxId}.${args.method}` }
-          } else {
-            const turn: WorkerTurn = {
-              id: `${effect.id}:invoke`,
-              boxId: args.boxId,
-              account: effect.account,
-              clientId: effect.client_id,
-              procedure: { kind: "method", source: method.source, input: args.argument },
-            }
-            result = await this.scheduler.run(turn)
-          }
-        } catch (error) {
-          // Scheduler/worker failures are retryable. Persisted malformed work is not.
-          if (error instanceof TypeError) {
-            result = { ok: false, error: error.message }
-          } else {
-            throw error
-          }
-        }
-
+        const result = await this.executeEffect(effect)
         this.settle(effect.id, result)
         effect = this.readEffect(effectId)!
       }
@@ -117,9 +98,66 @@ export class EffectDispatcher {
     }
   }
 
+  private async executeEffect(effect: EffectRow): Promise<WorkerTurnResult> {
+    if (effect.kind == "invoke") {
+      let args: InvocationArguments
+      try {
+        args = invocationArguments(effect.arguments)
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+      const method = this.database.query<{ source: string }>(
+        "SELECT source FROM box_methods WHERE box_id = ? AND name = ?",
+      ).get(args.boxId, args.method)
+      if (!method) return { ok: false, error: `Unknown method ${args.boxId}.${args.method}` }
+      const turn: WorkerTurn = {
+        id: `${effect.id}:invoke`,
+        boxId: args.boxId,
+        account: effect.account,
+        clientId: effect.client_id,
+        procedure: { kind: "method", source: method.source, input: args.argument },
+      }
+      // Rejections represent infrastructure failure and leave the effect retryable.
+      return this.scheduler.run(turn)
+    }
+
+    try {
+      const args = parseBoxValue(effect.arguments)
+      let id: string
+      if (effect.kind == "publish.box") {
+        id = await publishBox(this.database, args)
+      } else {
+        if (args === null || Array.isArray(args) || typeof args != "object") {
+          throw new TypeError("Publication arguments must be an object")
+        }
+        if (effect.kind == "publish.blob") {
+          const text = args["text"]
+          const contentType = args["contentType"]
+          if (typeof text != "string" || (contentType !== undefined && typeof contentType != "string")) {
+            throw new TypeError("Blob publication requires text")
+          }
+          id = await publishTextBlob(this.database, text, contentType)
+        } else if (effect.kind == "publish.page") {
+          const blobId = args["blobId"]
+          if (typeof blobId != "string") throw new TypeError("Page publication requires a blob ID")
+          id = await publishPage(this.database, blobId)
+        } else if (effect.kind == "publish.account") {
+          const pubkey = args["pubkey"]
+          if (typeof pubkey != "string") throw new TypeError("Account publication requires a public key")
+          id = publishAccount(this.database, pubkey)
+        } else {
+          throw new TypeError(`Unknown effect kind ${effect.kind}`)
+        }
+      }
+      return { ok: true, value: { id } }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   private readEffect(effectId: string): EffectRow | null {
     return this.database.query<EffectRow>(
-      `SELECT effects.id, effects.origin_box_id, effects.status, effects.arguments,
+      `SELECT effects.id, effects.origin_box_id, effects.kind, effects.status, effects.arguments,
               effects.result, turns.account, turns.client_id
        FROM effects
        JOIN turns ON turns.id = effects.origin_turn_id

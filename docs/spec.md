@@ -48,6 +48,21 @@ turn commit atomically to SQLite. A failed or exhausted turn commits none of
 those changes. Effects are dispatched only after this transaction commits.
 Previously committed turns are never rolled back by a later failure.
 
+For the version 1 HTTP protocol, an account is a raw 32-byte Ed25519 public key
+encoded as 64 lowercase hexadecimal characters. Invocation requests contain a
+client-generated nonce, box ID, method, pure input, and optional client ID. The
+signature covers `boxos.invoke.v1`, a newline, and the canonical JSON request.
+The turn ID is derived from the account and complete signed request, making an
+exact replay idempotent rather than a second invocation.
+
+Box publication requests are likewise signed over `boxos.publish-box.v1`, a
+newline, and canonical JSON containing a nonce and definition. A valid signature
+is proof of control of a new account: on its first interaction the server
+registers it and grants the configured initial fuel. On later authenticated
+interactions, the server lazily tops its balance up to a configured target when
+the configured interval has elapsed. Top-ups do not accumulate above that
+target. This simple policy may be tightened against abuse later.
+
 ## Box workers
 
 Boxes execute on workers. A server-side scheduler assigns each box to at most
@@ -62,8 +77,10 @@ leased before multiple server processes can share one database.
 ## Defining a Box
 A Box is defined by its methods and its individual storage space.
 The methods are just blobs of validated code. The box definition is publicly readable.
-The box storage is distinguished in public and private storage.
-The only way to write to a box storage is through invocation of the boxes methods.
+The box storage is distinguished in public and private storage. Anyone may read
+any box's public storage directly. Private storage is available only while that
+box executes. The only way to write either kind of box storage is through
+invocation of the box's methods.
 
 Boxos defines a safe subset of JS to be available to define Box methods.
 particularly not allowed:
@@ -85,10 +102,18 @@ Each box method gets as first argument a ctx. this offers different kinds of eff
  - invoke(boxid, methodname, argument, callback, callbackContext): invokes another box with pure data and optionally resumes the callback with explicit durable context
  - message(clientid, message): messages a client session
  - publish(kind: "box" | "blob" | "page" | "account", args): creates a public entity
- - transfer(senderPub, privkey, receiverPub): transfer fuel if you have 
+ - transfer(receiverPub, amount): atomically transfers fuel from `ctx.account`; private keys are never passed to box code
 
 ctx also exposes the account behind the invokation and the clientId
 invoking a new box method will also inherit the same account and client. all subsequent fuel usage will be credited to the same account.
+
+Clients may directly invoke boxes, publish entities, send messages, transfer
+their own fuel, and read immutable public entities or any public box storage.
+They authenticate these operations with their page account. Box methods and
+direct clients use the same operation handlers; only completion differs. A box
+resumes a durable callback, while a client receives an HTTP response or client
+message. Neither clients nor other boxes may directly read private storage or
+write any box storage.
 
 ## Effects and callbacks
 
@@ -113,10 +138,24 @@ delivery cannot run a callback twice.
 
 ## Pages
 each page is backed by a blob. it is reachable under a shortened hash. under the url <hash>.boxos.org or <hash>.localhost:port for development.
-pages are immutable client definitions.
+pages are immutable client definitions. The current shortened page ID is the
+first 16 hexadecimal characters of its domain-separated hash. The server hosts
+a page at `https://<pageid>.boxos.org/` and, in development, at
+`http://<pageid>.localhost:<port>/`. Each page receives a separate browser
+origin and therefore a separate automatically managed page account.
 
+BoxOS deploys a content-addressed `default.css` blob for its default design
+language. It is dark-first, follows the system light/dark preference, uses a
+dark-blue accent, lightweight surfaces, and rounded corners. Startup example
+pages link to this shared immutable stylesheet and build on its palette variables
+and small component classes.
 
+## Client events
 
+Clients receive messages over Server-Sent Events rather than WebSockets. A page
+opens a signed `POST /v1/events` stream for its own client ID, which is currently
+its page-account public key. Messages are persisted before delivery and encoded
+as SSE `message` events. The reference client exposes this as `boxos.events`.
 
 
 ## Userspace implementations
@@ -131,8 +170,16 @@ A Boxos app is a page that uses specific Boxes. pages do share functionality by 
 Per default Boxos offers multiple apps:
 
 ### Accounts App
-here a user can manage multiple accounts backed by privatekeys stored securely in the browser. other apps will want to connect their user profiles to a pubkey. for that they can redirect to the accounts app which might sign an access grant for using that app.
-for instance there might be a grant to manage a users private messages or public profile. multiple different apps could each have that grant for a user account. It also means a user can easily manage multiple accounts. The app flow is based on sign in with google flow
+The Accounts app manages account keys and grants only. It creates, imports,
+selects, and backs up keys stored securely in the browser, and accepts OAuth-like
+redirects from apps requesting capabilities. It does not edit existing profiles.
+
+At account creation it performs one-time profile setup: the new account grants
+the Accounts page account `manage account`, and the page uses that capability to
+set the initial name in the Profiles box. Thereafter any app account granted
+`manage account` may rename the profile through that box. The Profiles box stores
+public profile names; it never stores or manages account keys. Multiple apps may
+hold grants for one account.
 
 ### Social App
 This app looks like whatsapp.

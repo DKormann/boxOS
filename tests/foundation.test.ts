@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
+import { touchAccount } from "../src/accounts/accounts.ts"
+import { bytesToHex } from "../src/core/crypto.ts"
 import { stringifyBoxValue } from "../src/core/values.ts"
+import { deployStartupExamples } from "../examples/startup/deploy.ts"
 import { EffectDispatcher } from "../src/effects/dispatcher.ts"
 import { executeTurn } from "../src/execution/turn.ts"
 import {
@@ -8,6 +11,15 @@ import {
   isValidMethodCode,
   validateCallbackCode,
 } from "../src/language/parser.ts"
+import {
+  BoxOSService,
+  boxPublicationSigningMessage,
+  clientOperationSigningMessage,
+  invocationSigningMessage,
+  type BoxPublicationRequest,
+  type ClientOperationRequest,
+  type InvocationRequest,
+} from "../src/server/service.ts"
 import { openDatabase } from "../src/storage/database.ts"
 import { NativeBoxWorker } from "../src/workers/native-worker.ts"
 import {
@@ -59,6 +71,22 @@ test("serialized callbacks use the method parser and cannot capture locals", () 
   expect(isValidCallbackCode("(result) => result")).toBe(false)
 })
 
+test("accounts are created and lazily topped up on interaction", () => {
+  const database = openDatabase(":memory:")
+  const policy = { initialFuel: 100, topUpFuel: 50, topUpIntervalMilliseconds: 100 }
+  try {
+    expect(touchAccount(database, "account", policy, 1_000)).toBe(100)
+    database.query("UPDATE accounts SET fuel = 20 WHERE pubkey = 'account'").run()
+    expect(touchAccount(database, "account", policy, 1_050)).toBe(20)
+    expect(touchAccount(database, "account", policy, 1_100)).toBe(50)
+    expect(database.query<{ fuel: number }>(
+      "SELECT fuel FROM accounts WHERE pubkey = 'account'",
+    ).get()?.fuel).toBe(50)
+  } finally {
+    database.close()
+  }
+})
+
 test("database initialization installs the first schema", () => {
   const database = openDatabase(":memory:")
   try {
@@ -71,12 +99,119 @@ test("database initialization installs the first schema", () => {
       "box_methods",
       "box_state",
       "boxes",
+      "client_messages",
+      "client_operations",
       "effect_callbacks",
       "effects",
       "pages",
       "schema_meta",
+      "startup_deployments",
       "turns",
     ])
+  } finally {
+    database.close()
+  }
+})
+
+test("startup examples deploy account grants and public profiles", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    const deployment = await deployStartupExamples(database)
+    expect(deployment.defaultCssBlobId.length).toBe(64)
+    expect(deployment.grantsBoxId.length).toBe(64)
+    expect(deployment.profilesBoxId.length).toBe(64)
+    expect(deployment.accountsPageId.length).toBe(16)
+    expect(deployment.profilePageId.length).toBe(16)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM startup_deployments",
+    ).get()?.count).toBe(5)
+    const page = database.query<{ bytes: Uint8Array }>(
+      `SELECT blobs.bytes FROM pages JOIN blobs ON blobs.id = pages.blob_id
+       WHERE pages.id = ?`,
+    ).get(deployment.accountsPageId)
+    const pageSource = new TextDecoder().decode(page?.bytes)
+    expect(pageSource.includes("Choose an account")).toBe(true)
+    expect(pageSource.includes("Copy key")).toBe(true)
+    expect(pageSource.includes('id="import"')).toBe(true)
+    expect(pageSource.includes("boxos-key-v1:")).toBe(true)
+    expect(pageSource.includes("Display name")).toBe(false)
+    expect(pageSource.includes("Change username")).toBe(false)
+    const moduleMatch = pageSource.match(/<script type="module">([\s\S]*?)<\/script>/)
+    if (!moduleMatch) throw new Error("Accounts page has no module script")
+    const moduleSource = moduleMatch[1]!.replace(
+      '    import { boxos } from "/client.js";\n',
+      "",
+    )
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as FunctionConstructor
+    expect(() => new AsyncFunction(moduleSource)).not.toThrow()
+    const profilePage = database.query<{ bytes: Uint8Array }>(
+      `SELECT blobs.bytes FROM pages JOIN blobs ON blobs.id = pages.blob_id
+       WHERE pages.id = ?`,
+    ).get(deployment.profilePageId)
+    const profileSource = new TextDecoder().decode(profilePage?.bytes)
+    expect(profileSource.includes("Public profile")).toBe(true)
+    const profileModule = profileSource.match(/<script type="module">([\s\S]*?)<\/script>/)
+    if (!profileModule) throw new Error("Profile page has no module script")
+    expect(() => new AsyncFunction(profileModule[1]!.replace(
+      '    import { boxos } from "/client.js";\n',
+      "",
+    ))).not.toThrow()
+
+    const identity = "a".repeat(64)
+    const profileManager = "b".repeat(64)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(identity, 1_000)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(profileManager, 1_000)
+    const method = (boxId: string, name: string) => database.query<{ source: string }>(
+      "SELECT source FROM box_methods WHERE box_id = ? AND name = ?",
+    ).get(boxId, name)!.source
+    expect(executeTurn(database, {
+      id: "grant-manage-account",
+      boxId: deployment.grantsBoxId,
+      account: identity,
+      clientId: identity,
+      procedure: {
+        kind: "method",
+        source: method(deployment.grantsBoxId, "grant"),
+        input: { grantee: profileManager, permission: "manage account" },
+      },
+    }).ok).toBe(true)
+    expect(executeTurn(database, {
+      id: "set-profile-name",
+      boxId: deployment.profilesBoxId,
+      account: profileManager,
+      clientId: profileManager,
+      procedure: {
+        kind: "method",
+        source: method(deployment.profilesBoxId, "setName"),
+        input: { account: identity, name: "Ada", requestId: "request" },
+      },
+    }).ok).toBe(true)
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "startup-worker",
+      async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
+    })
+    const dispatcher = new EffectDispatcher(database, scheduler)
+    expect(await dispatcher.dispatchNext()).toBe(true)
+    expect(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND key = ?",
+    ).get(deployment.profilesBoxId, `name|${identity}`)?.value).toBe('"Ada"')
+
+    expect(executeTurn(database, {
+      id: "rename-profile",
+      boxId: deployment.profilesBoxId,
+      account: profileManager,
+      clientId: profileManager,
+      procedure: {
+        kind: "method",
+        source: method(deployment.profilesBoxId, "setName"),
+        input: { account: identity, name: "Augusta", requestId: "change" },
+      },
+    }).ok).toBe(true)
+    expect(await dispatcher.dispatchNext()).toBe(true)
+    expect(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND key = ?",
+    ).get(deployment.profilesBoxId, `name|${identity}`)?.value).toBe('"Augusta"')
   } finally {
     database.close()
   }
@@ -100,6 +235,47 @@ test("native turns commit or roll back all storage writes", () => {
     expect(database.query<{ value: string }>(
       "SELECT value FROM box_state WHERE box_id = 'box-a' AND visibility = 'public' AND key = 'count'",
     ).get()?.value).toBe("1")
+  } finally {
+    database.close()
+  }
+})
+
+test("box and client operations share atomic transfer and message handlers", () => {
+  const database = openDatabase(":memory:")
+  try {
+    installBox(database)
+    const receiver = "b".repeat(64)
+    const success = executeTurn(database, methodTurn(
+      "shared-operations",
+      `
+        ctx.transfer("${receiver}", 25);
+        ctx.message("client-b", { hello: true });
+        return null;
+      `,
+    ))
+    expect(success.ok).toBe(true)
+    expect(database.query<{ fuel: number }>(
+      "SELECT fuel FROM accounts WHERE pubkey = ?",
+    ).get(receiver)?.fuel).toBe(25)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM client_messages",
+    ).get()?.count).toBe(1)
+
+    const failure = executeTurn(database, methodTurn(
+      "rolled-back-operations",
+      `
+        ctx.transfer("${receiver}", 10);
+        ctx.message("client-b", "discard");
+        throw "abort";
+      `,
+    ))
+    expect(failure.ok).toBe(false)
+    expect(database.query<{ fuel: number }>(
+      "SELECT fuel FROM accounts WHERE pubkey = ?",
+    ).get(receiver)?.fuel).toBe(25)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM client_messages",
+    ).get()?.count).toBe(1)
   } finally {
     database.close()
   }
@@ -213,6 +389,119 @@ test("the effect dispatcher invokes a target box and resumes the origin callback
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM turns WHERE id LIKE '%:invoke' OR id LIKE '%:success'",
     ).get()?.count).toBe(2)
+  } finally {
+    database.close()
+  }
+})
+
+test("ctx.publish uses durable effects and resumes with the public ID", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    installBox(database)
+    const origin = executeTurn(database, methodTurn(
+      "publish-origin",
+      `
+        ctx.publish(
+          "blob",
+          { text: "hello page" },
+          function published(result) {
+            ctx.storage.public.set("blob", result.id);
+          }
+        );
+        return null;
+      `,
+    ))
+    expect(origin.ok).toBe(true)
+
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "publish-worker",
+      async execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
+        return executeTurn(database, turn)
+      },
+    })
+    const dispatcher = new EffectDispatcher(database, scheduler)
+    expect(await dispatcher.dispatchNext()).toBe(true)
+    expect(database.query<{ count: number }>("SELECT count(*) AS count FROM blobs").get()?.count).toBe(1)
+    expect(typeof database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = 'box-a' AND key = 'blob'",
+    ).get()?.value).toBe("string")
+  } finally {
+    database.close()
+  }
+})
+
+test("the service publishes boxes and verifies signed invocations", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    const keys = await crypto.subtle.generateKey(
+      { name: "Ed25519" },
+      true,
+      ["sign", "verify"],
+    ) as CryptoKeyPair
+    const account = bytesToHex(await crypto.subtle.exportKey("raw", keys.publicKey))
+
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "service-worker",
+      async execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
+        return executeTurn(database, turn)
+      },
+    })
+    const service = new BoxOSService(database, scheduler)
+    const publication: BoxPublicationRequest = {
+      nonce: crypto.randomUUID(),
+      definition: { methods: { read: "return input.value + 1;" } },
+    }
+    const publicationSignature = bytesToHex(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      keys.privateKey,
+      new TextEncoder().encode(boxPublicationSigningMessage(publication)),
+    ))
+    const boxId = await service.publishBoxForAccount(account, publicationSignature, publication)
+    const request: InvocationRequest = {
+      nonce: crypto.randomUUID(),
+      boxId,
+      method: "read",
+      input: { value: 41 },
+      clientId: account,
+    }
+    const signature = bytesToHex(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      keys.privateKey,
+      new TextEncoder().encode(invocationSigningMessage(request)),
+    ))
+
+    expect(await service.invoke(account, signature, request)).toEqual({ ok: true, value: 42 })
+    expect(await service.invoke(account, signature, request)).toEqual({ ok: true, value: 42 })
+    expect(database.query<{ count: number }>("SELECT count(*) AS count FROM turns").get()?.count).toBe(1)
+    expect(database.query<{ fuel: number }>(
+      "SELECT fuel FROM accounts WHERE pubkey = ?",
+    ).get(account)?.fuel).toBe(10_000)
+
+    const receiverKeys = await crypto.subtle.generateKey(
+      { name: "Ed25519" },
+      true,
+      ["sign", "verify"],
+    ) as CryptoKeyPair
+    const receiver = bytesToHex(await crypto.subtle.exportKey("raw", receiverKeys.publicKey))
+    const operation: ClientOperationRequest = {
+      nonce: crypto.randomUUID(),
+      operation: { type: "transfer", receiver, amount: 100 },
+    }
+    const operationSignature = bytesToHex(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      keys.privateKey,
+      new TextEncoder().encode(clientOperationSigningMessage(operation)),
+    ))
+    await service.operate(account, operationSignature, operation)
+    await service.operate(account, operationSignature, operation)
+    expect(database.query<{ fuel: number }>(
+      "SELECT fuel FROM accounts WHERE pubkey = ?",
+    ).get(account)?.fuel).toBe(9_900)
+    expect(database.query<{ fuel: number }>(
+      "SELECT fuel FROM accounts WHERE pubkey = ?",
+    ).get(receiver)?.fuel).toBe(100)
   } finally {
     database.close()
   }

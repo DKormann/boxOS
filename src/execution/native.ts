@@ -11,6 +11,14 @@ export type RuntimeContext = Readonly<{
     callback: Function,
     context?: unknown,
   ): void
+  message(clientId: string, message: unknown): void
+  publish(
+    kind: "account" | "blob" | "box" | "page",
+    argumentsValue: unknown,
+    callback: Function,
+    context?: unknown,
+  ): void
+  transfer(receiver: string, amount: number): void
   storage: Readonly<{
     public: RuntimeStorage
     private: RuntimeStorage

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 
-export const DATABASE_VERSION = 1
+export const DATABASE_VERSION = 3
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -13,12 +13,14 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 CREATE TABLE IF NOT EXISTS accounts (
   pubkey TEXT PRIMARY KEY,
-  fuel INTEGER NOT NULL CHECK (fuel >= 0)
+  fuel INTEGER NOT NULL CHECK (fuel >= 0),
+  last_top_up_at INTEGER NOT NULL DEFAULT 0
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS blobs (
   id TEXT PRIMARY KEY,
-  bytes BLOB NOT NULL
+  bytes BLOB NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/octet-stream'
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS boxes (
@@ -46,6 +48,32 @@ CREATE TABLE IF NOT EXISTS pages (
   id TEXT PRIMARY KEY,
   blob_id TEXT NOT NULL REFERENCES blobs(id)
 ) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS startup_deployments (
+  name TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('blob', 'box', 'page')),
+  id TEXT NOT NULL,
+  deployed_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS client_operations (
+  id TEXT PRIMARY KEY,
+  account TEXT NOT NULL REFERENCES accounts(pubkey),
+  result TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS client_messages (
+  id TEXT PRIMARY KEY,
+  sender_account TEXT NOT NULL REFERENCES accounts(pubkey),
+  receiver_client_id TEXT NOT NULL,
+  message TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered')),
+  created_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS client_messages_by_receiver
+  ON client_messages(receiver_client_id, status, created_at);
 
 CREATE TABLE IF NOT EXISTS turns (
   id TEXT PRIMARY KEY,
@@ -98,6 +126,25 @@ export function openDatabase(filename: string): Database {
   ).get()
   if (row == null) {
     database.query("INSERT OR IGNORE INTO schema_meta (id, version) VALUES (1, ?)").run(DATABASE_VERSION)
+  } else if (row.version == 1 || row.version == 2) {
+    database.transaction(() => {
+      if (row.version == 1) {
+        database.exec("ALTER TABLE accounts ADD COLUMN last_top_up_at INTEGER NOT NULL DEFAULT 0")
+      }
+      database.exec(`
+        ALTER TABLE blobs ADD COLUMN content_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+        ALTER TABLE startup_deployments RENAME TO startup_deployments_v2;
+        CREATE TABLE startup_deployments (
+          name TEXT PRIMARY KEY,
+          kind TEXT NOT NULL CHECK (kind IN ('blob', 'box', 'page')),
+          id TEXT NOT NULL,
+          deployed_at INTEGER NOT NULL
+        ) STRICT, WITHOUT ROWID;
+        INSERT INTO startup_deployments SELECT * FROM startup_deployments_v2;
+        DROP TABLE startup_deployments_v2;
+      `)
+      database.query("UPDATE schema_meta SET version = ? WHERE id = 1").run(DATABASE_VERSION)
+    })()
   } else if (row.version != DATABASE_VERSION) {
     database.close()
     throw new Error(`Unsupported database version ${row.version}; expected ${DATABASE_VERSION}`)

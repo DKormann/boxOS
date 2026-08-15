@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { copyBoxValue, parseBoxValue, stringifyBoxValue, validateBoxKey, type BoxValue } from "../core/values.ts"
 import { validateCallbackCode } from "../language/parser.ts"
+import { storeClientMessage, transferFuel } from "../operations/operations.ts"
 import { compileCallback, compileMethod, type RuntimeContext, type RuntimeStorage } from "./native.ts"
 import { BOXOS_RUNTIME_VERSION } from "../version.ts"
 import type { WorkerTurn, WorkerTurnResult } from "../workers/scheduler.ts"
@@ -45,6 +46,40 @@ function storage(database: Database, boxId: string, visibility: Visibility): Run
 }
 
 function context(database: Database, turn: WorkerTurn): RuntimeContext {
+  function declareEffect(
+    kind: string,
+    argumentsValue: unknown,
+    callback: Function,
+    callbackContext: unknown,
+  ): void {
+    if (typeof callback != "function") throw new TypeError("Effect callback must be a function")
+    const callbackSource = functionToString.call(callback)
+    validateCallbackCode(callbackSource)
+    const effectId = crypto.randomUUID()
+    database.query(
+      `INSERT INTO effects
+        (id, origin_turn_id, origin_box_id, kind, arguments, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+    ).run(
+      effectId,
+      turn.id,
+      turn.boxId,
+      kind,
+      stringifyBoxValue(argumentsValue),
+      Date.now(),
+    )
+    database.query(
+      `INSERT INTO effect_callbacks
+        (effect_id, role, source, context, runtime_version)
+       VALUES (?, 'success', ?, ?, ?)`,
+    ).run(
+      effectId,
+      callbackSource,
+      stringifyBoxValue(callbackContext),
+      BOXOS_RUNTIME_VERSION,
+    )
+  }
+
   return Object.freeze({
     account: turn.account,
     clientId: turn.clientId,
@@ -57,36 +92,28 @@ function context(database: Database, turn: WorkerTurn): RuntimeContext {
     ): void {
       checkedName(targetBoxId, "Target box ID")
       checkedName(method, "Method name")
-      if (typeof callback != "function") throw new TypeError("Invocation callback must be a function")
-
-      const callbackSource = functionToString.call(callback)
-      validateCallbackCode(callbackSource)
-      const effectId = crypto.randomUUID()
-      database.query(
-        `INSERT INTO effects
-          (id, origin_turn_id, origin_box_id, kind, arguments, status, created_at)
-         VALUES (?, ?, ?, 'invoke', ?, 'pending', ?)`,
-      ).run(
-        effectId,
-        turn.id,
-        turn.boxId,
-        stringifyBoxValue({
-          boxId: targetBoxId,
-          method,
-          argument: copyBoxValue(argument),
-        }),
-        Date.now(),
-      )
-      database.query(
-        `INSERT INTO effect_callbacks
-          (effect_id, role, source, context, runtime_version)
-         VALUES (?, 'success', ?, ?, ?)`,
-      ).run(
-        effectId,
-        callbackSource,
-        stringifyBoxValue(callbackContext),
-        BOXOS_RUNTIME_VERSION,
-      )
+      declareEffect("invoke", {
+        boxId: targetBoxId,
+        method,
+        argument: copyBoxValue(argument),
+      }, callback, callbackContext)
+    },
+    message(clientId: string, message: unknown): void {
+      storeClientMessage(database, crypto.randomUUID(), turn.account, clientId, message)
+    },
+    publish(
+      kind: "account" | "blob" | "box" | "page",
+      argumentsValue: unknown,
+      callback: Function,
+      callbackContext: unknown = null,
+    ): void {
+      if (!["account", "blob", "box", "page"].includes(kind)) {
+        throw new TypeError("Invalid publication kind")
+      }
+      declareEffect(`publish.${kind}`, copyBoxValue(argumentsValue), callback, callbackContext)
+    },
+    transfer(receiver: string, amount: number): void {
+      transferFuel(database, turn.account, receiver, amount)
     },
     storage: Object.freeze({
       public: storage(database, turn.boxId, "public"),
