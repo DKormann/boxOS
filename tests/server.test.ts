@@ -433,6 +433,100 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(await (await fetch(`http://localhost:${port}/0.3.0/boxes/${profileExample.box}/state/public/${walletPublic.x}`)).json())
       .toEqual({ found: true, value: { username: "alice", publicKey: walletPublic.x } });
 
+    const sharedCreateBlob = await putSource("return ctx.atomic(function create(tx) { tx.state.shared.create(input.key, input.authority, input.value); return input.value; });");
+    const sharedUpdateBlob = await putSource("return ctx.atomic(function update(tx) { tx.state.shared.set(input.key, input.value); return input.value; });");
+    const sharedDeleteBlob = await putSource("return ctx.atomic(function remove(tx) { return tx.state.shared.delete(input.key); });");
+    const sharedBoxResponse = await fetch(`http://localhost:${port}/0.3.0/boxes`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtime: "boxos-js/0.3.0", instance: "shared-state-test", methods: {
+        create: { blob: sharedCreateBlob.id }, update: { blob: sharedUpdateBlob.id }, remove: { blob: sharedDeleteBlob.id },
+      } }),
+    });
+    expect(sharedBoxResponse.status).toBe(201);
+    const sharedBox = await sharedBoxResponse.json();
+    expect((await invoke("create", 16, sharedBox.id, { key: "inbox", authority: walletPublic.x, value: { unread: 1 } })).status).toBe(200);
+    const sharedMetadata = await (await fetch(`http://localhost:${port}/0.3.0/boxes/${sharedBox.id}/state/shared/inbox`)).json();
+    expect(sharedMetadata).toEqual({ found: true, entry: expect.stringMatching(/^shared_/), authority: walletPublic.x });
+
+    const sharedGrant = { box: sharedBox.id, key: "inbox", entry: sharedMetadata.entry, reader: publicJwk.x };
+    const sharedGrantPrefix = new TextEncoder().encode("BOXOS:SHARED-READ:0.3.0\0");
+    const sharedGrantBody = new TextEncoder().encode(JSON.stringify(sharedGrant));
+    const sharedGrantMessage = new Uint8Array(sharedGrantPrefix.length + sharedGrantBody.length);
+    sharedGrantMessage.set(sharedGrantPrefix); sharedGrantMessage.set(sharedGrantBody, sharedGrantPrefix.length);
+    const sharedGrantRaw = new Uint8Array(await crypto.subtle.sign("Ed25519", walletKeys.privateKey, sharedGrantMessage));
+    let sharedGrantBinary = "";
+    for (const byte of sharedGrantRaw) sharedGrantBinary += String.fromCharCode(byte);
+    const sharedGrantSignature = btoa(sharedGrantBinary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+    async function readShared(nonce: number) {
+      const command = { publicKey: publicJwk.x, nonce, box: sharedBox.id, key: "inbox", authority: walletPublic.x, grant: sharedGrant, grantSignature: sharedGrantSignature };
+      const prefix = new TextEncoder().encode("BOXOS:SHARED-READ-COMMAND:0.3.0\0");
+      const body = new TextEncoder().encode(JSON.stringify(command));
+      const bytes = new Uint8Array(prefix.length + body.length); bytes.set(prefix); bytes.set(body, prefix.length);
+      const raw = new Uint8Array(await crypto.subtle.sign("Ed25519", keys.privateKey, bytes)); let binary = "";
+      for (const byte of raw) binary += String.fromCharCode(byte);
+      const signature = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return await fetch(`http://localhost:${port}/0.3.0/shared-state/read`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command, signature }),
+      });
+    }
+    const firstSharedRead = await readShared(17);
+    expect(firstSharedRead.status).toBe(200);
+    expect((await firstSharedRead.json()).value).toEqual({ unread: 1 });
+
+    const subscriptionCommand = {
+      publicKey: publicJwk.x, nonce: 18, box: sharedBox.id, visibility: "shared", key: "inbox", maxFuel: 10_000,
+      authority: walletPublic.x, grant: sharedGrant, grantSignature: sharedGrantSignature,
+    };
+    const subscriptionPrefix = new TextEncoder().encode("BOXOS:STATE-SUBSCRIBE:0.3.0\0");
+    const subscriptionBody = new TextEncoder().encode(JSON.stringify(subscriptionCommand));
+    const subscriptionBytes = new Uint8Array(subscriptionPrefix.length + subscriptionBody.length);
+    subscriptionBytes.set(subscriptionPrefix); subscriptionBytes.set(subscriptionBody, subscriptionPrefix.length);
+    const subscriptionRaw = new Uint8Array(await crypto.subtle.sign("Ed25519", keys.privateKey, subscriptionBytes));
+    let subscriptionBinary = "";
+    for (const byte of subscriptionRaw) subscriptionBinary += String.fromCharCode(byte);
+    const subscriptionSignature = btoa(subscriptionBinary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const subscriptionResponse = await fetch(`http://localhost:${port}/0.3.0/state-subscriptions`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: subscriptionCommand, signature: subscriptionSignature }),
+    });
+    expect(subscriptionResponse.status).toBe(201);
+    const subscription = await subscriptionResponse.json();
+    expect(subscription.receipt).toMatchObject({ spent: 10_000, nonce: 19 });
+    const eventResponse = await fetch(`http://localhost:${port}${subscription.url}`);
+    expect(eventResponse.headers.get("content-type")).toBe("text/event-stream");
+    const eventReader = eventResponse.body!.getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await eventReader.read()).value)).toContain("event: ready");
+
+    expect((await invoke("update", 19, sharedBox.id, { key: "inbox", value: { unread: 2 } })).status).toBe(200);
+    let changedEvent = "";
+    while (!changedEvent.includes("event: changed")) changedEvent += decoder.decode((await eventReader.read()).value);
+    expect(changedEvent).toContain("event: changed");
+    await eventReader.cancel();
+    expect((await (await readShared(20)).json()).value).toEqual({ unread: 2 });
+    expect((await invoke("remove", 21, sharedBox.id, { key: "inbox" })).status).toBe(200);
+    expect((await invoke("create", 22, sharedBox.id, { key: "inbox", authority: walletPublic.x, value: { unread: 0 } })).status).toBe(200);
+    expect((await readShared(23)).status).toBe(403);
+
+    const publicSubscriptionCommand = {
+      publicKey: publicJwk.x, nonce: 23, box: profileExample.box, visibility: "public", key: walletPublic.x, maxFuel: 10_000,
+    };
+    const publicSubscriptionPrefix = new TextEncoder().encode("BOXOS:STATE-SUBSCRIBE:0.3.0\0");
+    const publicSubscriptionBody = new TextEncoder().encode(JSON.stringify(publicSubscriptionCommand));
+    const publicSubscriptionBytes = new Uint8Array(publicSubscriptionPrefix.length + publicSubscriptionBody.length);
+    publicSubscriptionBytes.set(publicSubscriptionPrefix); publicSubscriptionBytes.set(publicSubscriptionBody, publicSubscriptionPrefix.length);
+    const publicSubscriptionRaw = new Uint8Array(await crypto.subtle.sign("Ed25519", keys.privateKey, publicSubscriptionBytes));
+    let publicSubscriptionBinary = "";
+    for (const byte of publicSubscriptionRaw) publicSubscriptionBinary += String.fromCharCode(byte);
+    const publicSubscriptionSignature = btoa(publicSubscriptionBinary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const publicSubscriptionResponse = await fetch(`http://localhost:${port}/0.3.0/state-subscriptions`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: publicSubscriptionCommand, signature: publicSubscriptionSignature }),
+    });
+    expect(publicSubscriptionResponse.status).toBe(201);
+    expect((await publicSubscriptionResponse.json()).receipt).toMatchObject({ spent: 10_000, nonce: 24 });
+
     const counterBox = await fetch(`http://localhost:${port}/0.3.0/boxes/${counterExample.box}`);
     expect(Object.keys((await counterBox.json()).definition.methods)).toEqual(["increment"]);
 
@@ -467,6 +561,8 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(socialHtml).toContain("direct:");
     expect(socialHtml).toContain("group:");
     expect(socialHtml).toContain("sentAt:Date.now()");
+    expect(socialHtml).toContain('client.subscribeState(messagesBox.box,"shared"');
+    expect(socialHtml).toContain("sharedReads");
     expect(socialHtml).toContain('params.get("to")||params.get("person")');
     expect(socialHtml).toContain("Copy ID");
 
@@ -475,6 +571,7 @@ test("serves the BOXOS homepage and rejects unknown paths", async () => {
     expect(walletHtml).toContain("Create or restore an account");
     expect(walletHtml).toContain("Save your recovery key");
     expect(walletHtml).toContain("BOXOS:MESSAGE:0.3.0");
+    expect(walletHtml).toContain('sign(record,grant,"SHARED-READ")');
 
     const counterBypass = await fetch(`http://localhost:${port}/0.3.0/examples/counter`, { method: "POST" });
     expect(counterBypass.status).toBe(404);

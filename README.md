@@ -52,6 +52,10 @@ GET  /0.3.0/blobs/:id
 POST /0.3.0/boxes
 GET  /0.3.0/boxes/:id
 GET  /0.3.0/boxes/:id/state/public/:key
+GET  /0.3.0/boxes/:id/state/shared/:key
+POST /0.3.0/shared-state/read
+POST /0.3.0/state-subscriptions
+GET  /0.3.0/state-subscriptions/:token
 POST /0.3.0/invocations
 POST /0.3.0/pages
 GET  /0.3.0/examples

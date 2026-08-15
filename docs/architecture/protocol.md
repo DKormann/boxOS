@@ -120,6 +120,36 @@ Public state is readable without authentication, invocation, or fuel. Keys are U
 
 Reads use SQLite transaction visibility and therefore observe a complete committed atomic state, never a partial transition. Responses use `cache-control: no-store`. Private state has no corresponding public route.
 
+## Shared state reads
+
+```text
+GET  /0.3.0/boxes/:box/state/shared/:key
+POST /0.3.0/shared-state/read
+```
+
+The metadata route exposes only whether an exact shared key exists and, when present, its random entry ID and immutable authority public key:
+
+```json
+{ "found": true, "entry": "shared_<random>", "authority": "<public-key>" }
+```
+
+A reader grant is plain JSON containing exactly `box`, `key`, `entry`, and `reader`, signed by the stored authority using the domain `BOXOS:SHARED-READ:0.3.0\0`. Reading requires a second signed command from the named reader account containing its strict account nonce, box, key, authority, grant, and grant signature. That command uses `BOXOS:SHARED-READ-COMMAND:0.3.0\0`.
+
+A successful read advances the reader account nonce and returns the value. Updating a shared value preserves its entry ID and existing grants. Deleting and recreating the key assigns a new entry ID, so every grant for the deleted entry is rejected. There are no reader lists, grant expiry, selective revocation, or authority changes.
+
+## State subscriptions
+
+```text
+POST /0.3.0/state-subscriptions
+GET  /0.3.0/state-subscriptions/:token
+```
+
+A signed `STATE-SUBSCRIBE` command contains `publicKey`, strict `nonce`, `box`, `visibility`, exact `key`, and `maxFuel`. Public subscriptions require no additional authority. Shared subscriptions also carry the same authority grant used by shared reads. Private state cannot be subscribed to externally.
+
+A successful command spends a fixed 10,000 fuel and returns a random SSE URL valid for one minute. The stream sends `ready`, then `changed` invalidations after committed writes, plus heartbeat comments. It does not send state values: clients reread public state or use their shared read grant. There is no replay log; reconnecting produces `ready`, after which the client rereads current state. A lease is limited to 1,000 change events.
+
+Subscriptions are bounded prepaid leases rather than invocation Tasks. The fixed charge is not reserved or refunded, even if the client never opens the returned URL.
+
 ## Hosted pages
 
 ```text

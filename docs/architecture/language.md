@@ -108,7 +108,7 @@ ctx.atomic(function update(tx) {
 });
 ```
 
-Inside the callback, `tx.state.private` and `tx.state.public` expose only:
+Inside the callback, `tx.state.private` and `tx.state.public` expose:
 
 ```text
 get(key)
@@ -116,6 +116,18 @@ has(key)
 set(key, value)
 delete(key)
 ```
+
+`tx.state.shared` exposes:
+
+```text
+get(key)
+has(key)
+create(key, authorityPublicKey, value)
+set(key, value)
+delete(key)
+```
+
+Shared reader grants are enforced by the kernel's read protocol and do not grant mutation authority.
 
 An atomic callback cannot:
 

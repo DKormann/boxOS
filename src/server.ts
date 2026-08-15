@@ -1,6 +1,7 @@
 import { AtomicCoordinator, isStateKey, isStateVisibility } from "./atomic.ts";
 import { base32, contentIdentifier, decodeBase64Url, domainBytes, exactBuffer, sha256Domain, utf8 } from "./encoding.ts";
 import { InvocationScope } from "./invocation-scope.ts";
+import { subscribeToState, type SubscribableVisibility } from "./state-subscriptions.ts";
 import { validateMethodCode } from "./parser.ts";
 import { BOX_VALUE_LIMITS, type BoxValue, copyBoxValue, parseBoxValue, utf8Length } from "./values.ts";
 import type { WorkerToHostMessage } from "./worker-protocol.ts";
@@ -24,6 +25,19 @@ if (development && Bun.env.BOXOS_HOT_CHILD !== "1") {
 const api = "/0.3.0";
 const runtime = "boxos-js/0.3.0";
 const initialAccountFuel = 1_000_000_000;
+const stateSubscriptionFuel = 10_000;
+const stateSubscriptionDurationMs = 60_000;
+const stateSubscriptionEventLimit = 1_000;
+type StateSubscription = {
+  box: string;
+  visibility: SubscribableVisibility;
+  key: string;
+  expires: number;
+  active: boolean;
+  entry?: string;
+  close?: () => void;
+};
+const stateSubscriptions = new Map<string, StateSubscription>();
 const configuredPublicUrl = new URL(Bun.env.BOXOS_PUBLIC_URL ?? "https://boxos.org");
 if (configuredPublicUrl.pathname !== "/" || configuredPublicUrl.search || configuredPublicUrl.hash) {
   throw new Error("BOXOS_PUBLIC_URL must be an origin without a path, query, or fragment");
@@ -72,6 +86,25 @@ await database`
     PRIMARY KEY (box_id, visibility, key)
   )
 `;
+await database`
+  CREATE TABLE IF NOT EXISTS box_shared_state (
+    box_id TEXT NOT NULL REFERENCES boxes(id),
+    key TEXT NOT NULL,
+    entry_id TEXT NOT NULL UNIQUE,
+    value TEXT NOT NULL,
+    authority_public_key TEXT NOT NULL,
+    PRIMARY KEY (box_id, key)
+  )
+`;
+const sharedStateColumns = await database`PRAGMA table_info(box_shared_state)`;
+if (!sharedStateColumns.some(column => column.name === "entry_id")) {
+  await database`ALTER TABLE box_shared_state ADD COLUMN entry_id TEXT`;
+  const rows = await database`SELECT box_id, key FROM box_shared_state`;
+  for (const row of rows) {
+    await database`UPDATE box_shared_state SET entry_id = ${`shared_${crypto.randomUUID()}`} WHERE box_id = ${row.box_id} AND key = ${row.key}`;
+  }
+}
+await database`CREATE UNIQUE INDEX IF NOT EXISTS box_shared_state_entry ON box_shared_state(entry_id)`;
 await database`
   CREATE TABLE IF NOT EXISTS pages (
     id TEXT PRIMARY KEY,
@@ -289,7 +322,7 @@ async function getBox(id: string): Promise<Response> {
   return json({ id, definitionBlob, definition });
 }
 
-async function getPublicState(box: string, encodedKey: string): Promise<Response> {
+function decodeStateKey(encodedKey: string): string | Response {
   let key: string;
   try {
     key = decodeURIComponent(encodedKey);
@@ -299,6 +332,13 @@ async function getPublicState(box: string, encodedKey: string): Promise<Response
   if (utf8Length(key) > BOX_VALUE_LIMITS.keyBytes) {
     return problem(400, "invalid_state_key", `State keys may contain at most ${BOX_VALUE_LIMITS.keyBytes} UTF-8 bytes`);
   }
+  return key;
+}
+
+async function getPublicState(box: string, encodedKey: string): Promise<Response> {
+  const decoded = decodeStateKey(encodedKey);
+  if (decoded instanceof Response) return decoded;
+  const key = decoded;
   if (!(await database`SELECT 1 AS found FROM boxes WHERE id = ${box}`)[0]) {
     return problem(404, "box_not_found", "Box not found");
   }
@@ -311,15 +351,231 @@ async function getPublicState(box: string, encodedKey: string): Promise<Response
     : { found: false }, 200, { "cache-control": "no-store" });
 }
 
-async function verifyInvocation(publicKey: string, command: Record<string, unknown>, signature: string): Promise<boolean> {
-  if (!/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
+async function getSharedStateMetadata(box: string, encodedKey: string): Promise<Response> {
+  const decoded = decodeStateKey(encodedKey);
+  if (decoded instanceof Response) return decoded;
+  if (!(await database`SELECT 1 AS found FROM boxes WHERE id = ${box}`)[0]) {
+    return problem(404, "box_not_found", "Box not found");
+  }
+  const row = (await database`
+    SELECT entry_id, authority_public_key FROM box_shared_state WHERE box_id = ${box} AND key = ${decoded}
+  `)[0];
+  if (typeof row?.entry_id !== "string" || typeof row.authority_public_key !== "string") {
+    return json({ found: false }, 200, { "cache-control": "no-store" });
+  }
+  return json({ found: true, entry: row.entry_id, authority: row.authority_public_key }, 200, { "cache-control": "no-store" });
+}
+
+async function readSharedState(request: Request): Promise<Response> {
+  let envelope: unknown;
+  try { envelope = JSON.parse(await request.text()); }
+  catch { return problem(400, "invalid_json", "The request body must be valid JSON"); }
+  if (!isRecord(envelope) || Object.keys(envelope).length !== 2 || !isRecord(envelope.command) || typeof envelope.signature !== "string") {
+    return problem(400, "invalid_shared_read", "Shared read must contain command and signature");
+  }
+  const command = envelope.command;
+  const commandFields = ["publicKey", "nonce", "box", "key", "authority", "grant", "grantSignature"];
+  if (Object.keys(command).length !== commandFields.length || Object.keys(command).some(key => !commandFields.includes(key)) ||
+      !validPublicKey(command.publicKey) || !Number.isSafeInteger(command.nonce) || (command.nonce as number) < 0 ||
+      typeof command.box !== "string" || !/^box_[0-9a-f]{64}$/.test(command.box) ||
+      typeof command.key !== "string" || utf8Length(command.key) > BOX_VALUE_LIMITS.keyBytes ||
+      !validPublicKey(command.authority) || !isRecord(command.grant) || typeof command.grantSignature !== "string") {
+    return problem(400, "invalid_shared_read", "Invalid shared read command");
+  }
+  const grant = command.grant;
+  const grantFields = ["box", "key", "entry", "reader"];
+  if (Object.keys(grant).length !== grantFields.length || Object.keys(grant).some(key => !grantFields.includes(key)) ||
+      grant.box !== command.box || grant.key !== command.key || grant.reader !== command.publicKey ||
+      typeof grant.entry !== "string" || !/^shared_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(grant.entry)) {
+    return problem(400, "invalid_shared_grant", "Invalid shared state grant");
+  }
+  if (!(await verifyDomainSignature(command.authority, "SHARED-READ", grant, command.grantSignature))) {
+    return problem(401, "invalid_shared_grant", "Invalid shared state grant signature");
+  }
+  if (!(await verifyDomainSignature(command.publicKey, "SHARED-READ-COMMAND", command, envelope.signature))) {
+    return problem(401, "invalid_signature", "Invalid shared read signature");
+  }
+  const row = (await database`
+    SELECT entry_id, value, authority_public_key FROM box_shared_state WHERE box_id = ${command.box} AND key = ${command.key}
+  `)[0];
+  if (row?.entry_id !== grant.entry || row?.authority_public_key !== command.authority || typeof row?.value !== "string") {
+    return problem(403, "shared_read_denied", "Shared state grant does not match the current entry");
+  }
+  const accepted = await database`
+    UPDATE accounts SET nonce = nonce + 1
+    WHERE public_key = ${command.publicKey} AND nonce = ${command.nonce}
+    RETURNING nonce
+  `;
+  if (!accepted[0]) return problem(409, "account_rejected", "Account nonce is incorrect");
+  return json({ box: command.box, key: command.key, entry: grant.entry, value: parseBoxValue(row.value), nonce: accepted[0].nonce }, 200, { "cache-control": "no-store" });
+}
+
+async function createStateSubscription(request: Request): Promise<Response> {
+  let envelope: unknown;
+  try { envelope = JSON.parse(await request.text()); }
+  catch { return problem(400, "invalid_json", "The request body must be valid JSON"); }
+  if (!isRecord(envelope) || Object.keys(envelope).length !== 2 || !isRecord(envelope.command) || typeof envelope.signature !== "string") {
+    return problem(400, "invalid_subscription", "Subscription must contain command and signature");
+  }
+  const command = envelope.command;
+  const commonFields = ["publicKey", "nonce", "box", "visibility", "key", "maxFuel"];
+  const sharedFields = [...commonFields, "authority", "grant", "grantSignature"];
+  const expectedFields = command.visibility === "shared" ? sharedFields : commonFields;
+  if (Object.keys(command).length !== expectedFields.length || Object.keys(command).some(key => !expectedFields.includes(key)) ||
+      !validPublicKey(command.publicKey) || !Number.isSafeInteger(command.nonce) || (command.nonce as number) < 0 ||
+      typeof command.box !== "string" || !/^box_[0-9a-f]{64}$/.test(command.box) ||
+      (command.visibility !== "public" && command.visibility !== "shared") ||
+      typeof command.key !== "string" || utf8Length(command.key) > BOX_VALUE_LIMITS.keyBytes ||
+      !Number.isSafeInteger(command.maxFuel) || (command.maxFuel as number) < stateSubscriptionFuel) {
+    return problem(400, "invalid_subscription", "Invalid state subscription command");
+  }
+  if (!(await verifyDomainSignature(command.publicKey, "STATE-SUBSCRIBE", command, envelope.signature))) {
+    return problem(401, "invalid_signature", "Invalid state subscription signature");
+  }
+
+  if (command.visibility === "public") {
+    const found = (await database`
+      SELECT 1 AS found FROM box_state WHERE box_id = ${command.box} AND visibility = 'public' AND key = ${command.key}
+    `)[0];
+    if (!found) return problem(404, "state_not_found", "Public state entry not found");
+  } else {
+    if (!validPublicKey(command.authority) || !isRecord(command.grant) || typeof command.grantSignature !== "string") {
+      return problem(400, "invalid_shared_grant", "Invalid shared state grant");
+    }
+    const grant = command.grant;
+    const grantFields = ["box", "key", "entry", "reader"];
+    if (Object.keys(grant).length !== grantFields.length || Object.keys(grant).some(key => !grantFields.includes(key)) ||
+        grant.box !== command.box || grant.key !== command.key || grant.reader !== command.publicKey ||
+        typeof grant.entry !== "string" || !/^shared_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(grant.entry) ||
+        !(await verifyDomainSignature(command.authority, "SHARED-READ", grant, command.grantSignature))) {
+      return problem(401, "invalid_shared_grant", "Invalid shared state grant");
+    }
+    const row = (await database`
+      SELECT entry_id, authority_public_key FROM box_shared_state WHERE box_id = ${command.box} AND key = ${command.key}
+    `)[0];
+    if (row?.entry_id !== grant.entry || row?.authority_public_key !== command.authority) {
+      return problem(403, "shared_read_denied", "Shared state grant does not match the current entry");
+    }
+  }
+
+  const accepted = await database`
+    UPDATE accounts SET nonce = nonce + 1, fuel = fuel - ${stateSubscriptionFuel}
+    WHERE public_key = ${command.publicKey} AND nonce = ${command.nonce} AND fuel >= ${stateSubscriptionFuel}
+    RETURNING nonce
+  `;
+  if (!accepted[0]) return problem(409, "account_rejected", "Account nonce or fuel is insufficient");
+
+  const token = `subscription_${crypto.randomUUID()}`;
+  const expires = Date.now() + stateSubscriptionDurationMs;
+  const subscription: StateSubscription = {
+    box: command.box,
+    visibility: command.visibility,
+    key: command.key,
+    expires,
+    active: false,
+    entry: command.visibility === "shared" && isRecord(command.grant) && typeof command.grant.entry === "string"
+      ? command.grant.entry : undefined,
+  };
+  stateSubscriptions.set(token, subscription);
+  setTimeout(() => {
+    stateSubscriptions.delete(token);
+    subscription.close?.();
+  }, stateSubscriptionDurationMs);
+  return json({
+    url: `${api}/state-subscriptions/${token}`,
+    expires,
+    receipt: { account: command.publicKey, spent: stateSubscriptionFuel, nonce: accepted[0].nonce },
+  }, 201, { "cache-control": "no-store" });
+}
+
+async function openStateSubscription(token: string): Promise<Response> {
+  const subscription = stateSubscriptions.get(token);
+  if (!subscription || subscription.expires <= Date.now()) {
+    stateSubscriptions.delete(token);
+    return problem(410, "subscription_expired", "State subscription has expired");
+  }
+  if (subscription.active) return problem(409, "subscription_active", "State subscription is already connected");
+  if (subscription.visibility === "shared") {
+    const current = (await database`
+      SELECT entry_id FROM box_shared_state WHERE box_id = ${subscription.box} AND key = ${subscription.key}
+    `)[0];
+    if (current?.entry_id !== subscription.entry) {
+      stateSubscriptions.delete(token);
+      return problem(410, "subscription_revoked", "Shared state entry was deleted");
+    }
+  }
+
+  let cleanup = () => {};
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      let events = 0;
+      let closed = false;
+      subscription.active = true;
+      const send = (event: string, value: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`));
+      const unsubscribe = subscribeToState(subscription.box, subscription.visibility, subscription.key, write => {
+        if (closed) return;
+        events += 1;
+        try {
+          if (subscription.visibility === "shared" && write.operation === "delete") {
+            stateSubscriptions.delete(token);
+            send("reset", { reason: "entry_deleted" });
+            cleanup();
+            return;
+          }
+          if (events > stateSubscriptionEventLimit) {
+            stateSubscriptions.delete(token);
+            send("reset", { reason: "event_limit" });
+            cleanup();
+            return;
+          }
+          send("changed", {});
+        } catch {
+          cleanup();
+        }
+      });
+      const heartbeat = setInterval(() => {
+        if (closed) return;
+        try { controller.enqueue(encoder.encode(": heartbeat\n\n")); }
+        catch { cleanup(); }
+      }, 15_000);
+      cleanup = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeat);
+        unsubscribe();
+        subscription.active = false;
+        subscription.close = undefined;
+        try { controller.close(); } catch { /* already disconnected */ }
+      };
+      subscription.close = cleanup;
+      send("ready", { expires: subscription.expires });
+    },
+    cancel() { cleanup(); },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      connection: "keep-alive",
+    },
+  });
+}
+
+async function verifyDomainSignature(publicKey: string, domain: string, value: unknown, signature: string): Promise<boolean> {
+  if (!validPublicKey(publicKey) || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
   try {
     const key = await crypto.subtle.importKey("raw", exactBuffer(decodeBase64Url(publicKey)), { name: "Ed25519" }, false, ["verify"]);
-    const message = domainBytes("INVOKE", utf8(JSON.stringify(command)));
+    const message = domainBytes(domain, utf8(JSON.stringify(value)));
     return await crypto.subtle.verify("Ed25519", key, exactBuffer(decodeBase64Url(signature)), exactBuffer(message));
   } catch {
     return false;
   }
+}
+
+async function verifyInvocation(publicKey: string, command: Record<string, unknown>, signature: string): Promise<boolean> {
+  return await verifyDomainSignature(publicKey, "INVOKE", command, signature);
 }
 
 const atomicCoordinator = new AtomicCoordinator(database);
@@ -866,8 +1122,14 @@ const server = Bun.serve({
       }
       if (request.method === "POST" && url.pathname === `${api}/boxes`) return await createBox(request);
       if (request.method === "POST" && url.pathname === `${api}/invocations`) return await invokeBox(request);
+      if (request.method === "POST" && url.pathname === `${api}/shared-state/read`) return await readSharedState(request);
+      if (request.method === "POST" && url.pathname === `${api}/state-subscriptions`) return await createStateSubscription(request);
+      const stateSubscription = /^\/0\.3\.0\/state-subscriptions\/(subscription_[0-9a-f-]{36})$/.exec(url.pathname);
+      if (request.method === "GET" && stateSubscription) return await openStateSubscription(stateSubscription[1]!);
       const publicState = /^\/0\.3\.0\/boxes\/(box_[0-9a-f]{64})\/state\/public\/(.*)$/.exec(url.pathname);
       if (request.method === "GET" && publicState) return await getPublicState(publicState[1]!, publicState[2]!);
+      const sharedState = /^\/0\.3\.0\/boxes\/(box_[0-9a-f]{64})\/state\/shared\/(.*)$/.exec(url.pathname);
+      if (request.method === "GET" && sharedState) return await getSharedStateMetadata(sharedState[1]!, sharedState[2]!);
       if (request.method === "GET" && url.pathname.startsWith(`${api}/boxes/`)) {
         return await getBox(url.pathname.slice(`${api}/boxes/`.length));
       }

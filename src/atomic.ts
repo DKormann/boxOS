@@ -1,3 +1,5 @@
+import { decodeBase64Url } from "./encoding.ts";
+import { publishStateWrites } from "./state-subscriptions.ts";
 import { BOX_VALUE_LIMITS, type BoxValue, copyBoxValue, parseBoxValue, stringifyBoxValue, utf8Length } from "./values.ts";
 import type { StateVisibility, StateWrite } from "./worker-protocol.ts";
 
@@ -6,7 +8,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isStateVisibility(value: unknown): value is StateVisibility {
-  return value === "public" || value === "private";
+  return value === "public" || value === "private" || value === "shared";
+}
+
+function isPublicKey(value: unknown): value is string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
+  try { return decodeBase64Url(value).length === 32; } catch { return false; }
 }
 
 export function isStateKey(value: unknown): value is string {
@@ -19,18 +26,25 @@ function normalizeStateWrites(value: unknown): StateWrite[] {
   const keys = new Set<string>();
   for (const item of value) {
     if (!isRecord(item) || !isStateVisibility(item.visibility) || !isStateKey(item.key) ||
-        (item.operation !== "set" && item.operation !== "delete")) {
+        (item.operation !== "set" && item.operation !== "create" && item.operation !== "delete") ||
+        (item.operation === "create" && (item.visibility !== "shared" || !isPublicKey(item.authority)))) {
       throw new TypeError("Invalid atomic write");
     }
     const identity = `${item.visibility}\0${item.key}`;
     if (keys.has(identity)) throw new TypeError("Duplicate atomic write");
     keys.add(identity);
-    const allowed = item.operation === "set" ? ["visibility", "key", "operation", "value"] : ["visibility", "key", "operation"];
+    const allowed = item.operation === "set" ? ["visibility", "key", "operation", "value"] :
+      item.operation === "create" ? ["visibility", "key", "operation", "authority", "value"] :
+      ["visibility", "key", "operation"];
     if (Object.keys(item).length !== allowed.length || Object.keys(item).some(key => !allowed.includes(key))) {
       throw new TypeError("Invalid atomic write fields");
     }
     if (item.operation === "set") {
       writes.push({ visibility: item.visibility, key: item.key, operation: "set", value: copyBoxValue(item.value) });
+    } else if (item.operation === "create") {
+      const authority = item.authority;
+      if (!isPublicKey(authority)) throw new TypeError("Invalid shared state authority");
+      writes.push({ visibility: "shared", key: item.key, operation: "create", authority, value: copyBoxValue(item.value) });
     } else {
       writes.push({ visibility: item.visibility, key: item.key, operation: "delete" });
     }
@@ -88,9 +102,11 @@ export class AtomicSession {
 
   async read(visibility: StateVisibility, key: string): Promise<{ found: boolean; value?: BoxValue }> {
     if (this.state !== "active") throw new Error("Atomic session is not active");
-    const row = (await this.database`
-      SELECT value FROM box_state WHERE box_id = ${this.box} AND visibility = ${visibility} AND key = ${key}
-    `)[0];
+    const row = visibility === "shared"
+      ? (await this.database`SELECT value FROM box_shared_state WHERE box_id = ${this.box} AND key = ${key}`)[0]
+      : (await this.database`
+          SELECT value FROM box_state WHERE box_id = ${this.box} AND visibility = ${visibility} AND key = ${key}
+        `)[0];
     return typeof row?.value === "string" ? { found: true, value: parseBoxValue(row.value) } : { found: false };
   }
 
@@ -101,12 +117,26 @@ export class AtomicSession {
       await this.database`BEGIN`;
       try {
         for (const write of writes) {
-          if (write.operation === "set") {
+          if (write.operation === "create") {
+            await this.database`
+              INSERT INTO box_shared_state (box_id, key, entry_id, value, authority_public_key)
+              VALUES (${this.box}, ${write.key}, ${`shared_${crypto.randomUUID()}`}, ${stringifyBoxValue(write.value)}, ${write.authority})
+            `;
+          } else if (write.operation === "set" && write.visibility === "shared") {
+            const updated = await this.database`
+              UPDATE box_shared_state SET value = ${stringifyBoxValue(write.value)}
+              WHERE box_id = ${this.box} AND key = ${write.key}
+              RETURNING key
+            `;
+            if (!updated[0]) throw new Error("Shared state entry does not exist");
+          } else if (write.operation === "set") {
             await this.database`
               INSERT INTO box_state (box_id, visibility, key, value)
               VALUES (${this.box}, ${write.visibility}, ${write.key}, ${stringifyBoxValue(write.value)})
               ON CONFLICT (box_id, visibility, key) DO UPDATE SET value = excluded.value
             `;
+          } else if (write.visibility === "shared") {
+            await this.database`DELETE FROM box_shared_state WHERE box_id = ${this.box} AND key = ${write.key}`;
           } else {
             await this.database`
               DELETE FROM box_state WHERE box_id = ${this.box} AND visibility = ${write.visibility} AND key = ${write.key}
@@ -114,6 +144,7 @@ export class AtomicSession {
           }
         }
         await this.database`COMMIT`;
+        publishStateWrites(this.box, writes);
       } catch (error) {
         await this.database`ROLLBACK`;
         throw error;

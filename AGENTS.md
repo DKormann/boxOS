@@ -87,7 +87,8 @@ src/values.ts             shared BOXOS value validation
 src/encoding.ts           hashes and domain-separated encoding
 public/client.js          browser reference client
 examples/                 immutable example pages and methods
-docs/architecture/        normative implementation design
+docs/architecture/        current 0.3.0 implementation design
+docs/architecture-0.3.1/  clean replacement architecture
 tests/                    parser, values, encoding, and server integration tests
 ```
 
@@ -96,7 +97,8 @@ tests/                    parser, values, encoding, and server integration tests
 Start with:
 
 - [CLI guide](docs/cli.md)
-- [Architecture overview](docs/architecture/README.md)
+- [0.3.1 replacement architecture](docs/architecture-0.3.1/README.md)
+- [Current 0.3.0 architecture](docs/architecture/README.md)
 - [HTTP protocol](docs/architecture/protocol.md)
 - [Accounts, signatures, and grants](docs/architecture/accounts.md)
 - [Blobs, boxes, and methods](docs/architecture/boxes.md)

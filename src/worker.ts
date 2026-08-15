@@ -33,17 +33,30 @@ function stateNamespace(request: InvocationWorkerRequest, visibility: StateVisib
   function read(key: string): { found: boolean; value?: BoxValue } {
     const write = writes.get(key);
     if (write?.operation === "delete") return { found: false };
-    if (write?.operation === "set") return { found: true, value: copyBoxValue(write.value) };
+    if (write?.operation === "set" || write?.operation === "create") return { found: true, value: copyBoxValue(write.value) };
     const response = workerRpc(request, { type: "state.read", visibility, key });
     if (typeof response.found !== "boolean") throw new Error("Invalid atomic state read response");
     return response.found ? { found: true, value: copyBoxValue(response.value) } : { found: false };
   }
-  return Object.freeze({
+  const namespace: Record<string, (...args: unknown[]) => unknown> = {
     get(key: unknown) { checkKey(key); const value = read(key); return value.found ? copyBoxValue(value.value) : null; },
     has(key: unknown) { checkKey(key); return read(key).found; },
-    set(key: unknown, value: unknown) { checkKey(key); writes.set(key, { visibility, key, operation: "set", value: copyBoxValue(value) }); },
+    set(key: unknown, value: unknown) {
+      checkKey(key);
+      if (visibility === "shared" && !read(key).found) throw new Error("Shared state entry does not exist");
+      writes.set(key, { visibility, key, operation: "set", value: copyBoxValue(value) });
+    },
     delete(key: unknown) { checkKey(key); const found = read(key).found; writes.set(key, { visibility, key, operation: "delete" }); return found; },
-  });
+  };
+  if (visibility === "shared") {
+    namespace.create = (key: unknown, authority: unknown, value: unknown) => {
+      checkKey(key);
+      if (typeof authority !== "string") throw new TypeError("Shared state authority must be a public key");
+      if (read(key).found) throw new Error("Shared state entry already exists");
+      writes.set(key, { visibility: "shared", key, operation: "create", authority, value: copyBoxValue(value) });
+    };
+  }
+  return Object.freeze(namespace);
 }
 
 function safeMath(): Readonly<Record<string, number | ((...values: number[]) => number)>> {
@@ -169,9 +182,11 @@ self.onmessage = (initialEvent: MessageEvent<InvocationWorkerRequest>) => {
         let active = true;
         let sessionOpen = false;
         const publicWrites = new Map<string, StateWrite>();
+        const sharedWrites = new Map<string, StateWrite>();
         const privateWrites = new Map<string, StateWrite>();
         const tx = Object.freeze({ state: Object.freeze({
           public: stateNamespace(request, "public", publicWrites, () => active),
+          shared: stateNamespace(request, "shared", sharedWrites, () => active),
           private: stateNamespace(request, "private", privateWrites, () => active),
         }) });
         try {
@@ -181,7 +196,7 @@ self.onmessage = (initialEvent: MessageEvent<InvocationWorkerRequest>) => {
           if (raw instanceof BoxTask) throw new Error("Atomic callbacks cannot return Tasks");
           const value = copyBoxValue(raw);
           try {
-            workerRpc(request, { type: "state.commit", writes: [...publicWrites.values(), ...privateWrites.values()] });
+            workerRpc(request, { type: "state.commit", writes: [...publicWrites.values(), ...sharedWrites.values(), ...privateWrites.values()] });
           } finally {
             // The host ends the session on every commit outcome.
             sessionOpen = false;

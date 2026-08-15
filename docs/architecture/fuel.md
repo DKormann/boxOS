@@ -123,6 +123,12 @@ Runtime 1 should not debit an unrelated account from inside the current box's at
 
 Storage charging, refund creation, and the corresponding box-state transition must commit atomically.
 
+## State subscription leases
+
+State subscriptions are finite prepaid leases, not invocation Tasks. Creating a lease is a distinct signed account command with a strict nonce and `maxFuel`. Runtime 0.3.0 charges a fixed 10,000 fuel for one minute and rejects a command whose maximum is lower.
+
+The fixed lease charge is spent at admission and is not refunded if the client disconnects or never opens the SSE URL. This deliberately simple bounded charge covers at most one connection at a time and 1,000 change invalidations. A new lease requires a new signed command and charge.
+
 ## Fuel transfer
 
 An account key can authorize a kernel transfer command containing, conceptually:

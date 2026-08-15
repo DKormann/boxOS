@@ -1,8 +1,9 @@
 import type { BoxValue } from "./values.ts";
 
-export type StateVisibility = "public" | "private";
+export type StateVisibility = "public" | "private" | "shared";
 export type StateWrite =
   | { visibility: StateVisibility; key: string; operation: "set"; value: BoxValue }
+  | { visibility: "shared"; key: string; operation: "create"; authority: string; value: BoxValue }
   | { visibility: StateVisibility; key: string; operation: "delete" };
 
 export type InvocationWorkerContext = {

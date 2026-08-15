@@ -119,6 +119,90 @@ class BoxOSClient {
     return invocation;
   }
 
+  readShared(box, key, authority, grant, grantSignature) {
+    const read = this.invocations.then(async () => {
+      const account = await this.ready;
+      const command = {
+        publicKey: account.publicKey,
+        nonce: account.nonce,
+        box,
+        key,
+        authority,
+        grant,
+        grantSignature,
+      };
+      const domain = new TextEncoder().encode("BOXOS:SHARED-READ-COMMAND:0.3.0\0");
+      const body = new TextEncoder().encode(JSON.stringify(command));
+      const message = new Uint8Array(domain.length + body.length);
+      message.set(domain);
+      message.set(body, domain.length);
+      const signatureBytes = new Uint8Array(await crypto.subtle.sign("Ed25519", account.privateKey, message));
+      let binary = "";
+      for (const byte of signatureBytes) binary += String.fromCharCode(byte);
+      const signature = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const response = await this.request("/shared-state/read", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command, signature }),
+      });
+      account.nonce = response.nonce;
+      return response;
+    });
+    this.invocations = read.catch(() => {});
+    return read;
+  }
+
+  subscribeState(box, visibility, key, options = {}) {
+    const subscription = this.invocations.then(async () => {
+      if (visibility !== "public" && visibility !== "shared") {
+        throw new TypeError("State subscriptions require public or shared visibility");
+      }
+      const account = await this.ready;
+      const command = {
+        publicKey: account.publicKey,
+        nonce: account.nonce,
+        box,
+        visibility,
+        key,
+        maxFuel: options.maxFuel ?? 10_000,
+      };
+      if (visibility === "shared") {
+        command.authority = options.authority;
+        command.grant = options.grant;
+        command.grantSignature = options.grantSignature;
+      }
+      const domain = new TextEncoder().encode("BOXOS:STATE-SUBSCRIBE:0.3.0\0");
+      const body = new TextEncoder().encode(JSON.stringify(command));
+      const message = new Uint8Array(domain.length + body.length);
+      message.set(domain);
+      message.set(body, domain.length);
+      const signatureBytes = new Uint8Array(await crypto.subtle.sign("Ed25519", account.privateKey, message));
+      let binary = "";
+      for (const byte of signatureBytes) binary += String.fromCharCode(byte);
+      const signature = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const response = await this.request("/state-subscriptions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command, signature }),
+      });
+      account.nonce = response.receipt.nonce;
+      account.fuel -= response.receipt.spent;
+      const events = new EventSource(new URL(response.url, this.baseUrl));
+      const expiryTimer = setTimeout(() => events.close(), Math.max(0, response.expires - Date.now()));
+      if (options.onReady) events.addEventListener("ready", event => options.onReady(JSON.parse(event.data)));
+      if (options.onChange) events.addEventListener("changed", () => options.onChange());
+      events.addEventListener("reset", event => {
+        clearTimeout(expiryTimer);
+        events.close();
+        if (options.onReset) options.onReset(JSON.parse(event.data));
+      });
+      if (options.onError) events.onerror = options.onError;
+      return { ...response, events, close() { clearTimeout(expiryTimer); events.close(); } };
+    });
+    this.invocations = subscription.then(() => {}, () => {});
+    return subscription;
+  }
+
   hostPage(blob) {
     return this.request("/pages", {
       method: "POST",

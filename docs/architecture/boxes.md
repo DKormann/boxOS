@@ -53,14 +53,17 @@ The exact serialized definition bytes are also stored in the generic blob store.
 
 ## State ownership
 
-A box has one state namespace divided into two visibility classes:
+A box has one state namespace divided into three visibility classes:
 
 - **private:** readable only by methods of that box through an atomic block;
-- **public:** also readable through a public read interface.
+- **shared:** readable by methods and by readers holding an exact signed grant from the element's single authority public key;
+- **public:** readable by everyone through the public read interface.
 
-Only methods of the box may mutate either class. “Private” is an access-control property, not encryption from the BOXOS operator or runtime. Public values are readable by exact key through the unauthenticated HTTP API without creating an invocation or consuming fuel. A read observes one committed SQLite state and distinguishes a missing key from a stored `null`.
+Only methods of the box may mutate any class. “Private” and “shared” are access-control properties, not encryption from the BOXOS operator or runtime. Public values are readable by exact key through the unauthenticated HTTP API without creating an invocation or consuming fuel. A read observes one committed SQLite state and distinguishes a missing key from a stored `null`.
 
-State provides exact-key operations only:
+A shared element is created with an immutable authority public key. Its value may be updated without changing that authority. Deleting and recreating the key produces a new random entry ID, invalidating grants for the deleted entry. Runtime 0.3.0 intentionally has no authority change, reader list, selective revocation, or grant expiry. Public and authorized shared readers may purchase short-lived SSE subscriptions to exact-key changes; private state remains method-only.
+
+Public and private state provide exact-key operations:
 
 ```text
 get(key)
@@ -68,6 +71,18 @@ has(key)
 set(key, value)
 delete(key)
 ```
+
+Shared state provides:
+
+```text
+get(key)
+has(key)
+create(key, authorityPublicKey, value)
+set(key, value)
+delete(key)
+```
+
+`create` fails if the key exists, and `set` fails if it does not.
 
 Enumeration, range scans, secondary indexes, and query languages are not part of the agreed core. A box can maintain explicit indexes in its own state.
 
