@@ -41,7 +41,23 @@ A server associates a pubkey to a fuel balance.
 Whoever has the privkey can invoke a box.
 Invokation may use fuel to pay for compute storage and network usage of that box.
 Should the account run out of fuel the computation may be aborted.
-Individual method calls are however commited atomically, but their effects may be aborted in any way.
+
+Each method or resumed effect callback is one **execution turn**. Storage writes,
+fuel changes, callback registrations, and effect declarations from a successful
+turn commit atomically to SQLite. A failed or exhausted turn commits none of
+those changes. Effects are dispatched only after this transaction commits.
+Previously committed turns are never rolled back by a later failure.
+
+## Box workers
+
+Boxes execute on workers. A server-side scheduler assigns each box to at most
+one live worker at a time and routes every method and resumed callback for that
+box to its owner. A worker may own multiple boxes. If a worker exits, all of its
+ownership is released before queued work is reassigned. This gives each box a
+serial execution order without creating cross-box transactions.
+
+Worker ownership may initially be process-local. It must be made durable or
+leased before multiple server processes can share one database.
 
 ## Defining a Box
 A Box is defined by its methods and its individual storage space.
@@ -66,6 +82,27 @@ Each box method gets as first argument a ctx. this offers different kinds of eff
 
 ctx also exposes the account behind the invokation and the clientId
 invoking a new box method will also inherit the same account and client. all subsequent fuel usage will be credited to the same account.
+
+## Effects and callbacks
+
+An effect is declared synchronously during a turn but may finish later. When an
+effect is declared, the trusted runtime serializes its callback using the
+captured intrinsic `Function.prototype.toString.call(callback)`. It must not use
+a user-overridable `callback.toString` property.
+
+The exact callback source is parsed and validated by the same safe-JavaScript
+parser used for box methods. Unsupported functions and callbacks containing
+free variables are rejected. A callback may refer only to its parameters,
+callback-local declarations, and fixed runtime bindings such as `ctx`, `JSON`,
+and approved deterministic helpers. Data needed from the initiating method must
+be supplied explicitly as pure callback context.
+
+The callback source, context, origin box, role, runtime version, and effect ID
+are persisted in the same transaction that declares the effect. Once the
+effect settles, its selected callback is queued on the origin box and runs as a
+fresh execution turn. No closure, stack, heap, or instruction pointer is
+preserved. Effect settlement and callback turns must be idempotent so duplicate
+delivery cannot run a callback twice.
 
 ## Pages
 each page is backed by a blob. it is reachable under a shortened hash. under the url <hash>.boxos.org or <hash>.localhost:port for development.

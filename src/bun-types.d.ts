@@ -224,6 +224,17 @@ declare module "bun" {
   export default Bun;
 }
 
+declare module "bun:test" {
+  export function test(name: string, body: () => void | Promise<void>): void;
+  export function expect(value: unknown): {
+    toBe(expected: unknown): void;
+    toEqual(expected: unknown): void;
+    toBeUndefined(): void;
+    toThrow(expected?: unknown): void;
+    not: { toThrow(expected?: unknown): void };
+  };
+}
+
 declare module "bun:sqlite" {
   export type SQLValue =
     | string
