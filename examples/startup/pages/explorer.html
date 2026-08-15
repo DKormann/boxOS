@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apps · BoxOS</title>
+  <!-- AI and coding agents: read /AGENTS.md for the BoxOS model, API, and app-building guide. -->
+  <link rel="stylesheet" href="/v1/blobs/{{DEFAULT_CSS}}">
+  <style>
+    body { min-height: 100vh; }
+    .shell { width: min(1040px, calc(100% - 32px)); margin: 0 auto; }
+    header { display: flex; min-height: 78px; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--bo-border); }
+    .brand, .account { display: flex; align-items: center; gap: 10px; }
+    .logo, .avatar { display: grid; place-items: center; border-radius: 11px; color: white; background: var(--bo-accent); font-weight: 750; }
+    .logo { width: 36px; height: 36px; } .avatar { width: 32px; height: 32px; }
+    .brand strong { font-size: 17px; }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 42px 0 28px; }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 42px); letter-spacing: -.035em; line-height: 1; }
+    .hero p { max-width: 500px; margin: 11px 0 0; color: var(--bo-text-muted); font-size: 15px; }
+    .tabs { display: flex; gap: 5px; margin-bottom: 24px; padding: 4px; border-radius: 11px; background: var(--bo-surface-raised); width: fit-content; }
+    .tab { min-height: 36px; padding: 0 16px; border: 0; border-radius: 8px; color: var(--bo-text-muted); background: transparent; cursor: pointer; font-weight: 650; }
+    .tab.active { color: var(--bo-text); background: var(--bo-surface); box-shadow: 0 2px 8px rgb(0 0 0 / 12%); }
+    .grid { display: grid; padding-bottom: 70px; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .app-card { min-width: 0; display: flex; min-height: 188px; flex-direction: column; padding: 20px; }
+    .app-icon { width: 40px; height: 40px; display: grid; place-items: center; margin-bottom: 18px; border-radius: 12px; color: white; background: var(--bo-accent); font-size: 17px; font-weight: 750; }
+    .app-card h2 { overflow: hidden; margin: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; }
+    .meta { margin: 5px 0 16px; color: var(--bo-text-muted); font-size: 12px; }
+    .card-actions { display: flex; align-items: center; gap: 7px; margin-top: auto; }
+    .card-actions .bo-button { min-height: 36px; display: inline-flex; align-items: center; padding: 0 13px; text-decoration: none; }
+    .empty { grid-column: 1 / -1; padding: 70px 20px; color: var(--bo-text-muted); text-align: center; }
+    #status { min-height: 22px; margin-bottom: 14px; color: var(--bo-danger); }
+    dialog { width: min(440px, calc(100% - 28px)); padding: 26px; color: var(--bo-text); border: 1px solid var(--bo-border); border-radius: var(--bo-radius-lg); background: var(--bo-surface); box-shadow: var(--bo-shadow); }
+    dialog::backdrop { background: rgb(0 0 0 / 58%); }
+    dialog h2 { margin: 0; font-size: 21px; } dialog p { margin: 7px 0 22px; color: var(--bo-text-muted); }
+    label { display: block; margin: 15px 0 7px; color: var(--bo-text-muted); font-weight: 650; }
+    .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hero { align-items: start; flex-direction: column; } }
+    @media (max-width: 500px) { .shell { width: min(100% - 20px, 1040px); } .grid { grid-template-columns: 1fr; } .app-card { min-height: 190px; } header .bo-button--quiet { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><div class="logo">B</div><strong>Apps</strong></div>
+      <div class="header-actions">
+        <div class="account" id="identity" hidden><div class="avatar" id="avatar" title="Signed in">?</div></div>
+        <button class="bo-button bo-button--quiet" id="sign-out" type="button" hidden>Sign out</button>
+        <button class="bo-button bo-button--primary" id="sign-in" type="button">Choose account</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div><h1>Explore apps</h1><p>Find BoxOS apps and keep the ones you use in one place.</p></div>
+        <button class="bo-button bo-button--primary" id="publish" type="button" hidden>Publish an app</button>
+      </section>
+      <nav class="tabs" aria-label="App views">
+        <button class="tab active" id="discover-tab" type="button">Discover</button>
+        <button class="tab" id="installed-tab" type="button">Installed <span id="installed-count"></span></button>
+      </nav>
+      <div id="status" role="alert"></div>
+      <section class="grid" id="apps" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <dialog id="publish-dialog">
+    <form id="publish-form">
+      <h2 id="form-title">Publish an app</h2>
+      <p id="form-description">Add a BoxOS page to the public catalog.</p>
+      <label for="name">App name</label>
+      <input class="bo-input" id="name" maxlength="80" required placeholder="My app">
+      <label for="page-url">Page URL</label>
+      <input class="bo-input" id="page-url" required placeholder="https://0123456789abcdef.boxos.org/">
+      <div class="form-actions">
+        <button class="bo-button bo-button--quiet" id="cancel" type="button">Cancel</button>
+        <button class="bo-button bo-button--primary" id="save" type="submit">Publish</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module">
+    import { boxos } from "/client.js";
+    const accountsPage = "{{ACCOUNTS_PAGE}}";
+    const appsBox = "{{APPS_BOX}}";
+    const grants = "{{GRANTS_BOX}}";
+    const el = Object.fromEntries([...document.querySelectorAll("[id]")].map(node => [node.id, node]));
+    let account = localStorage.getItem("apps-account");
+    let catalog = [];
+    let installed = [];
+    let view = "discover";
+    let editing = null;
+
+    function accountsUrl() {
+      const url = new URL(location.href); const labels = url.hostname.split(".");
+      url.hostname = url.hostname === "127.0.0.1" || url.hostname === "localhost"
+        ? accountsPage + ".localhost" : [accountsPage, ...labels.slice(1)].join(".");
+      url.pathname = "/"; url.search = ""; url.hash = ""; return url;
+    }
+    function pageUrl(pageId) {
+      const url = new URL(location.href); const labels = url.hostname.split(".");
+      url.hostname = url.hostname === "127.0.0.1" || url.hostname === "localhost"
+        ? pageId + ".localhost" : [pageId, ...labels.slice(1)].join(".");
+      url.pathname = "/"; url.search = ""; url.hash = ""; return url.href;
+    }
+    function pageId(value) {
+      const raw = value.trim().toLowerCase();
+      if (/^[a-f0-9]{16}$/.test(raw)) return raw;
+      let url; try { url = new URL(raw); } catch { throw new Error("Enter a valid BoxOS page URL."); }
+      const hostId = url.hostname.split(".")[0];
+      const pathId = url.pathname.match(/^\/v1\/pages\/([a-f0-9]{16})\/?$/)?.[1];
+      const id = /^[a-f0-9]{16}$/.test(hostId) ? hostId : pathId;
+      if (!id) throw new Error("The URL does not contain a BoxOS page ID.");
+      return id;
+    }
+    function short(value) { return value.slice(0, 7) + "…" + value.slice(-5); }
+    async function hasGrant() {
+      if (!account) return false;
+      const appAccount = await boxos.account();
+      const grant = await boxos.readPublic(grants, account + "|" + appAccount + "|manage apps");
+      return grant.found && grant.value === true;
+    }
+    async function signIn() {
+      const state = crypto.randomUUID(); sessionStorage.setItem("apps-state", state);
+      const url = accountsUrl();
+      url.search = new URLSearchParams({ app_name: "App Explorer", app_account: await boxos.account(), permissions: "manage apps", redirect_uri: location.origin + location.pathname, state });
+      location.assign(url);
+    }
+    async function loadCatalog() {
+      const result = await boxos.readPublic(appsBox, "catalog");
+      const ids = result.found ? result.value : [];
+      catalog = (await Promise.all(ids.map(async id => {
+        const app = await boxos.readPublic(appsBox, "app|" + id); return app.found ? app.value : null;
+      }))).filter(Boolean);
+    }
+    async function wait(requestId) {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const result = await boxos.readPublic(appsBox, "status|" + requestId);
+        if (result.found) { if (!result.value.ok) throw new Error(result.value.error); return result.value; }
+      }
+      throw new Error("The operation timed out.");
+    }
+    async function mutate(method, input) {
+      const requestId = crypto.randomUUID();
+      await boxos.invoke(appsBox, method, { ...input, owner: account, requestId });
+      return wait(requestId);
+    }
+    function installedItem(appId) { return installed.find(item => item.appId === appId); }
+    function button(text, kind, action) {
+      const node = document.createElement("button"); node.type = "button"; node.className = "bo-button " + kind; node.textContent = text;
+      node.onclick = async () => { node.disabled = true; el.status.textContent = ""; try { await action(); } catch (error) { el.status.textContent = error.message; } finally { node.disabled = false; } };
+      return node;
+    }
+    function card(app) {
+      const node = document.createElement("article"); node.className = "app-card bo-card";
+      const icon = document.createElement("div"); icon.className = "app-icon"; icon.textContent = app.name[0].toUpperCase();
+      const title = document.createElement("h2"); title.textContent = app.name;
+      const item = installedItem(app.id); const meta = document.createElement("div"); meta.className = "meta";
+      meta.textContent = "Version " + app.version + (item && item.version < app.version ? " · Update available" : "");
+      const actions = document.createElement("div"); actions.className = "card-actions";
+      const open = document.createElement("a"); open.className = "bo-button bo-button--primary"; open.href = pageUrl(app.pageId); open.textContent = "Open";
+      actions.append(open);
+      if (account) {
+        if (view === "installed") actions.append(button(item.version < app.version ? "Update" : "Uninstall", "bo-button--quiet", async () => {
+          if (item.version < app.version) await mutate("install", { appId: app.id }); else await mutate("uninstall", { appId: app.id });
+          await requestInstalled();
+        }));
+        else if (!item) actions.append(button("Install", "bo-button--quiet", async () => { await mutate("install", { appId: app.id }); await requestInstalled(); }));
+        if (app.owner === account) actions.append(button("New version", "bo-button--quiet", async () => openForm(app)));
+      }
+      node.append(icon, title, meta, actions); return node;
+    }
+    function render() {
+      el.apps.replaceChildren();
+      const visible = view === "installed" ? installed.map(item => catalog.find(app => app.id === item.appId)).filter(Boolean) : catalog;
+      if (!visible.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = view === "installed" ? "No installed apps yet. Explore the catalog to add one." : "No apps have been published yet."; el.apps.append(empty); }
+      else for (const app of visible) el.apps.append(card(app));
+      el["installed-count"].textContent = installed.length ? "(" + installed.length + ")" : "";
+      el["discover-tab"].classList.toggle("active", view === "discover"); el["installed-tab"].classList.toggle("active", view === "installed");
+    }
+    function openForm(app = null) {
+      editing = app; el["form-title"].textContent = app ? "Publish a new version" : "Publish an app";
+      el["form-description"].textContent = app ? "Point this listing at a newly published immutable page." : "Add a BoxOS page to the public catalog.";
+      el.name.value = app?.name || ""; el["page-url"].value = app ? pageUrl(app.pageId) : ""; el.save.textContent = app ? "Update" : "Publish"; el["publish-dialog"].showModal();
+    }
+    async function requestInstalled() { await boxos.invoke(appsBox, "loadInstalled", { owner: account, requestId: crypto.randomUUID() }); }
+    function receive(event) {
+      const payload = event.message; if (!payload || typeof payload !== "object") return;
+      if (payload.type === "apps.error") el.status.textContent = payload.error;
+      if (payload.type === "apps.installed") { installed = payload.installed; render(); }
+    }
+
+    const result = new URLSearchParams(location.hash.slice(1));
+    if (result.get("account")) {
+      if (result.get("state") === sessionStorage.getItem("apps-state")) { account = result.get("account"); localStorage.setItem("apps-account", account); }
+      else el.status.textContent = "Invalid sign-in state.";
+    }
+    if (result.get("error")) el.status.textContent = "Access was not granted.";
+    if (location.hash) history.replaceState(null, "", location.pathname);
+
+    el["sign-in"].onclick = signIn;
+    el["sign-out"].onclick = () => { localStorage.removeItem("apps-account"); account = null; location.reload(); };
+    el.publish.onclick = () => openForm(); el.cancel.onclick = () => el["publish-dialog"].close();
+    el["discover-tab"].onclick = () => { view = "discover"; render(); };
+    el["installed-tab"].onclick = async () => { if (!account) { await signIn(); return; } view = "installed"; render(); };
+    el["publish-form"].onsubmit = async event => {
+      event.preventDefault(); el.save.disabled = true; el.status.textContent = "";
+      try {
+        const id = pageId(el["page-url"].value); const response = await fetch("/v1/pages/" + id); if (!response.ok) throw new Error("That page is not available on this BoxOS server.");
+        if (editing) await mutate("update", { appId: editing.id, name: el.name.value.trim(), pageId: id });
+        else await mutate("publish", { name: el.name.value.trim(), pageId: id });
+        el["publish-dialog"].close(); await loadCatalog(); render();
+      } catch (error) { el.status.textContent = error.message; } finally { el.save.disabled = false; }
+    };
+
+    await loadCatalog();
+    if (account && await hasGrant()) {
+      el.identity.hidden = false; el["sign-out"].hidden = false; el["sign-in"].hidden = true; el.publish.hidden = false;
+      el.avatar.textContent = account[0].toUpperCase(); el.avatar.title = "Signed in as " + short(account);
+      void boxos.events(receive).catch(error => { el.status.textContent = error.message; });
+      await new Promise(resolve => setTimeout(resolve, 100)); await requestInstalled();
+    } else if (account) { account = null; localStorage.removeItem("apps-account"); }
+    render();
+  </script>
+</body>
+</html>

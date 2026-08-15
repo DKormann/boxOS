@@ -14,21 +14,9 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": [
-    "**/*.ts",
-    "**/*.d.ts",
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "tmp",
-    "database",
-    "**/node_modules",
-    "**/dist",
-    "**/build"
-  ]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
 }

@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accounts · BoxOS</title>
+  <link rel="stylesheet" href="/v1/blobs/{{DEFAULT_CSS}}">
+  <style>
+    body { display: grid; min-height: 100vh; place-items: center; padding: 20px; }
+    main { width: min(390px, 100%); padding: 34px; }
+    header { margin-bottom: 26px; text-align: center; }
+    .logo { width: 34px; height: 34px; display: grid; place-items: center; margin: 0 auto 14px; border-radius: 11px;
+      color: white; background: var(--bo-accent); font-weight: 750; }
+    h1 { margin: 0; font-size: 22px; } p { margin: 7px 0 0; color: var(--bo-text-muted); }
+    #request { margin-bottom: 18px; padding: 13px; border-radius: var(--bo-radius); background: var(--bo-surface-raised); }
+    #request ul { margin: 8px 0 0; padding-left: 20px; color: var(--bo-text-muted); }
+    #accounts { display: grid; gap: 7px; }
+    .account { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px; color: var(--bo-text);
+      border: 1px solid transparent; border-radius: var(--bo-radius); background: transparent; text-align: left; cursor: pointer; }
+    .account:hover, .account.selected { border-color: var(--bo-border); background: var(--bo-surface-raised); }
+    .avatar { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 11px; color: white; background: var(--bo-accent); }
+    .account span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+    .check { color: var(--bo-accent-hover); }
+    .empty { padding: 24px 0; color: var(--bo-text-muted); text-align: center; }
+    .actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 24px; }
+    .actions div { display: flex; gap: 8px; }
+    label { display: block; margin: 22px 0 7px; color: var(--bo-text-muted); font-weight: 650; }
+    textarea { min-height: 110px; resize: vertical; }
+    #error { min-height: 20px; margin-top: 14px; color: var(--bo-danger); }
+    [hidden] { display: none !important; }
+    @media (max-width: 480px) { body { padding: 0; } main { min-height: 100vh; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; } }
+  </style>
+</head>
+<body>
+  <main class="bo-card">
+    <header><div class="logo">B</div><h1 id="title">Accounts</h1><p id="subtitle"></p></header>
+
+    <section id="home">
+      <div id="request" hidden></div>
+      <div id="accounts"></div>
+      <div class="actions">
+        <div>
+          <button class="bo-button bo-button--quiet" id="create" type="button">Create</button>
+          <button class="bo-button bo-button--quiet" id="import" type="button">Import</button>
+        </div>
+        <div id="approval" hidden>
+          <button class="bo-button bo-button--quiet" id="cancel" type="button">Cancel</button>
+          <button class="bo-button bo-button--primary" id="approve" type="button">Continue</button>
+        </div>
+      </div>
+    </section>
+
+    <form id="form" hidden>
+      <label id="field-label" for="field"></label>
+      <textarea class="bo-input" id="field" hidden></textarea>
+      <input class="bo-input" id="name" maxlength="64" hidden>
+      <div class="actions">
+        <button class="bo-button bo-button--quiet" id="back" type="button">Back</button>
+        <button class="bo-button bo-button--primary" id="submit" type="submit"></button>
+      </div>
+    </form>
+
+    <section id="created" hidden>
+      <div class="actions">
+        <button class="bo-button bo-button--quiet" id="done" type="button">Done</button>
+        <button class="bo-button bo-button--primary" id="copy" type="button">Copy key</button>
+      </div>
+    </section>
+    <div id="error" role="alert"></div>
+  </main>
+
+  <script type="module">
+    import { boxos } from "/client.js";
+    const grants = "{{GRANTS_BOX}}";
+    const profiles = "{{PROFILES_BOX}}";
+    const query = new URLSearchParams(location.search);
+    const oauth = query.has("redirect_uri") && query.has("app_account");
+    const encoder = new TextEncoder();
+    const el = Object.fromEntries([...document.querySelectorAll("[id]")].map(node => [node.id, node]));
+    let accounts = [], selected, mode, copiedKey;
+
+    const canonical = value => Array.isArray(value) ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
+        : value;
+    const hex = bytes => [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const unhex = value => {
+      if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("Invalid key");
+      return Uint8Array.from(value.match(/../g), pair => Number.parseInt(pair, 16));
+    };
+    const db = () => new Promise((resolve, reject) => {
+      const request = indexedDB.open("boxos-accounts", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("accounts", { keyPath: "account" });
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    async function all() {
+      const database = await db();
+      return new Promise((resolve, reject) => {
+        const request = database.transaction("accounts").objectStore("accounts").getAll();
+        request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+      });
+    }
+    async function save(account) {
+      const database = await db();
+      return new Promise((resolve, reject) => {
+        const request = database.transaction("accounts", "readwrite").objectStore("accounts").put(account);
+        request.onsuccess = () => resolve(); request.onerror = () => reject(request.error);
+      });
+    }
+    async function invokeAs(identity, boxId, method, input) {
+      const request = { nonce: crypto.randomUUID(), boxId, method, input, clientId: identity.account };
+      const message = "boxos.invoke.v1\n" + JSON.stringify(canonical(request));
+      const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, encoder.encode(message)));
+      const response = await fetch("/v1/invoke", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ account: identity.account, signature, request }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Request failed");
+      return result.value;
+    }
+    async function grant(identity, grantee, permission) {
+      return invokeAs(identity, grants, "grant", { grantee, permission });
+    }
+    async function setInitialName(account, name) {
+      const requestId = crypto.randomUUID();
+      await boxos.invoke(profiles, "setName", { account, name, requestId });
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const status = await boxos.readPublic(profiles, "status|" + requestId);
+        if (status.found) {
+          if (!status.value.ok) throw new Error(status.value.error);
+          return;
+        }
+      }
+      throw new Error("Profile setup timed out");
+    }
+    function show(section) {
+      for (const id of ["home", "form", "created"]) el[id].hidden = id !== section;
+      el.error.textContent = "";
+    }
+    async function render() {
+      accounts = await all();
+      for (const account of accounts) {
+        const profile = await boxos.readPublic(profiles, "name|" + account.account);
+        account.name = profile.found ? profile.value : null;
+      }
+      if (!selected && accounts[0]) selected = accounts[0].account;
+      el.accounts.replaceChildren();
+      if (!accounts.length) {
+        const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No accounts"; el.accounts.append(empty);
+      }
+      for (const account of accounts) {
+        const row = document.createElement("button"); row.type = "button";
+        row.className = account.account === selected ? "account selected" : "account";
+        const avatar = document.createElement("span"); avatar.className = "avatar"; avatar.textContent = (account.name || "A")[0];
+        const name = document.createElement("span"); name.textContent = account.name || account.account.slice(0, 12) + "…";
+        const check = document.createElement("span"); check.className = "check"; check.textContent = account.account === selected ? "✓" : "";
+        row.append(avatar, name, check); row.onclick = () => { selected = account.account; render(); }; el.accounts.append(row);
+      }
+      el.approval.hidden = !oauth;
+    }
+    function form(nextMode) {
+      mode = nextMode; show("form"); el.field.hidden = mode !== "import"; el.name.hidden = mode !== "create";
+      el["field-label"].textContent = mode === "create" ? "Profile name" : "Key";
+      el.submit.textContent = mode === "create" ? "Create" : "Import";
+      (mode === "create" ? el.name : el.field).focus();
+    }
+    async function createAccount() {
+      const name = el.name.value.trim(); if (!name) throw new Error("Enter a profile name");
+      const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+      const account = hex(await crypto.subtle.exportKey("raw", keys.publicKey));
+      const bytes = await crypto.subtle.exportKey("pkcs8", keys.privateKey);
+      const privateKey = await crypto.subtle.importKey("pkcs8", bytes, { name: "Ed25519" }, false, ["sign"]);
+      const identity = { account, privateKey }; await save(identity);
+      copiedKey = "boxos-key-v1:" + account + ":" + btoa(String.fromCharCode(...new Uint8Array(bytes)));
+      await grant(identity, await boxos.account(), "manage account");
+      await setInitialName(account, name); selected = account; await render(); show("created");
+    }
+    async function importAccount() {
+      const parts = el.field.value.trim().split(":");
+      if (parts.length !== 3 || parts[0] !== "boxos-key-v1") throw new Error("Invalid key");
+      const account = parts[1];
+      const bytes = Uint8Array.from(atob(parts[2]), character => character.charCodeAt(0));
+      const privateKey = await crypto.subtle.importKey("pkcs8", bytes, { name: "Ed25519" }, false, ["sign"]);
+      const publicKey = await crypto.subtle.importKey("raw", unhex(account), { name: "Ed25519" }, false, ["verify"]);
+      const proof = encoder.encode("boxos-key-check");
+      const signature = await crypto.subtle.sign({ name: "Ed25519" }, privateKey, proof);
+      if (!await crypto.subtle.verify({ name: "Ed25519" }, publicKey, signature, proof)) throw new Error("Key does not match account");
+      await save({ account, privateKey }); selected = account; await render(); show("home");
+    }
+    function redirect(error) {
+      const target = new URL(query.get("redirect_uri"));
+      if (!/^https?:$/.test(target.protocol)) throw new Error("Invalid redirect");
+      const result = new URLSearchParams({ state: query.get("state") || "", grants_box: grants, profiles_box: profiles });
+      if (error) result.set("error", error); else result.set("account", selected);
+      target.hash = result; location.assign(target);
+    }
+
+    el.create.onclick = () => form("create"); el.import.onclick = () => form("import");
+    el.back.onclick = () => show("home"); el.done.onclick = () => show("home");
+    el.copy.onclick = async () => { await navigator.clipboard.writeText(copiedKey); el.copy.textContent = "Copied"; };
+    el.form.onsubmit = async event => {
+      event.preventDefault(); el.submit.disabled = true; el.error.textContent = "";
+      try { if (mode === "create") await createAccount(); else await importAccount(); }
+      catch (error) { el.error.textContent = error.message; } finally { el.submit.disabled = false; }
+    };
+    el.approve.onclick = async () => {
+      try {
+        const identity = accounts.find(account => account.account === selected); if (!identity) throw new Error("Choose an account");
+        for (const permission of (query.get("permissions") || "").split(",").filter(Boolean))
+          await grant(identity, query.get("app_account"), permission.trim());
+        redirect();
+      } catch (error) { el.error.textContent = error.message; }
+    };
+    el.cancel.onclick = () => redirect("access_denied");
+
+    if (oauth) {
+      el.title.textContent = "Choose an account"; el.subtitle.textContent = query.get("app_name") || "Continue";
+      const permissions = (query.get("permissions") || "").split(",").filter(Boolean);
+      if (permissions.length) {
+        el.request.hidden = false; const list = document.createElement("ul");
+        for (const permission of permissions) { const item = document.createElement("li"); item.textContent = permission.trim(); list.append(item); }
+        el.request.append(list);
+      }
+    }
+    await render();
+  </script>
+</body>
+</html>

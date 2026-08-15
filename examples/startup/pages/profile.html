@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profile · BoxOS</title>
+  <link rel="stylesheet" href="/v1/blobs/{{DEFAULT_CSS}}">
+  <style>
+    body { display: grid; min-height: 100vh; place-items: center; padding: 20px; }
+    main { width: min(390px, 100%); padding: 34px; }
+    header { margin-bottom: 26px; text-align: center; }
+    .logo { width: 34px; height: 34px; display: grid; place-items: center; margin: 0 auto 14px; border-radius: 11px;
+      color: white; background: var(--bo-accent); font-weight: 750; }
+    h1 { margin: 0; font-size: 22px; }
+    p { margin: 7px 0 0; color: var(--bo-text-muted); }
+    label { display: block; margin-bottom: 7px; color: var(--bo-text-muted); font-weight: 650; }
+    .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+    #error { min-height: 20px; margin-top: 14px; color: var(--bo-danger); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="bo-card">
+    <header><div class="logo">B</div><h1>Public profile</h1></header>
+    <section id="login">
+      <div class="actions"><button class="bo-button bo-button--primary" id="sign-in" type="button">Sign in</button></div>
+    </section>
+    <form id="profile" hidden>
+      <label for="name">Name</label>
+      <input class="bo-input" id="name" maxlength="64">
+      <div class="actions">
+        <button class="bo-button bo-button--quiet" id="sign-out" type="button">Sign out</button>
+        <button class="bo-button bo-button--primary" id="save" type="submit">Save</button>
+      </div>
+    </form>
+    <div id="error" role="alert"></div>
+  </main>
+  <script type="module">
+    import { boxos } from "/client.js";
+    const accountsPage = "{{ACCOUNTS_PAGE}}";
+    const grants = "{{GRANTS_BOX}}";
+    const profiles = "{{PROFILES_BOX}}";
+    const el = Object.fromEntries([...document.querySelectorAll("[id]")].map(node => [node.id, node]));
+    let account = localStorage.getItem("profile-account");
+
+    function accountsUrl() {
+      const url = new URL(location.href);
+      const labels = url.hostname.split(".");
+      url.hostname = url.hostname === "127.0.0.1"
+        ? accountsPage + ".localhost"
+        : [accountsPage, ...labels.slice(1)].join(".");
+      url.pathname = "/"; url.search = ""; url.hash = "";
+      return url;
+    }
+    async function readName() {
+      const value = await boxos.readPublic(profiles, "name|" + account);
+      el.name.value = value.found ? value.value : "";
+    }
+    async function authorized() {
+      if (!account) return false;
+      const appAccount = await boxos.account();
+      const grant = await boxos.readPublic(grants, account + "|" + appAccount + "|manage account");
+      return grant.found && grant.value === true;
+    }
+    async function show() {
+      const allowed = await authorized();
+      el.login.hidden = allowed; el.profile.hidden = !allowed;
+      if (allowed) await readName();
+    }
+    async function saveName() {
+      const name = el.name.value.trim(); if (!name) throw new Error("Enter a name");
+      const requestId = crypto.randomUUID();
+      await boxos.invoke(profiles, "setName", { account, name, requestId });
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const status = await boxos.readPublic(profiles, "status|" + requestId);
+        if (status.found) {
+          if (!status.value.ok) throw new Error(status.value.error);
+          return;
+        }
+      }
+      throw new Error("Update timed out");
+    }
+
+    const result = new URLSearchParams(location.hash.slice(1));
+    if (result.get("account")) {
+      if (result.get("state") !== sessionStorage.getItem("profile-state")) el.error.textContent = "Invalid login state";
+      else { account = result.get("account"); localStorage.setItem("profile-account", account); }
+      history.replaceState(null, "", location.pathname);
+    }
+    el["sign-in"].onclick = async () => {
+      const state = crypto.randomUUID(); sessionStorage.setItem("profile-state", state);
+      const url = accountsUrl();
+      url.search = new URLSearchParams({
+        app_name: "Profile",
+        app_account: await boxos.account(),
+        permissions: "manage account",
+        redirect_uri: location.origin + location.pathname,
+        state,
+      });
+      location.assign(url);
+    };
+    el["sign-out"].onclick = () => { localStorage.removeItem("profile-account"); account = null; show(); };
+    el.profile.onsubmit = async event => {
+      event.preventDefault(); el.save.disabled = true; el.error.textContent = "";
+      try { await saveName(); } catch (error) { el.error.textContent = error.message; }
+      finally { el.save.disabled = false; }
+    };
+    await show();
+  </script>
+</body>
+</html>
