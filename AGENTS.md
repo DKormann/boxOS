@@ -232,6 +232,8 @@ GET /v1/pages/<16-char-page-id>
     "accounts.page": { "kind": "page", "id": "..." },
     "accounts.grants": { "kind": "box", "id": "..." },
     "accounts.profiles": { "kind": "box", "id": "..." },
+    "app-explorer.apps": { "kind": "box", "id": "..." },
+    "app-explorer.page": { "kind": "page", "id": "..." },
     "profile.page": { "kind": "page", "id": "..." },
     "default.css": { "kind": "blob", "id": "..." }
   }
@@ -421,6 +423,11 @@ A grant is public storage in the grants box under:
 ```text
 <owner-account>|<grantee-page-account>|<permission>
 ```
+
+The startup App Explorer requests `manage apps`. Its catalog records and page
+version histories are public, while each human account's installed-app list is
+private box storage. Publishing a new immutable page version updates the stable
+catalog entry; installations can then explicitly move to that version.
 
 The Profiles box stores only public profile names. An app granted
 `manage account` can call:

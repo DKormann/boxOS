@@ -9,6 +9,18 @@ substituted at deployment. Current deployments are recorded in SQLite's
 system-aware palette variables and lightweight card, button, and input classes.
 Example pages should link to its deployed blob rather than copy the palette.
 
+## App Explorer
+
+The App Explorer is the startup catalog and launcher. Anyone can browse its
+public app records. After signing in through Accounts and granting `manage
+apps`, a user can publish a named BoxOS page, install catalog entries into a
+private per-account list, and remove them again.
+
+A publisher can point an existing app record at a newly published immutable
+page. This increments the app version and retains its public page history.
+Installations record the selected version, so the Explorer can offer an update
+when a newer page is available without losing the app's identity.
+
 ## Accounts page
 
 The Accounts page stores identity private keys as non-extractable `CryptoKey`

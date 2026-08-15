@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { publishBox, publishPage, publishTextBlob } from "../../src/operations/operations.ts"
+import { appsBox } from "./boxes/apps.ts"
 import { grantsBox } from "./boxes/grants.ts"
 import { messagesBox } from "./boxes/messages.ts"
 import { profilesBox } from "./boxes/profiles.ts"
@@ -12,6 +13,8 @@ export type StartupDeployment = Readonly<{
   profilePageId: string
   messagesBoxId: string
   socialPageId: string
+  appsBoxId: string
+  explorerPageId: string
 }>
 
 function record(database: Database, name: string, kind: "blob" | "box" | "page", id: string): void {
@@ -46,6 +49,9 @@ export async function deployStartupExamples(database: Database): Promise<Startup
 
   const messagesBoxId = await publishBox(database, messagesBox(grantsBoxId))
   record(database, "social.messages", "box", messagesBoxId)
+
+  const appsBoxId = await publishBox(database, appsBox(grantsBoxId))
+  record(database, "app-explorer.apps", "box", appsBoxId)
 
   const accountsBlobId = await publishTextBlob(
     database,
@@ -86,6 +92,19 @@ export async function deployStartupExamples(database: Database): Promise<Startup
   const socialPageId = await publishPage(database, socialBlobId)
   record(database, "social.page", "page", socialPageId)
 
+  const explorerBlobId = await publishTextBlob(
+    database,
+    await pageSource("explorer", {
+      ACCOUNTS_PAGE: accountsPageId,
+      APPS_BOX: appsBoxId,
+      DEFAULT_CSS: defaultCssBlobId,
+      GRANTS_BOX: grantsBoxId,
+    }),
+    "text/html; charset=utf-8",
+  )
+  const explorerPageId = await publishPage(database, explorerBlobId)
+  record(database, "app-explorer.page", "page", explorerPageId)
+
   database.query(
     `DELETE FROM startup_deployments
      WHERE name LIKE 'accounts.%'
@@ -100,5 +119,7 @@ export async function deployStartupExamples(database: Database): Promise<Startup
     profilePageId,
     messagesBoxId,
     socialPageId,
+    appsBoxId,
+    explorerPageId,
   }
 }

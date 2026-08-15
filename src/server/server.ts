@@ -149,6 +149,25 @@ export async function startBoxOSServer(options: {
           && pageHost
           && (url.pathname == "/" || url.pathname == "/index.html")
         ) return pageResponse(database, pageHost)
+        if (
+          (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/" || url.pathname == "/index.html")
+        ) {
+          const explorer = database.query<{ id: string }>(
+            "SELECT id FROM startup_deployments WHERE name = 'app-explorer.page'",
+          ).get()
+          if (!explorer) throw new Error("App Explorer deployment is unavailable")
+          const explorerUrl = new URL(request.url)
+          if (request.headers.get("x-forwarded-proto") == "https") explorerUrl.protocol = "https:"
+          const hostLabels = explorerUrl.hostname.split(".")
+          explorerUrl.hostname = explorerUrl.hostname == "127.0.0.1" || explorerUrl.hostname == "localhost"
+            ? `${explorer.id}.localhost`
+            : [explorer.id, ...hostLabels.slice(hostLabels.length > 2 ? 1 : 0)].join(".")
+          explorerUrl.pathname = "/"
+          explorerUrl.search = ""
+          explorerUrl.hash = ""
+          return Response.redirect(explorerUrl.href, 302)
+        }
         if (request.method == "GET" && url.pathname == "/health") {
           return json({ ok: true })
         }

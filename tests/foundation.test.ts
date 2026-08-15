@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
 import { touchAccount } from "../src/accounts/accounts.ts"
 import { bytesToHex } from "../src/core/crypto.ts"
-import { stringifyBoxValue } from "../src/core/values.ts"
+import { stringifyBoxValue, type BoxValue } from "../src/core/values.ts"
 import { deployStartupExamples } from "../examples/startup/deploy.ts"
 import { EffectDispatcher } from "../src/effects/dispatcher.ts"
 import { executeTurn } from "../src/execution/turn.ts"
@@ -128,9 +128,11 @@ test("startup examples deploy account grants and public profiles", async () => {
     expect(deployment.profilePageId.length).toBe(16)
     expect(deployment.messagesBoxId.length).toBe(64)
     expect(deployment.socialPageId.length).toBe(16)
+    expect(deployment.appsBoxId.length).toBe(64)
+    expect(deployment.explorerPageId.length).toBe(16)
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM startup_deployments",
-    ).get()?.count).toBe(7)
+    ).get()?.count).toBe(9)
     const page = database.query<{ bytes: Uint8Array }>(
       `SELECT blobs.bytes FROM pages JOIN blobs ON blobs.id = pages.blob_id
        WHERE pages.id = ?`,
@@ -173,6 +175,22 @@ test("startup examples deploy account grants and public profiles", async () => {
     const socialModule = socialSource.match(/<script type="module">([\s\S]*?)<\/script>/)
     if (!socialModule) throw new Error("Social page has no module script")
     expect(() => new AsyncFunction(socialModule[1]!.replace(
+      '    import { boxos } from "/client.js";\n',
+      "",
+    ))).not.toThrow()
+
+    const explorerPage = database.query<{ bytes: Uint8Array }>(
+      `SELECT blobs.bytes FROM pages JOIN blobs ON blobs.id = pages.blob_id
+       WHERE pages.id = ?`,
+    ).get(deployment.explorerPageId)
+    const explorerSource = new TextDecoder().decode(explorerPage?.bytes)
+    expect(explorerSource.includes("Discover")).toBe(true)
+    expect(explorerSource.includes("New version")).toBe(true)
+    expect(explorerSource.includes("manage apps")).toBe(true)
+    expect(explorerSource.includes("agents: read /AGENTS.md")).toBe(true)
+    const explorerModule = explorerSource.match(/<script type="module">([\s\S]*?)<\/script>/)
+    if (!explorerModule) throw new Error("App Explorer page has no module script")
+    expect(() => new AsyncFunction(explorerModule[1]!.replace(
       '    import { boxos } from "/client.js";\n',
       "",
     ))).not.toThrow()
@@ -297,6 +315,121 @@ test("startup examples deploy account grants and public profiles", async () => {
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM client_messages",
     ).get()?.count).toBe(0)
+  } finally {
+    database.close()
+  }
+})
+
+test("the app catalog publishes versions and keeps installations private", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    const deployment = await deployStartupExamples(database)
+    const owner = "a".repeat(64)
+    const appAccount = "b".repeat(64)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(owner, 1_000)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(appAccount, 1_000)
+    const source = (boxId: string, name: string) => database.query<{ source: string }>(
+      "SELECT source FROM box_methods WHERE box_id = ? AND name = ?",
+    ).get(boxId, name)!.source
+
+    expect(executeTurn(database, {
+      id: "grant-apps",
+      boxId: deployment.grantsBoxId,
+      account: owner,
+      clientId: owner,
+      procedure: {
+        kind: "method",
+        source: source(deployment.grantsBoxId, "grant"),
+        input: { grantee: appAccount, permission: "manage apps" },
+      },
+    }).ok).toBe(true)
+
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "apps-worker",
+      async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
+    })
+    const dispatcher = new EffectDispatcher(database, scheduler)
+    async function appsTurn(id: string, method: string, input: Record<string, BoxValue>): Promise<void> {
+      expect(executeTurn(database, {
+        id,
+        boxId: deployment.appsBoxId,
+        account: appAccount,
+        clientId: appAccount,
+        procedure: { kind: "method", source: source(deployment.appsBoxId, method), input },
+      }).ok).toBe(true)
+      expect(await dispatcher.dispatchNext()).toBe(true)
+    }
+
+    await appsTurn("publish-app", "publish", {
+      owner,
+      name: "Notes",
+      pageId: "0123456789abcdef",
+      requestId: "app-one",
+    })
+    expect(JSON.parse(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = 'app|app-one'",
+    ).get(deployment.appsBoxId)!.value)).toEqual({
+      id: "app-one",
+      name: "Notes",
+      owner,
+      pageId: "0123456789abcdef",
+      version: 1,
+    })
+
+    await appsTurn("install-app", "install", { owner, appId: "app-one", requestId: "install-one" })
+    expect(JSON.parse(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'private' AND key = ?",
+    ).get(deployment.appsBoxId, `installed|${owner}`)!.value)).toEqual([{ appId: "app-one", version: 1 }])
+    expect(database.query(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = ?",
+    ).get(deployment.appsBoxId, `installed|${owner}`)).toBe(null)
+
+    await appsTurn("update-app", "update", {
+      owner,
+      appId: "app-one",
+      name: "Notes",
+      pageId: "fedcba9876543210",
+      requestId: "version-two",
+    })
+    expect(JSON.parse(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = 'versions|app-one'",
+    ).get(deployment.appsBoxId)!.value)).toEqual([
+      { pageId: "0123456789abcdef", version: 1 },
+      { pageId: "fedcba9876543210", version: 2 },
+    ])
+    expect(JSON.parse(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'private' AND key = ?",
+    ).get(deployment.appsBoxId, `installed|${owner}`)!.value)).toEqual([{ appId: "app-one", version: 1 }])
+
+    const otherOwner = "c".repeat(64)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(otherOwner, 1_000)
+    expect(executeTurn(database, {
+      id: "grant-other-apps",
+      boxId: deployment.grantsBoxId,
+      account: otherOwner,
+      clientId: otherOwner,
+      procedure: {
+        kind: "method",
+        source: source(deployment.grantsBoxId, "grant"),
+        input: { grantee: appAccount, permission: "manage apps" },
+      },
+    }).ok).toBe(true)
+    await appsTurn("reject-other-publisher", "update", {
+      owner: otherOwner,
+      appId: "app-one",
+      name: "Taken over",
+      pageId: "aaaaaaaaaaaaaaaa",
+      requestId: "takeover",
+    })
+    expect(JSON.parse(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = 'status|takeover'",
+    ).get(deployment.appsBoxId)!.value)).toEqual({ ok: false, error: "Only the publisher can update this app" })
+
+    await appsTurn("install-update", "install", { owner, appId: "app-one", requestId: "install-two" })
+    expect(JSON.parse(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'private' AND key = ?",
+    ).get(deployment.appsBoxId, `installed|${owner}`)!.value)).toEqual([{ appId: "app-one", version: 2 }])
   } finally {
     database.close()
   }
