@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="BoxOS is a small runtime for immutable apps and stateful boxes.">
+  <title>BoxOS</title>
+  <!-- AI and coding agents: read /AGENTS.md for the BoxOS model, API, and app-building guide. -->
+  <link rel="stylesheet" href="/v1/blobs/{{DEFAULT_CSS}}">
+  <style>
+    .shell { width: min(980px, calc(100% - 32px)); margin: 0 auto; }
+    header { min-height: 76px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--bo-border); }
+    .brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 750; }
+    .logo { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; color: white; background: var(--bo-accent); }
+    nav { display: flex; align-items: center; gap: 8px; }
+    nav a { display: inline-flex; align-items: center; text-decoration: none; }
+    .hero { padding: 100px 0 86px; text-align: center; }
+    .eyebrow { margin: 0 0 18px; color: var(--bo-accent-hover); font-weight: 700; }
+    h1 { max-width: 780px; margin: 0 auto; font-size: clamp(45px, 8vw, 76px); line-height: 1.02; letter-spacing: -.055em; }
+    .lede { max-width: 650px; margin: 25px auto 0; color: var(--bo-text-muted); font-size: 18px; line-height: 1.65; }
+    .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; margin-top: 34px; }
+    .actions a { display: inline-flex; align-items: center; text-decoration: none; }
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; padding-bottom: 90px; }
+    .feature { min-height: 215px; padding: 25px; }
+    .feature span { width: 36px; height: 36px; display: grid; place-items: center; margin-bottom: 44px; border-radius: 10px; color: white; background: var(--bo-accent); font-weight: 750; }
+    h2 { margin: 0 0 9px; font-size: 18px; }
+    .feature p { margin: 0; color: var(--bo-text-muted); line-height: 1.65; }
+    .build { display: flex; align-items: center; justify-content: space-between; gap: 30px; padding: 45px; margin-bottom: 70px; }
+    .build h2 { font-size: 26px; } .build p { max-width: 570px; margin: 8px 0 0; color: var(--bo-text-muted); }
+    .build a { flex: 0 0 auto; display: inline-flex; align-items: center; text-decoration: none; }
+    footer { min-height: 86px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--bo-border); color: var(--bo-text-muted); font-size: 13px; }
+    @media (max-width: 680px) { .features { grid-template-columns: 1fr; } .feature { min-height: auto; } .feature span { margin-bottom: 25px; } .build { align-items: flex-start; flex-direction: column; padding: 28px; } nav .guide { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><span class="logo">B</span>BoxOS</div>
+      <nav><a class="bo-button bo-button--quiet guide" href="/AGENTS.md">Build guide</a><a class="bo-button bo-button--primary" href="{{EXPLORER_URL}}">Try BoxOS</a></nav>
+    </header>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">A small operating system for software</p>
+        <h1>Immutable apps.<br>State that stays boxed.</h1>
+        <p class="lede">BoxOS is a capability-oriented runtime where pages are published by content and boxes provide durable services. Users hold their keys; apps receive only the authority they need.</p>
+        <div class="actions"><a class="bo-button bo-button--primary" href="{{EXPLORER_URL}}">Try BoxOS</a><a class="bo-button bo-button--quiet" href="/v1/startup">View deployments</a></div>
+      </section>
+      <section class="features" aria-label="How BoxOS works">
+        <article class="feature bo-card"><span>1</span><h2>Publish once</h2><p>Pages, blobs, and box definitions are immutable and addressed by their content.</p></article>
+        <article class="feature bo-card"><span>2</span><h2>Keep state boxed</h2><p>Validated methods own public and private storage. Every execution turn is atomic.</p></article>
+        <article class="feature bo-card"><span>3</span><h2>Grant capabilities</h2><p>Ed25519 accounts sign actions while explicit grants connect people, apps, and services.</p></article>
+      </section>
+      <section class="build bo-card"><div><h2>Build a BoxOS app</h2><p>The repository guide explains the value model, browser client, signing protocol, and APIs for publishing pages and boxes.</p></div><a class="bo-button bo-button--primary" href="/AGENTS.md">Read /AGENTS.md</a></section>
+    </main>
+    <footer><span>BoxOS</span><a href="/health">System status</a></footer>
+  </div>
+</body>
+</html>

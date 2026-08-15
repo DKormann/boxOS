@@ -153,20 +153,32 @@ export async function startBoxOSServer(options: {
           (request.method == "GET" || request.method == "HEAD")
           && (url.pathname == "/" || url.pathname == "/index.html")
         ) {
-          const explorer = database.query<{ id: string }>(
-            "SELECT id FROM startup_deployments WHERE name = 'app-explorer.page'",
-          ).get()
-          if (!explorer) throw new Error("App Explorer deployment is unavailable")
+          const deployments = database.query<{ name: string; id: string }>(
+            "SELECT name, id FROM startup_deployments WHERE name IN ('default.css', 'app-explorer.page')",
+          ).all()
+          const ids = Object.fromEntries(deployments.map(deployment => [deployment.name, deployment.id]))
+          if (!ids["default.css"] || !ids["app-explorer.page"]) {
+            throw new Error("Landing page deployments are unavailable")
+          }
           const explorerUrl = new URL(request.url)
           if (request.headers.get("x-forwarded-proto") == "https") explorerUrl.protocol = "https:"
           const hostLabels = explorerUrl.hostname.split(".")
           explorerUrl.hostname = explorerUrl.hostname == "127.0.0.1" || explorerUrl.hostname == "localhost"
-            ? `${explorer.id}.localhost`
-            : [explorer.id, ...hostLabels.slice(hostLabels.length > 2 ? 1 : 0)].join(".")
+            ? `${ids["app-explorer.page"]}.localhost`
+            : [ids["app-explorer.page"], ...hostLabels.slice(hostLabels.length > 2 ? 1 : 0)].join(".")
           explorerUrl.pathname = "/"
           explorerUrl.search = ""
           explorerUrl.hash = ""
-          return Response.redirect(explorerUrl.href, 302)
+          const source = (await Bun.file(new URL("../../public/index.html", import.meta.url)).text())
+            .replaceAll("{{DEFAULT_CSS}}", ids["default.css"])
+            .replaceAll("{{EXPLORER_URL}}", explorerUrl.href)
+          return new Response(request.method == "HEAD" ? null : source, {
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "public, max-age=300",
+              "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            },
+          })
         }
         if (request.method == "GET" && url.pathname == "/health") {
           return json({ ok: true })
