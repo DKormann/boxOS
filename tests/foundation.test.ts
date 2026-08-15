@@ -25,6 +25,7 @@ import { NativeBoxWorker } from "../src/workers/native-worker.ts"
 import {
   BoxScheduler,
   type BoxWorker,
+  type ClientNotification,
   type WorkerTurn,
   type WorkerTurnResult,
 } from "../src/workers/scheduler.ts"
@@ -90,6 +91,9 @@ test("accounts are created and lazily topped up on interaction", () => {
 test("database initialization installs the first schema", () => {
   const database = openDatabase(":memory:")
   try {
+    expect(database.query<{ timeout: number }>(
+      "PRAGMA busy_timeout",
+    ).get()?.timeout).toBe(5_000)
     const tables = database.query<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
     ).all().map(row => row.name)
@@ -122,9 +126,11 @@ test("startup examples deploy account grants and public profiles", async () => {
     expect(deployment.profilesBoxId.length).toBe(64)
     expect(deployment.accountsPageId.length).toBe(16)
     expect(deployment.profilePageId.length).toBe(16)
+    expect(deployment.messagesBoxId.length).toBe(64)
+    expect(deployment.socialPageId.length).toBe(16)
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM startup_deployments",
-    ).get()?.count).toBe(5)
+    ).get()?.count).toBe(7)
     const page = database.query<{ bytes: Uint8Array }>(
       `SELECT blobs.bytes FROM pages JOIN blobs ON blobs.id = pages.blob_id
        WHERE pages.id = ?`,
@@ -153,6 +159,20 @@ test("startup examples deploy account grants and public profiles", async () => {
     const profileModule = profileSource.match(/<script type="module">([\s\S]*?)<\/script>/)
     if (!profileModule) throw new Error("Profile page has no module script")
     expect(() => new AsyncFunction(profileModule[1]!.replace(
+      '    import { boxos } from "/client.js";\n',
+      "",
+    ))).not.toThrow()
+
+    const socialPage = database.query<{ bytes: Uint8Array }>(
+      `SELECT blobs.bytes FROM pages JOIN blobs ON blobs.id = pages.blob_id
+       WHERE pages.id = ?`,
+    ).get(deployment.socialPageId)
+    const socialSource = new TextDecoder().decode(socialPage?.bytes)
+    expect(socialSource.includes("manage messages,manage account")).toBe(true)
+    expect(socialSource.includes("[hidden] { display: none !important; }")).toBe(true)
+    const socialModule = socialSource.match(/<script type="module">([\s\S]*?)<\/script>/)
+    if (!socialModule) throw new Error("Social page has no module script")
+    expect(() => new AsyncFunction(socialModule[1]!.replace(
       '    import { boxos } from "/client.js";\n',
       "",
     ))).not.toThrow()
@@ -187,6 +207,8 @@ test("startup examples deploy account grants and public profiles", async () => {
       },
     }).ok).toBe(true)
     const scheduler = new BoxScheduler()
+    const notifications: ClientNotification[] = []
+    scheduler.setNotificationHandler(notification => notifications.push(notification))
     scheduler.addWorker({
       id: "startup-worker",
       async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
@@ -212,6 +234,69 @@ test("startup examples deploy account grants and public profiles", async () => {
     expect(database.query<{ value: string }>(
       "SELECT value FROM box_state WHERE box_id = ? AND key = ?",
     ).get(deployment.profilesBoxId, `name|${identity}`)?.value).toBe('"Augusta"')
+
+    const recipient = "c".repeat(64)
+    const recipientManager = "d".repeat(64)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(recipient, 1_000)
+    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(recipientManager, 1_000)
+    for (const [id, owner, manager] of [
+      ["grant-sender-messages", identity, profileManager],
+      ["grant-recipient-messages", recipient, recipientManager],
+    ] as const) {
+      expect(executeTurn(database, {
+        id,
+        boxId: deployment.grantsBoxId,
+        account: owner,
+        clientId: owner,
+        procedure: {
+          kind: "method",
+          source: method(deployment.grantsBoxId, "grant"),
+          input: { grantee: manager, permission: "manage messages" },
+        },
+      }).ok).toBe(true)
+    }
+    for (const [id, owner, manager] of [
+      ["connect-sender", identity, profileManager],
+      ["connect-recipient", recipient, recipientManager],
+    ] as const) {
+      expect(executeTurn(database, {
+        id,
+        boxId: deployment.messagesBoxId,
+        account: manager,
+        clientId: manager,
+        procedure: {
+          kind: "method",
+          source: method(deployment.messagesBoxId, "connect"),
+          input: { owner },
+        },
+      }).ok).toBe(true)
+      expect(await dispatcher.dispatchNext()).toBe(true)
+    }
+    expect(executeTurn(database, {
+      id: "send-message",
+      boxId: deployment.messagesBoxId,
+      account: profileManager,
+      clientId: profileManager,
+      procedure: {
+        kind: "method",
+        source: method(deployment.messagesBoxId, "send"),
+        input: { owner: identity, recipient, text: "Hello", messageId: "message-1" },
+      },
+    }).ok).toBe(true)
+    expect(await dispatcher.dispatchNext()).toBe(true)
+    const history = database.query<{ value: string }>(
+      `SELECT value FROM box_state
+       WHERE box_id = ? AND visibility = 'private' AND key = ?`,
+    ).get(deployment.messagesBoxId, `history|${recipient}|${identity}`)
+    expect(history?.value.includes("Hello")).toBe(true)
+    const delivered = notifications.find(notification =>
+      notification.clientId == recipientManager
+      && stringifyBoxValue(notification.message).includes("chat.message")
+    )
+    expect(delivered != null).toBe(true)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM client_messages",
+    ).get()?.count).toBe(0)
   } finally {
     database.close()
   }
@@ -240,7 +325,7 @@ test("native turns commit or roll back all storage writes", () => {
   }
 })
 
-test("box and client operations share atomic transfer and message handlers", () => {
+test("box notifications are emitted only after a successful atomic turn", () => {
   const database = openDatabase(":memory:")
   try {
     installBox(database)
@@ -254,12 +339,15 @@ test("box and client operations share atomic transfer and message handlers", () 
       `,
     ))
     expect(success.ok).toBe(true)
+    if (!success.ok) throw new Error(success.error)
+    expect(success.notifications?.length).toBe(1)
+    expect(success.notifications?.[0]?.message).toEqual({ hello: true })
     expect(database.query<{ fuel: number }>(
       "SELECT fuel FROM accounts WHERE pubkey = ?",
     ).get(receiver)?.fuel).toBe(25)
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM client_messages",
-    ).get()?.count).toBe(1)
+    ).get()?.count).toBe(0)
 
     const failure = executeTurn(database, methodTurn(
       "rolled-back-operations",
@@ -275,7 +363,7 @@ test("box and client operations share atomic transfer and message handlers", () 
     ).get(receiver)?.fuel).toBe(25)
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM client_messages",
-    ).get()?.count).toBe(1)
+    ).get()?.count).toBe(0)
   } finally {
     database.close()
   }

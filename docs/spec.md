@@ -154,8 +154,11 @@ and small component classes.
 
 Clients receive messages over Server-Sent Events rather than WebSockets. A page
 opens a signed `POST /v1/events` stream for its own client ID, which is currently
-its page-account public key. Messages are persisted before delivery and encoded
-as SSE `message` events. The reference client exposes this as `boxos.events`.
+its page-account public key. `ctx.message` notifications are collected during a
+turn and broadcast from memory only after that turn commits. They are not stored
+in SQLite and may be lost when the recipient is offline or the server fails
+after commit. Applications must store durable data in box storage; reconnecting
+clients reload that state. The reference client exposes SSE as `boxos.events`.
 
 
 ## Userspace implementations

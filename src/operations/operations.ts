@@ -70,21 +70,6 @@ export function transferFuel(
   })()
 }
 
-export function storeClientMessage(
-  database: Database,
-  id: string,
-  sender: string,
-  clientId: string,
-  message: unknown,
-): void {
-  if (clientId.length == 0 || clientId.length > 256) throw new TypeError("Invalid client ID")
-  database.query(
-    `INSERT OR IGNORE INTO client_messages
-      (id, sender_account, receiver_client_id, message, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, sender, clientId, stringifyBoxValue(message), Date.now())
-}
-
 export async function publishTextBlob(
   database: Database,
   text: string,

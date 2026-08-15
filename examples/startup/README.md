@@ -43,3 +43,10 @@ After approval, the Accounts page redirects with a fragment containing `account`
 `grants_box`, `profiles_box`, and the original `state`. The grant itself is public
 state in the grants box and can be checked through its `check` method. An app
 with `manage account` may call `profiles.setName` for that account.
+
+## Social chat page
+
+The Social page requests `manage messages` and the existing `manage account`
+profile capability on first visit. Its messages box keeps chat history and
+connected client IDs in private storage. Authorized page accounts can load or
+send messages for the selected human account, with live delivery over SSE.

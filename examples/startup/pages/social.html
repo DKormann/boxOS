@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat · BoxOS</title>
+  <link rel="stylesheet" href="/v1/blobs/{{DEFAULT_CSS}}">
+  <style>
+    body { height: 100vh; overflow: hidden; }
+    .app { height: 100vh; display: grid; grid-template-columns: 310px minmax(0, 1fr); background: var(--bo-surface); }
+    aside { min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--bo-border); background: var(--bo-bg); }
+    .sidebar-head { padding: 18px; border-bottom: 1px solid var(--bo-border); }
+    .identity { display: flex; align-items: center; gap: 10px; }
+    .identity-copy { min-width: 0; flex: 1; } .identity-copy strong, .identity-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .identity-copy small { color: var(--bo-text-muted); }
+    .avatar { width: 38px; height: 38px; flex: 0 0 38px; display: grid; place-items: center; border-radius: 12px; color: white; background: var(--bo-accent); font-weight: 750; }
+    .icon { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 9px; color: var(--bo-text-muted); background: transparent; cursor: pointer; }
+    .icon:hover { color: var(--bo-text); background: var(--bo-surface-raised); }
+    .start { display: flex; gap: 7px; margin-top: 16px; } .start input { min-width: 0; }
+    #chat-list { flex: 1; overflow: auto; padding: 10px; }
+    .chat-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px; color: var(--bo-text); border: 0; border-radius: 12px; background: transparent; text-align: left; cursor: pointer; }
+    .chat-row:hover, .chat-row.active { background: var(--bo-surface-raised); }
+    .chat-copy { min-width: 0; } .chat-copy strong, .chat-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chat-copy small { margin-top: 2px; color: var(--bo-text-muted); }
+    .check { min-width: 20px; height: 20px; display: grid; place-items: center; padding: 0 6px; border-radius: 10px; color: white; background: var(--bo-accent); font-size: 11px; }
+    main { min-width: 0; display: grid; grid-template-rows: 68px minmax(0, 1fr) auto; background: var(--bo-surface); }
+    .conversation-head { display: flex; align-items: center; gap: 11px; padding: 0 22px; border-bottom: 1px solid var(--bo-border); }
+    .conversation-head div { min-width: 0; } .conversation-head strong, .conversation-head small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conversation-head small { color: var(--bo-text-muted); }
+    #messages { overflow: auto; display: flex; flex-direction: column; gap: 7px; padding: 22px; }
+    .empty { margin: auto; color: var(--bo-text-muted); text-align: center; }
+    .bubble { max-width: min(70%, 620px); padding: 9px 12px; border-radius: 15px 15px 15px 4px; background: var(--bo-surface-raised); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .bubble.mine { align-self: flex-end; border-radius: 15px 15px 4px 15px; color: white; background: var(--bo-accent); }
+    #composer { display: flex; gap: 9px; padding: 14px 18px 18px; border-top: 1px solid var(--bo-border); }
+    #composer input { flex: 1; } #composer button { min-width: 76px; }
+    #composer[hidden] { display: none; }
+    dialog { width: min(400px, calc(100% - 32px)); padding: 24px; color: var(--bo-text); border: 1px solid var(--bo-border); border-radius: var(--bo-radius-lg); background: var(--bo-surface); box-shadow: var(--bo-shadow); }
+    dialog::backdrop { background: rgb(0 0 0 / 55%); } dialog h2 { margin: 0 0 18px; font-size: 18px; }
+    dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    #status { min-height: 20px; padding: 0 18px 8px; color: var(--bo-danger); }
+    #login { height: 100vh; display: grid; place-items: center; text-align: center; }
+    [hidden] { display: none !important; }
+    @media (max-width: 700px) { .app { grid-template-columns: 110px minmax(0, 1fr); } .sidebar-head { padding: 12px; } .identity-copy, .start input, .chat-copy { display: none; } .start { justify-content: center; } .chat-row { justify-content: center; } }
+  </style>
+</head>
+<body>
+  <section id="login" hidden><div><p id="login-message">Sign in to continue</p><button class="bo-button bo-button--primary" id="sign-in" type="button">Choose account</button></div></section>
+  <div class="app" id="app" hidden>
+    <aside>
+      <div class="sidebar-head">
+        <div class="identity">
+          <span class="avatar" id="my-avatar">?</span>
+          <span class="identity-copy"><strong id="my-name">Chat</strong><small id="my-short-id"></small></span>
+          <button class="icon" id="copy-id" type="button" title="Copy my account ID">⧉</button>
+          <button class="icon" id="notifications" type="button" title="Enable notifications">♢</button>
+          <button class="icon" id="edit-profile" type="button" title="Change profile name">⋯</button>
+        </div>
+        <form class="start" id="start-chat"><input class="bo-input" id="new-account" placeholder="Account ID" aria-label="Account ID"><button class="bo-button bo-button--primary" type="submit">+</button></form>
+      </div>
+      <nav id="chat-list" aria-label="Past chats"></nav>
+    </aside>
+    <main>
+      <header class="conversation-head"><span class="avatar" id="peer-avatar">?</span><div><strong id="peer-name">Select a chat</strong><small id="peer-id"></small></div></header>
+      <section id="messages"><div class="empty">Start a chat using an account ID.</div></section>
+      <form id="composer" hidden><input class="bo-input" id="message" maxlength="4000" autocomplete="off" placeholder="Message"><button class="bo-button bo-button--primary" type="submit">Send</button></form>
+      <div id="status" role="alert"></div>
+    </main>
+  </div>
+  <dialog id="profile-dialog">
+    <form method="dialog" id="profile-form"><h2>Global profile name</h2><input class="bo-input" id="profile-name" maxlength="64" placeholder="Your name"><div class="actions"><button class="bo-button bo-button--quiet" value="cancel">Cancel</button><button class="bo-button bo-button--primary" id="save-profile" value="default">Save</button></div></form>
+  </dialog>
+  <script type="module">
+    import { boxos } from "/client.js";
+    const accountsPage = "{{ACCOUNTS_PAGE}}";
+    const grants = "{{GRANTS_BOX}}";
+    const profiles = "{{PROFILES_BOX}}";
+    const messagesBox = "{{MESSAGES_BOX}}";
+    const el = Object.fromEntries([...document.querySelectorAll("[id]")].map(node => [node.id, node]));
+    const chats = new Map();
+    const names = new Map();
+    const unread = new Map();
+    let account = localStorage.getItem("social-account");
+    let current = null;
+    let denied = false;
+
+    function accountsUrl() {
+      const url = new URL(location.href);
+      const labels = url.hostname.split(".");
+      url.hostname = url.hostname === "127.0.0.1" || url.hostname === "localhost"
+        ? accountsPage + ".localhost"
+        : [accountsPage, ...labels.slice(1)].join(".");
+      url.pathname = "/"; url.search = ""; url.hash = "";
+      return url;
+    }
+    async function grant(permission) {
+      if (!account) return false;
+      const appAccount = await boxos.account();
+      const result = await boxos.readPublic(grants, account + "|" + appAccount + "|" + permission);
+      return result.found && result.value === true;
+    }
+    async function authorize() {
+      return await grant("manage messages") && await grant("manage account");
+    }
+    async function signIn() {
+      const state = crypto.randomUUID(); sessionStorage.setItem("social-state", state);
+      const url = accountsUrl();
+      url.search = new URLSearchParams({
+        app_name: "BoxOS Chat",
+        app_account: await boxos.account(),
+        permissions: "manage messages,manage account",
+        redirect_uri: location.origin + location.pathname,
+        state,
+      });
+      location.replace(url);
+    }
+    async function profile(accountId) {
+      if (names.has(accountId)) return names.get(accountId);
+      const result = await boxos.readPublic(profiles, "name|" + accountId);
+      const name = result.found ? result.value : accountId.slice(0, 10) + "…";
+      names.set(accountId, name); return name;
+    }
+    function short(accountId) { return accountId ? accountId.slice(0, 8) + "…" + accountId.slice(-6) : ""; }
+    async function renderIdentity() {
+      const name = await profile(account); el["my-name"].textContent = name; el["my-short-id"].textContent = short(account);
+      el["my-avatar"].textContent = name[0].toUpperCase();
+    }
+    async function renderChats() {
+      el["chat-list"].replaceChildren();
+      const entries = [...chats.entries()].sort((left, right) => {
+        const a = left[1].at(-1)?.sequence || 0, b = right[1].at(-1)?.sequence || 0; return b - a;
+      });
+      for (const [peer, history] of entries) {
+        const name = await profile(peer); const row = document.createElement("button"); row.type = "button";
+        row.className = peer === current ? "chat-row active" : "chat-row";
+        const avatar = document.createElement("span"); avatar.className = "avatar"; avatar.textContent = name[0].toUpperCase();
+        const copy = document.createElement("span"); copy.className = "chat-copy";
+        const title = document.createElement("strong"); title.textContent = name;
+        const preview = document.createElement("small"); preview.textContent = history.at(-1)?.text || short(peer);
+        copy.append(title, preview); row.append(avatar, copy);
+        if (unread.get(peer)) { const badge = document.createElement("span"); badge.className = "check"; badge.textContent = String(unread.get(peer)); row.append(badge); }
+        row.onclick = () => select(peer); el["chat-list"].append(row);
+      }
+    }
+    async function select(peer) {
+      current = peer; unread.delete(peer); if (!chats.has(peer)) chats.set(peer, []);
+      const name = await profile(peer); el["peer-name"].textContent = name; el["peer-id"].textContent = short(peer);
+      el["peer-avatar"].textContent = name[0].toUpperCase(); el.composer.hidden = false;
+      renderMessages(); renderChats(); el.message.focus();
+    }
+    function renderMessages() {
+      el.messages.replaceChildren();
+      const history = chats.get(current) || [];
+      if (!history.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No messages yet."; el.messages.append(empty); }
+      for (const message of history) {
+        const bubble = document.createElement("div"); bubble.className = message.sender === account ? "bubble mine" : "bubble";
+        bubble.textContent = message.text; el.messages.append(bubble);
+      }
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
+    async function receive(event) {
+      const payload = event.message;
+      if (!payload || typeof payload !== "object") return;
+      if (payload.type === "chat.error") el.status.textContent = payload.error;
+      if (payload.type === "chat.snapshot") {
+        chats.clear(); for (const chat of payload.chats) chats.set(chat.peer, chat.messages);
+        await renderChats(); if (current) renderMessages();
+      }
+      if (payload.type === "chat.message") {
+        const message = payload.message; const peer = message.sender === account ? message.recipient : message.sender;
+        const history = chats.get(peer) || [];
+        if (!history.some(item => item.id === message.id)) history.push(message);
+        chats.set(peer, history);
+        if (message.sender !== account && (document.hidden || current !== peer)) {
+          unread.set(peer, (unread.get(peer) || 0) + 1);
+          if ("Notification" in window && Notification.permission === "granted") {
+            const sender = await profile(peer);
+            const notification = new Notification(sender, { body: message.text, tag: message.id });
+            notification.onclick = () => { window.focus(); select(peer); notification.close(); };
+          }
+        }
+        await renderChats(); if (current === peer) renderMessages();
+      }
+    }
+    async function changeProfile(name) {
+      const requestId = crypto.randomUUID();
+      await boxos.invoke(profiles, "setName", { account, name, requestId });
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const status = await boxos.readPublic(profiles, "status|" + requestId);
+        if (status.found) { if (!status.value.ok) throw new Error(status.value.error); names.set(account, name); await renderIdentity(); return; }
+      }
+      throw new Error("Profile update timed out");
+    }
+
+    const result = new URLSearchParams(location.hash.slice(1));
+    if (result.get("error")) { denied = true; el["login-message"].textContent = "Access was not granted."; }
+    if (result.get("account")) {
+      if (result.get("state") !== sessionStorage.getItem("social-state")) { denied = true; el["login-message"].textContent = "Invalid sign-in state."; }
+      else { account = result.get("account"); localStorage.setItem("social-account", account); }
+    }
+    if (location.hash) history.replaceState(null, "", location.pathname);
+
+    el["sign-in"].onclick = signIn;
+    el["copy-id"].onclick = async () => { await navigator.clipboard.writeText(account); el["copy-id"].textContent = "✓"; setTimeout(() => el["copy-id"].textContent = "⧉", 1000); };
+    el.notifications.onclick = async () => {
+      if (!("Notification" in window)) { el.status.textContent = "This browser does not support notifications."; return; }
+      const permission = await Notification.requestPermission();
+      el.notifications.textContent = permission === "granted" ? "◆" : "♢";
+      if (permission !== "granted") el.status.textContent = "Notifications were not enabled.";
+    };
+    if ("Notification" in window && Notification.permission === "granted") el.notifications.textContent = "◆";
+    el["edit-profile"].onclick = async () => { el["profile-name"].value = await profile(account); el["profile-dialog"].showModal(); };
+    el["profile-form"].onsubmit = async event => {
+      if (event.submitter?.value === "cancel") return;
+      event.preventDefault(); el["save-profile"].disabled = true; el.status.textContent = "";
+      try { const name = el["profile-name"].value.trim(); if (!name) throw new Error("Enter a profile name"); await changeProfile(name); el["profile-dialog"].close(); }
+      catch (error) { el.status.textContent = error.message; } finally { el["save-profile"].disabled = false; }
+    };
+    el["start-chat"].onsubmit = async event => {
+      event.preventDefault(); const peer = el["new-account"].value.trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(peer)) { el.status.textContent = "Enter a 64-character account ID."; return; }
+      if (peer === account) { el.status.textContent = "Choose another account."; return; }
+      el["new-account"].value = ""; el.status.textContent = ""; await select(peer);
+    };
+    el.composer.onsubmit = async event => {
+      event.preventDefault(); const text = el.message.value.trim(); if (!text || !current) return;
+      el.message.value = ""; el.status.textContent = "";
+      try { await boxos.invoke(messagesBox, "send", { owner: account, recipient: current, text, messageId: crypto.randomUUID() }); }
+      catch (error) { el.status.textContent = error.message; }
+    };
+
+    if (!account && !denied) await signIn();
+    else if (!account || !await authorize()) { el.login.hidden = false; el.app.hidden = true; if (!denied) await signIn(); }
+    else {
+      el.login.hidden = true; el.app.hidden = false; await renderIdentity();
+      void boxos.events(receive).catch(error => { el.status.textContent = error.message; });
+      await boxos.invoke(messagesBox, "connect", { owner: account });
+      await boxos.invoke(messagesBox, "load", { owner: account });
+    }
+  </script>
+</body>
+</html>

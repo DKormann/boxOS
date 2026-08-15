@@ -12,10 +12,13 @@ import {
   publishBox as executePublishBox,
   publishPage,
   publishTextBlob,
-  storeClientMessage,
   transferFuel,
 } from "../operations/operations.ts"
-import type { BoxScheduler, WorkerTurnResult } from "../workers/scheduler.ts"
+import type {
+  BoxScheduler,
+  ClientNotification,
+  WorkerTurnResult,
+} from "../workers/scheduler.ts"
 
 export type BoxDefinition = { methods: Record<string, string> }
 
@@ -80,6 +83,11 @@ export function invocationSigningMessage(request: InvocationRequest): string {
 export class BoxOSService {
   private readonly dispatcher: EffectDispatcher
   private draining = false
+  private notificationHandler: (notification: ClientNotification) => void = () => {}
+
+  setNotificationHandler(handler: (notification: ClientNotification) => void): void {
+    this.notificationHandler = handler
+  }
 
   constructor(
     private readonly database: Database,
@@ -179,8 +187,18 @@ export class BoxOSService {
       })()
     }
     if (operation.type == "message") {
-      storeClientMessage(this.database, operationId, account, operation.clientId, operation.message)
-      return save({ id: operationId })
+      const result = save({ id: operationId })
+      try {
+        this.notificationHandler({
+          id: operationId,
+          sender: account,
+          clientId: operation.clientId,
+          message: operation.message,
+        })
+      } catch {
+        // Transient delivery cannot invalidate the committed operation.
+      }
+      return result
     }
     if (operation.type == "publishBlob") {
       return save({

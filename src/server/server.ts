@@ -3,6 +3,7 @@ import { deployStartupExamples } from "../../examples/startup/deploy.ts"
 import { parseBoxValue, stringifyBoxValue } from "../core/values.ts"
 import { openDatabase } from "../storage/database.ts"
 import { WorkerPool } from "../workers/pool.ts"
+import type { ClientNotification } from "../workers/scheduler.ts"
 import { BoxOSService } from "./service.ts"
 
 function json(value: unknown, status = 200): Response {
@@ -55,65 +56,72 @@ export async function startBoxOSServer(options: {
     maximumTurnMilliseconds: options.maximumTurnMilliseconds ?? 1_000,
   })
   const service = new BoxOSService(database, pool.scheduler)
-  const eventStreams = new Set<() => void>()
+  type EventConnection = {
+    controller: ReadableStreamDefaultController<Uint8Array>
+    lastWrite: number
+    close(): void
+  }
+  const eventConnections = new Map<string, Set<EventConnection>>()
+
+  function broadcastClientNotification(notification: ClientNotification): void {
+    const connections = eventConnections.get(notification.clientId)
+    if (!connections?.size) return
+    const data = stringifyBoxValue({
+      id: notification.id,
+      sender: notification.sender,
+      message: notification.message,
+    })
+    const bytes = new TextEncoder().encode(
+      `id: ${notification.id}\nevent: message\ndata: ${data}\n\n`,
+    )
+    for (const connection of [...connections]) {
+      try {
+        connection.controller.enqueue(bytes)
+        connection.lastWrite = Date.now()
+      } catch {
+        connection.close()
+      }
+    }
+  }
+
+  function keepEventStreamsAlive(): void {
+    const now = Date.now()
+    for (const connections of eventConnections.values()) {
+      for (const connection of [...connections]) {
+        if (now - connection.lastWrite < 15_000) continue
+        try {
+          connection.controller.enqueue(new TextEncoder().encode(": keepalive\n\n"))
+          connection.lastWrite = now
+        } catch {
+          connection.close()
+        }
+      }
+    }
+  }
 
   function eventStream(clientId: string): Response {
-    let timer: ReturnType<typeof setInterval> | undefined
-    let closed = false
-    let close = () => {}
+    let connection: EventConnection | undefined
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        let lastKeepalive = Date.now()
-        const send = () => {
-          if (closed) return
-          try {
-            const rows = database.transaction(() => {
-              const pending = database.query<{
-                id: string
-                sender_account: string
-                message: string
-              }>(
-                `SELECT id, sender_account, message FROM client_messages
-                 WHERE receiver_client_id = ? AND status = 'pending'
-                 ORDER BY created_at, id LIMIT 100`,
-              ).all(clientId)
-              for (const row of pending) {
-                database.query(
-                  "UPDATE client_messages SET status = 'delivered' WHERE id = ? AND status = 'pending'",
-                ).run(row.id)
-              }
-              return pending
-            })()
-            for (const row of rows) {
-              const data = stringifyBoxValue({
-                id: row.id,
-                sender: row.sender_account,
-                message: parseBoxValue(row.message),
-              })
-              controller.enqueue(new TextEncoder().encode(`id: ${row.id}\nevent: message\ndata: ${data}\n\n`))
-              lastKeepalive = Date.now()
-            }
-            if (Date.now() - lastKeepalive >= 15_000) {
-              controller.enqueue(new TextEncoder().encode(": keepalive\n\n"))
-              lastKeepalive = Date.now()
-            }
-          } catch (error) {
-            close()
-            controller.error(error)
-          }
+        connection = {
+          controller,
+          lastWrite: Date.now(),
+          close() {
+            const connections = eventConnections.get(clientId)
+            connections?.delete(connection!)
+            if (connections?.size == 0) eventConnections.delete(clientId)
+          },
         }
-        close = () => {
-          closed = true
-          if (timer) clearInterval(timer)
-          eventStreams.delete(close)
+        let connections = eventConnections.get(clientId)
+        if (!connections) {
+          connections = new Set()
+          eventConnections.set(clientId, connections)
         }
-        eventStreams.add(close)
+        connections.add(connection)
         controller.enqueue(new TextEncoder().encode(": connected\n\n"))
-        send()
-        timer = setInterval(send, 250)
       },
       cancel() {
-        close()
+        connection?.close()
       },
     })
     return new Response(stream, {
@@ -125,8 +133,12 @@ export async function startBoxOSServer(options: {
     })
   }
 
+  pool.scheduler.setNotificationHandler(broadcastClientNotification)
+  service.setNotificationHandler(broadcastClientNotification)
+
   const server = Bun.serve({
     port: options.port ?? 3000,
+    idleTimeout: 255,
     hostname: options.hostname ?? "127.0.0.1",
     async fetch(request): Promise<Response> {
       try {
@@ -275,13 +287,20 @@ export async function startBoxOSServer(options: {
     void service.drainEffects().catch(error => console.error("Effect dispatch failed", error))
   }
   const effectTimer = setInterval(drainEffects, 100)
+  const eventTimer = setInterval(keepEventStreamsAlive, 5_000)
   drainEffects()
 
   return {
     url: server.url,
     stop(): void {
       clearInterval(effectTimer)
-      for (const close of eventStreams) close()
+      clearInterval(eventTimer)
+      for (const connections of eventConnections.values()) {
+        for (const connection of connections) {
+          try { connection.controller.close() } catch { /* already closed */ }
+        }
+      }
+      eventConnections.clear()
       server.stop(true)
       pool.stop()
       database.close()

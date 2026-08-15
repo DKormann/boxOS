@@ -1,10 +1,14 @@
 import type { Database } from "bun:sqlite"
 import { copyBoxValue, parseBoxValue, stringifyBoxValue, validateBoxKey, type BoxValue } from "../core/values.ts"
 import { validateCallbackCode } from "../language/parser.ts"
-import { storeClientMessage, transferFuel } from "../operations/operations.ts"
+import { transferFuel } from "../operations/operations.ts"
 import { compileCallback, compileMethod, type RuntimeContext, type RuntimeStorage } from "./native.ts"
 import { BOXOS_RUNTIME_VERSION } from "../version.ts"
-import type { WorkerTurn, WorkerTurnResult } from "../workers/scheduler.ts"
+import type {
+  ClientNotification,
+  WorkerTurn,
+  WorkerTurnResult,
+} from "../workers/scheduler.ts"
 
 type Visibility = "public" | "private"
 const functionToString = Function.prototype.toString
@@ -45,7 +49,11 @@ function storage(database: Database, boxId: string, visibility: Visibility): Run
   })
 }
 
-function context(database: Database, turn: WorkerTurn): RuntimeContext {
+function context(
+  database: Database,
+  turn: WorkerTurn,
+  notifications: ClientNotification[],
+): RuntimeContext {
   function declareEffect(
     kind: string,
     argumentsValue: unknown,
@@ -99,7 +107,15 @@ function context(database: Database, turn: WorkerTurn): RuntimeContext {
       }, callback, callbackContext)
     },
     message(clientId: string, message: unknown): void {
-      storeClientMessage(database, crypto.randomUUID(), turn.account, clientId, message)
+      if (typeof clientId != "string" || clientId.length == 0 || clientId.length > 256) {
+        throw new TypeError("Invalid client ID")
+      }
+      notifications.push({
+        id: crypto.randomUUID(),
+        sender: turn.account,
+        clientId,
+        message: copyBoxValue(message),
+      })
     },
     publish(
       kind: "account" | "blob" | "box" | "page",
@@ -149,8 +165,9 @@ export function executeTurn(database: Database, turn: WorkerTurn): WorkerTurnRes
   database.query("UPDATE turns SET status = 'running' WHERE id = ?").run(turn.id)
 
   try {
+    const notifications: ClientNotification[] = []
     const run = database.transaction((): BoxValue => {
-      const ctx = context(database, turn)
+      const ctx = context(database, turn, notifications)
       const procedure = turn.procedure
       const value = procedure.kind == "method"
         ? compileMethod(procedure.source)(ctx, copyBoxValue(procedure.input))
@@ -164,7 +181,10 @@ export function executeTurn(database: Database, turn: WorkerTurn): WorkerTurnRes
       ).run(stringifyBoxValue(result), Date.now(), turn.id)
       return result
     })
-    return { ok: true, value: run() }
+    const value = run()
+    return notifications.length
+      ? { ok: true, value, notifications }
+      : { ok: true, value }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     database.query(

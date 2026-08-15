@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { publishBox, publishPage, publishTextBlob } from "../../src/operations/operations.ts"
 import { grantsBox } from "./boxes/grants.ts"
+import { messagesBox } from "./boxes/messages.ts"
 import { profilesBox } from "./boxes/profiles.ts"
 
 export type StartupDeployment = Readonly<{
@@ -9,6 +10,8 @@ export type StartupDeployment = Readonly<{
   profilesBoxId: string
   accountsPageId: string
   profilePageId: string
+  messagesBoxId: string
+  socialPageId: string
 }>
 
 function record(database: Database, name: string, kind: "blob" | "box" | "page", id: string): void {
@@ -41,6 +44,9 @@ export async function deployStartupExamples(database: Database): Promise<Startup
   const profilesBoxId = await publishBox(database, profilesBox(grantsBoxId))
   record(database, "accounts.profiles", "box", profilesBoxId)
 
+  const messagesBoxId = await publishBox(database, messagesBox(grantsBoxId))
+  record(database, "social.messages", "box", messagesBoxId)
+
   const accountsBlobId = await publishTextBlob(
     database,
     await pageSource("accounts", {
@@ -66,11 +72,33 @@ export async function deployStartupExamples(database: Database): Promise<Startup
   const profilePageId = await publishPage(database, profileBlobId)
   record(database, "profile.page", "page", profilePageId)
 
+  const socialBlobId = await publishTextBlob(
+    database,
+    await pageSource("social", {
+      ACCOUNTS_PAGE: accountsPageId,
+      DEFAULT_CSS: defaultCssBlobId,
+      GRANTS_BOX: grantsBoxId,
+      MESSAGES_BOX: messagesBoxId,
+      PROFILES_BOX: profilesBoxId,
+    }),
+    "text/html; charset=utf-8",
+  )
+  const socialPageId = await publishPage(database, socialBlobId)
+  record(database, "social.page", "page", socialPageId)
+
   database.query(
     `DELETE FROM startup_deployments
      WHERE name LIKE 'accounts.%'
        AND name NOT IN ('accounts.grants', 'accounts.profiles', 'accounts.page')`,
   ).run()
 
-  return { defaultCssBlobId, grantsBoxId, profilesBoxId, accountsPageId, profilePageId }
+  return {
+    defaultCssBlobId,
+    grantsBoxId,
+    profilesBoxId,
+    accountsPageId,
+    profilePageId,
+    messagesBoxId,
+    socialPageId,
+  }
 }

@@ -10,8 +10,15 @@ export type WorkerTurn = {
     | { kind: "callback"; source: string; result: BoxValue; context: BoxValue }
 }
 
+export type ClientNotification = {
+  id: string
+  sender: string
+  clientId: string
+  message: BoxValue
+}
+
 export type WorkerTurnResult =
-  | { ok: true; value: BoxValue }
+  | { ok: true; value: BoxValue; notifications?: ClientNotification[] }
   | { ok: false; error: string }
 
 export interface BoxWorker {
@@ -27,6 +34,11 @@ export class BoxScheduler {
   private readonly workers = new Map<string, BoxWorker>()
   private readonly owners = new Map<string, string>()
   private readonly tails = new Map<string, Promise<void>>()
+  private notificationHandler: (notification: ClientNotification) => void = () => {}
+
+  setNotificationHandler(handler: (notification: ClientNotification) => void): void {
+    this.notificationHandler = handler
+  }
 
   addWorker(worker: BoxWorker): void {
     if (this.workers.has(worker.id)) throw new Error(`Worker ${worker.id} already exists`)
@@ -55,7 +67,7 @@ export class BoxScheduler {
     return result
   }
 
-  private execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
+  private async execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
     let ownerId = this.owners.get(turn.boxId)
     let worker = ownerId == null ? undefined : this.workers.get(ownerId)
 
@@ -66,7 +78,16 @@ export class BoxScheduler {
       this.owners.set(turn.boxId, ownerId)
     }
 
-    return worker.execute(turn)
+    const result = await worker.execute(turn)
+    if (!result.ok) return result
+    for (const notification of result.notifications ?? []) {
+      try {
+        this.notificationHandler(notification)
+      } catch {
+        // Notifications are best-effort and cannot change a committed turn.
+      }
+    }
+    return { ok: true, value: result.value }
   }
 
   private leastLoadedWorker(): BoxWorker | undefined {

@@ -4,7 +4,9 @@ export const DATABASE_VERSION = 3
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS schema_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
