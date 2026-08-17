@@ -18,6 +18,11 @@ export type RuntimeContext = Readonly<{
     callback: Function,
     context?: unknown,
   ): void
+  request(
+    request: unknown,
+    callback: Function,
+    context?: unknown,
+  ): void
   transfer(receiver: string, amount: number): void
   storage: Readonly<{
     public: RuntimeStorage

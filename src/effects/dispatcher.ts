@@ -7,6 +7,7 @@ import {
   publishTextBlob,
 } from "../operations/operations.ts"
 import { BOXOS_RUNTIME_VERSION } from "../version.ts"
+import { executeStructuredRequest } from "./request.ts"
 import type { BoxScheduler, WorkerTurn, WorkerTurnResult } from "../workers/scheduler.ts"
 
 type EffectRow = {
@@ -26,6 +27,8 @@ type CallbackRow = {
   runtime_version: string
   status: "waiting" | "queued" | "completed" | "discarded"
 }
+
+export type RequestExecutor = (value: BoxValue, requestId: string) => Promise<BoxValue>
 
 type InvocationArguments = {
   boxId: string
@@ -53,6 +56,7 @@ export class EffectDispatcher {
   constructor(
     private readonly database: Database,
     private readonly scheduler: BoxScheduler,
+    private readonly requestExecutor: RequestExecutor = executeStructuredRequest,
   ) {}
 
   /** Dispatch one available effect. Returns false when there is no work. */
@@ -119,6 +123,11 @@ export class EffectDispatcher {
       }
       // Rejections represent infrastructure failure and leave the effect retryable.
       return this.scheduler.run(turn)
+    }
+
+    if (effect.kind == "request") {
+      const args = parseBoxValue(effect.arguments)
+      return { ok: true, value: await this.requestExecutor(args, effect.id) }
     }
 
     try {

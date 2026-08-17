@@ -108,6 +108,12 @@ declare namespace Bun {
       readonly argv: string[];
       readonly env: Record<string, string | undefined>;
       readonly password: Password;
+      readonly dns: {
+        resolve(
+          hostname: string,
+          recordType: "A" | "AAAA",
+        ): Promise<Array<{ address: string; ttl?: number }>>;
+      };
       file(
         path: string | URL | ArrayBufferLike | Uint8Array,
         options?: { type?: string },

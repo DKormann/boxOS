@@ -102,6 +102,7 @@ Each box method gets as first argument a ctx. this offers different kinds of eff
  - invoke(boxid, methodname, argument, callback, callbackContext): invokes another box with pure data and optionally resumes the callback with explicit durable context
  - message(clientid, message): messages a client session
  - publish(kind: "box" | "blob" | "page" | "account", args): creates a public entity
+ - request(request, callback, callbackContext): performs a durable structured request to a public HTTPS JSON API
  - transfer(receiverPub, amount): atomically transfers fuel from `ctx.account`; private keys are never passed to box code
 
 ctx also exposes the account behind the invokation and the clientId
@@ -135,6 +136,15 @@ effect settles, its selected callback is queued on the origin box and runs as a
 fresh execution turn. No closure, stack, heap, or instruction pointer is
 preserved. Effect settlement and callback turns must be idempotent so duplicate
 delivery cannot run a callback twice.
+
+Outbound requests are structurally narrower than browser `fetch`. A request
+contains a public DNS host, absolute path, `GET` or `POST` method, end-to-end
+string headers, and an optional pure JSON body. The runtime owns the scheme,
+port, transport headers, redirect behavior, DNS resolution, limits, and timeout.
+It uses HTTPS on port 443, pins a globally routable resolved address while
+validating TLS for the requested host, and does not follow redirects. This keeps
+private network and raw transport authority outside box code while allowing
+ordinary public JSON APIs.
 
 ## Pages
 each page is backed by a blob. it is reachable under a shortened hash. under the url <hash>.boxos.org or <hash>.localhost:port for development.

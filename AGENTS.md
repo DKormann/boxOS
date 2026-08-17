@@ -129,9 +129,10 @@ ctx.transfer(receiverAccount, amount)
 ctx.message(clientId, value)
 ctx.invoke(boxId, method, input, callback, callbackContext)
 ctx.publish(kind, arguments, callback, callbackContext)
+ctx.request(request, callback, callbackContext)
 ```
 
-`transfer` and `message` commit in the current turn. `invoke` and `publish` are
+`transfer` and `message` commit in the current turn. `invoke`, `publish`, and `request` are
 durable effects. Their callbacks run later as fresh atomic turns on the origin
 box.
 
@@ -165,6 +166,44 @@ ctx.publish("account", { pubkey: "..." }, callback, context);
 ```
 
 A successful publication callback receives `{ id }`.
+
+### Public HTTPS requests from a box
+
+`ctx.request` declares a durable, non-streaming HTTPS request. It is deliberately
+not raw `fetch`: the structure admits only public HTTPS JSON API requests.
+
+```js
+ctx.request({
+  host: "api.example.com",
+  path: "/v1/messages?format=json",
+  method: "POST",
+  headers: { Authorization: "Bearer " + input.token },
+  body: { message: input.message }
+}, function completed(response, saved) {
+  if (response.ok) ctx.storage.private.set(saved.key, response.body);
+  else ctx.message(saved.clientId, { error: response.error || response.body });
+}, { key: "last-response", clientId: ctx.clientId });
+```
+
+The API accepts only:
+
+- a multi-label public DNS `host`, without a scheme, port, user info, or IP literal;
+- an absolute `path` of at most 4096 characters;
+- `GET` without a body or `POST` with an optional pure-value JSON body;
+- ordinary end-to-end string headers. Transport headers such as `Host`,
+  `Content-Length`, and `Transfer-Encoding` are runtime-owned.
+
+Requests always use HTTPS on port 443, pin a publicly routable DNS result for
+the TLS connection, validate the certificate for `host`, and never follow
+redirects. Private, loopback, link-local, mixed public/private DNS, and other
+non-public destinations are rejected. Request and response bodies are limited
+to 256 KiB, and requests time out after 30 seconds.
+
+The callback receives `{ ok, requestId, status, contentType, body }` for an HTTP
+response or `{ ok: false, requestId, error }` for a transport failure. JSON
+responses become pure BoxOS values; other response bodies are strings. As with
+all external POST requests, a crash after remote acceptance but before durable
+settlement can cause a retry. Use an upstream idempotency key when available.
 
 ## Signing terminal requests
 

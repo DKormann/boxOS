@@ -5,6 +5,7 @@ import { bytesToHex } from "../src/core/crypto.ts"
 import { stringifyBoxValue, type BoxValue } from "../src/core/values.ts"
 import { deployStartupExamples } from "../examples/startup/deploy.ts"
 import { EffectDispatcher } from "../src/effects/dispatcher.ts"
+import { isPublicNetworkAddress, parseStructuredRequest } from "../src/effects/request.ts"
 import { executeTurn } from "../src/execution/turn.ts"
 import {
   isValidCallbackCode,
@@ -77,6 +78,36 @@ test("serialized callbacks use the method parser and cannot capture locals", () 
 
   expect(isValidCallbackCode("function completed(result) { return missing + result; }")).toBe(false)
   expect(isValidCallbackCode("(result) => result")).toBe(false)
+})
+
+test("structured requests admit public HTTPS JSON APIs without raw transport access", () => {
+  expect(parseStructuredRequest({
+    host: "API.Example.com",
+    path: "/v1/chat?mode=fast",
+    method: "POST",
+    headers: { Authorization: "Bearer secret", "X-Api-Key": "key" },
+    body: { messages: [{ role: "user", content: "Hello" }] },
+  })).toEqual({
+    host: "api.example.com",
+    path: "/v1/chat?mode=fast",
+    method: "POST",
+    headers: { authorization: "Bearer secret", "x-api-key": "key" },
+    body: { messages: [{ role: "user", content: "Hello" }] },
+  })
+  expect(() => parseStructuredRequest({ host: "127.0.0.1", path: "/", method: "GET" })).toThrow()
+  expect(() => parseStructuredRequest({ host: "example.com", path: "//other", method: "GET" })).toThrow()
+  expect(() => parseStructuredRequest({
+    host: "example.com",
+    path: "/",
+    method: "POST",
+    headers: { Host: "internal" },
+  })).toThrow()
+  expect(isPublicNetworkAddress("93.184.216.34", 4)).toBe(true)
+  expect(isPublicNetworkAddress("10.0.0.1", 4)).toBe(false)
+  expect(isPublicNetworkAddress("127.0.0.1", 4)).toBe(false)
+  expect(isPublicNetworkAddress("2606:2800:220:1:248:1893:25c8:1946", 6)).toBe(true)
+  expect(isPublicNetworkAddress("fc00::1", 6)).toBe(false)
+  expect(isPublicNetworkAddress("::1", 6)).toBe(false)
 })
 
 test("accounts are created and lazily topped up on interaction", () => {
@@ -504,6 +535,74 @@ test("box notifications are emitted only after a successful atomic turn", () => 
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM client_messages",
     ).get()?.count).toBe(0)
+  } finally {
+    database.close()
+  }
+})
+
+test("ctx.request is durable, validated, and resumes its callback", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    installBox(database)
+    const started = executeTurn(database, methodTurn(
+      "request-turn",
+      `
+        ctx.request(
+          {
+            host: "api.example.com",
+            path: "/v1/chat",
+            method: "POST",
+            headers: { Authorization: "Bearer private" },
+            body: { prompt: "Hello" }
+          },
+          function completed(response, saved) {
+            ctx.storage.private.set(saved.key, response.body.answer);
+          },
+          { key: "answer" }
+        );
+        return { pending: true };
+      `,
+    ))
+    expect(started).toEqual({ ok: true, value: { pending: true } })
+    expect(database.query<{ kind: string }>("SELECT kind FROM effects").get()?.kind).toBe("request")
+
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "request-worker",
+      async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
+    })
+    const dispatcher = new EffectDispatcher(database, scheduler, async (request, requestId) => {
+      expect(request).toEqual({
+        host: "api.example.com",
+        path: "/v1/chat",
+        method: "POST",
+        headers: { authorization: "Bearer private" },
+        body: { prompt: "Hello" },
+      })
+      return {
+        ok: true,
+        requestId,
+        status: 200,
+        contentType: "application/json",
+        body: { answer: 42 },
+      }
+    })
+    expect(await dispatcher.dispatchNext()).toBe(true)
+    expect(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = 'box-a' AND visibility = 'private' AND key = 'answer'",
+    ).get()?.value).toBe("42")
+
+    const rejected = executeTurn(database, methodTurn(
+      "unsafe-request",
+      `
+        ctx.storage.public.set("rolled-back-request", true);
+        ctx.request({ host: "localhost", path: "/", method: "GET" }, function done() { return null; });
+        return null;
+      `,
+    ))
+    expect(rejected.ok).toBe(false)
+    expect(database.query("SELECT value FROM box_state WHERE key = 'rolled-back-request'").get()).toBe(null)
+    expect(database.query<{ count: number }>("SELECT count(*) AS count FROM effects").get()?.count).toBe(1)
   } finally {
     database.close()
   }

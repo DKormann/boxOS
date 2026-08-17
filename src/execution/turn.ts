@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { copyBoxValue, parseBoxValue, stringifyBoxValue, validateBoxKey, type BoxValue } from "../core/values.ts"
+import { parseStructuredRequest } from "../effects/request.ts"
 import { validateCallbackCode } from "../language/parser.ts"
 import { transferFuel } from "../operations/operations.ts"
 import { compileCallback, compileMethod, type RuntimeContext, type RuntimeStorage } from "./native.ts"
@@ -127,6 +128,14 @@ function context(
         throw new TypeError("Invalid publication kind")
       }
       declareEffect(`publish.${kind}`, copyBoxValue(argumentsValue), callback, callbackContext)
+    },
+    request(
+      requestValue: unknown,
+      callback: Function,
+      callbackContext: unknown = null,
+    ): void {
+      const request = parseStructuredRequest(copyBoxValue(requestValue))
+      declareEffect("request", request, callback, callbackContext)
     },
     transfer(receiver: string, amount: number): void {
       transferFuel(database, turn.account, receiver, amount)
