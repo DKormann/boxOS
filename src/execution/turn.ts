@@ -107,16 +107,18 @@ function context(
         argument: copyBoxValue(argument),
       }, callback, callbackContext)
     },
-    message(clientId: string, message: unknown): void {
+    message(clientId: string, message: unknown): string {
       if (typeof clientId != "string" || clientId.length == 0 || clientId.length > 256) {
         throw new TypeError("Invalid client ID")
       }
+      const id = crypto.randomUUID()
       notifications.push({
-        id: crypto.randomUUID(),
+        id,
         sender: turn.account,
         clientId,
         message: copyBoxValue(message),
       })
+      return id
     },
     publish(
       kind: "account" | "blob" | "box" | "page",

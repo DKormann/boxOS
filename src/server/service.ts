@@ -83,9 +83,9 @@ export function invocationSigningMessage(request: InvocationRequest): string {
 export class BoxOSService {
   private readonly dispatcher: EffectDispatcher
   private draining = false
-  private notificationHandler: (notification: ClientNotification) => void = () => {}
+  private notificationHandler: (notification: ClientNotification) => boolean = () => false
 
-  setNotificationHandler(handler: (notification: ClientNotification) => void): void {
+  setNotificationHandler(handler: (notification: ClientNotification) => boolean): void {
     this.notificationHandler = handler
   }
 
@@ -187,17 +187,25 @@ export class BoxOSService {
       })()
     }
     if (operation.type == "message") {
-      const result = save({ id: operationId })
+      // Persist acceptance before attempting transient delivery. A missing or
+      // broken client can never invalidate the signed operation.
+      save({ id: operationId, delivered: false })
+      let delivered = false
       try {
-        this.notificationHandler({
+        delivered = this.notificationHandler({
           id: operationId,
           sender: account,
           clientId: operation.clientId,
           message: operation.message,
         })
       } catch {
-        // Transient delivery cannot invalidate the committed operation.
+        // Best-effort delivery failed after the operation committed.
       }
+      const result: BoxValue = { id: operationId, delivered }
+      this.database.query("UPDATE client_operations SET result = ? WHERE id = ?").run(
+        stringifyBoxValue(result),
+        operationId,
+      )
       return result
     }
     if (operation.type == "publishBlob") {

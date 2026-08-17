@@ -54,7 +54,35 @@ test("the landing page uses the BoxOS design and guides agents", async () => {
   const source = await Bun.file(new URL("../public/index.html", import.meta.url)).text()
   expect(source.includes('/v1/blobs/{{DEFAULT_CSS}}')).toBe(true)
   expect(source.includes("Try BoxOS")).toBe(true)
+  expect(source.includes('href="/boxos-cli.js"')).toBe(true)
   expect(source.includes("agents: read /AGENTS.md")).toBe(true)
+})
+
+test("the standalone CLI creates and reloads an account", async () => {
+  const directory = `/tmp/boxos-cli-${crypto.randomUUID()}`
+  const key = `${directory}/account.json`
+  const cli = decodeURIComponent(new URL("../public/boxos-cli.js", import.meta.url).pathname)
+  const bun = Bun.which("bun")!
+  try {
+    const created = Bun.spawnSync({
+      cmd: [bun, cli, "--key", key, "account", "create"],
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(created.exitCode).toBe(0)
+    const account = JSON.parse(new TextDecoder().decode(created.stdout!)).account
+    expect(typeof account == "string" && account.length == 64).toBe(true)
+
+    const shown = Bun.spawnSync({
+      cmd: [bun, cli, "--key", key, "account", "show"],
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(shown.exitCode).toBe(0)
+    expect(JSON.parse(new TextDecoder().decode(shown.stdout!)).account).toBe(account)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test("canonical BOXOS values are independent of object insertion order", () => {
@@ -264,7 +292,10 @@ test("startup examples deploy account grants and public profiles", async () => {
     }).ok).toBe(true)
     const scheduler = new BoxScheduler()
     const notifications: ClientNotification[] = []
-    scheduler.setNotificationHandler(notification => notifications.push(notification))
+    scheduler.setNotificationHandler(notification => {
+      notifications.push(notification)
+      return true
+    })
     scheduler.addWorker({
       id: "startup-worker",
       async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
@@ -535,6 +566,41 @@ test("box notifications are emitted only after a successful atomic turn", () => 
     expect(database.query<{ count: number }>(
       "SELECT count(*) AS count FROM client_messages",
     ).get()?.count).toBe(0)
+  } finally {
+    database.close()
+  }
+})
+
+test("unavailable clients never abort a committed message turn", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    installBox(database)
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({
+      id: "message-worker",
+      async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
+    })
+    scheduler.setNotificationHandler(() => false)
+    const result = await scheduler.run(methodTurn(
+      "offline-message",
+      `
+        ctx.storage.public.set("committed", true);
+        let messageId = ctx.message("offline-client", { hello: true });
+        return { messageId: messageId };
+      `,
+    ))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.error)
+    const value = result.value as { messageId: string }
+    expect(typeof value.messageId).toBe("string")
+    expect(result.deliveries).toEqual([{
+      id: value.messageId,
+      clientId: "offline-client",
+      delivered: false,
+    }])
+    expect(database.query<{ value: string }>(
+      "SELECT value FROM box_state WHERE box_id = 'box-a' AND visibility = 'public' AND key = 'committed'",
+    ).get()?.value).toBe("true")
   } finally {
     database.close()
   }
@@ -829,6 +895,24 @@ test("the service publishes boxes and verifies signed invocations", async () => 
     expect(database.query<{ fuel: number }>(
       "SELECT fuel FROM accounts WHERE pubkey = ?",
     ).get(receiver)?.fuel).toBe(100)
+
+    service.setNotificationHandler(() => false)
+    const messageOperation: ClientOperationRequest = {
+      nonce: crypto.randomUUID(),
+      operation: { type: "message", clientId: receiver, message: { hello: true } },
+    }
+    const messageSignature = bytesToHex(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      keys.privateKey,
+      new TextEncoder().encode(clientOperationSigningMessage(messageOperation)),
+    ))
+    const messageResult = await service.operate(account, messageSignature, messageOperation)
+    expect(typeof (messageResult as { id: string }).id).toBe("string")
+    expect(messageResult).toEqual({
+      id: (messageResult as { id: string }).id,
+      delivered: false,
+    })
+    expect(await service.operate(account, messageSignature, messageOperation)).toEqual(messageResult)
   } finally {
     database.close()
   }

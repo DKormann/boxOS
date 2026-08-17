@@ -27,7 +27,8 @@
     .feature p { margin: 0; color: var(--bo-text-muted); line-height: 1.65; }
     .build { display: flex; align-items: center; justify-content: space-between; gap: 30px; padding: 45px; margin-bottom: 70px; }
     .build h2 { font-size: 26px; } .build p { max-width: 570px; margin: 8px 0 0; color: var(--bo-text-muted); }
-    .build a { flex: 0 0 auto; display: inline-flex; align-items: center; text-decoration: none; }
+    .build-links { display: flex; flex: 0 0 auto; gap: 8px; }
+    .build a { display: inline-flex; align-items: center; text-decoration: none; }
     footer { min-height: 86px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--bo-border); color: var(--bo-text-muted); font-size: 13px; }
     @media (max-width: 680px) { .features { grid-template-columns: 1fr; } .feature { min-height: auto; } .feature span { margin-bottom: 25px; } .build { align-items: flex-start; flex-direction: column; padding: 28px; } nav .guide { display: none; } }
   </style>
@@ -50,7 +51,7 @@
         <article class="feature bo-card"><span>2</span><h2>Keep state boxed</h2><p>Validated methods own public and private storage. Every execution turn is atomic.</p></article>
         <article class="feature bo-card"><span>3</span><h2>Grant capabilities</h2><p>Ed25519 accounts sign actions while explicit grants connect people, apps, and services.</p></article>
       </section>
-      <section class="build bo-card"><div><h2>Build a BoxOS app</h2><p>The repository guide explains the value model, browser client, signing protocol, and APIs for publishing pages and boxes.</p></div><a class="bo-button bo-button--primary" href="/AGENTS.md">Read /AGENTS.md</a></section>
+      <section class="build bo-card"><div><h2>Build a BoxOS app</h2><p>The repository guide and dependency-free CLI cover accounts, signed requests, and publishing pages and boxes.</p></div><div class="build-links"><a class="bo-button bo-button--quiet" href="/boxos-cli.js" download="boxos">Download CLI</a><a class="bo-button bo-button--primary" href="/AGENTS.md">Read guide</a></div></section>
     </main>
     <footer><span>BoxOS</span><a href="/health">System status</a></footer>
   </div>

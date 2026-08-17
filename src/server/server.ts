@@ -63,9 +63,9 @@ export async function startBoxOSServer(options: {
   }
   const eventConnections = new Map<string, Set<EventConnection>>()
 
-  function broadcastClientNotification(notification: ClientNotification): void {
+  function broadcastClientNotification(notification: ClientNotification): boolean {
     const connections = eventConnections.get(notification.clientId)
-    if (!connections?.size) return
+    if (!connections?.size) return false
     const data = stringifyBoxValue({
       id: notification.id,
       sender: notification.sender,
@@ -74,14 +74,17 @@ export async function startBoxOSServer(options: {
     const bytes = new TextEncoder().encode(
       `id: ${notification.id}\nevent: message\ndata: ${data}\n\n`,
     )
+    let delivered = false
     for (const connection of [...connections]) {
       try {
         connection.controller.enqueue(bytes)
         connection.lastWrite = Date.now()
+        delivered = true
       } catch {
         connection.close()
       }
     }
+    return delivered
   }
 
   function keepEventStreamsAlive(): void {
@@ -200,6 +203,19 @@ export async function startBoxOSServer(options: {
               row.name,
               { kind: row.kind, id: row.id },
             ])),
+          })
+        }
+        if (
+          (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/boxos-cli.js" || url.pathname == "/boxos")
+        ) {
+          const source = await Bun.file(new URL("../../public/boxos-cli.js", import.meta.url)).text()
+          return new Response(request.method == "HEAD" ? null : source, {
+            headers: {
+              "content-type": "text/javascript; charset=utf-8",
+              "content-disposition": "attachment; filename=\"boxos\"",
+              "cache-control": "public, max-age=300",
+            },
           })
         }
         if (request.method == "GET" && url.pathname == "/client.js") {

@@ -42,11 +42,11 @@ Whoever has the privkey can invoke a box.
 Invokation may use fuel to pay for compute storage and network usage of that box.
 Should the account run out of fuel the computation may be aborted.
 
-Each method or resumed effect callback is one **execution turn**. Storage writes,
-fuel changes, callback registrations, and effect declarations from a successful
-turn commit atomically to SQLite. A failed or exhausted turn commits none of
-those changes. Effects are dispatched only after this transaction commits.
-Previously committed turns are never rolled back by a later failure.
+Each method or resumed task continuation is one **execution turn**. Storage
+writes, fuel changes, task continuations, and effect declarations from a
+successful turn commit atomically to SQLite. A failed or exhausted turn commits
+none of those changes. Effects are dispatched only after this transaction
+commits. Previously committed turns are never rolled back by a later failure.
 
 For the version 1 HTTP protocol, an account is a raw 32-byte Ed25519 public key
 encoded as 64 lowercase hexadecimal characters. Invocation requests contain a
@@ -66,8 +66,8 @@ target. This simple policy may be tightened against abuse later.
 ## Box workers
 
 Boxes execute on workers. A server-side scheduler assigns each box to at most
-one live worker at a time and routes every method and resumed callback for that
-box to its owner. A worker may own multiple boxes. If a worker exits, all of its
+one live worker at a time and routes every method and resumed task continuation
+for that box to its owner. A worker may own multiple boxes. If a worker exits, all of its
 ownership is released before queued work is reassigned. This gives each box a
 serial execution order without creating cross-box transactions.
 
@@ -87,22 +87,23 @@ particularly not allowed:
  - using undefined global variables
  - classes, inheritance, prototypes
  - user-controlled runtime code evaluation
- - async
+ - native promises, `async`, and `await`
  - general effects
 
 Validated code runs natively as JavaScript inside its assigned worker; Boxos does
 not interpret it. The trusted worker runtime may compile a validated method or
-callback using runtime-captured intrinsics. Compilation must happen only after
-successful validation, and dynamic compilation facilities such as `eval` and
-`Function` are never exposed to box code. Methods and callbacks execute with
-only their explicit arguments and approved runtime bindings in scope.
+task continuation using runtime-captured intrinsics. Compilation must happen
+only after successful validation, and dynamic compilation facilities such as
+`eval` and `Function` are never exposed to box code. Methods and continuations
+execute with only their explicit arguments and approved runtime bindings in
+scope.
 
-Each box method gets as first argument a ctx. this offers different kinds of effects:
+Each box method gets `ctx` and `input`. The context offers:
  - storage: read and write to private and public storage of that box
- - invoke(boxid, methodname, argument, callback, callbackContext): invokes another box with pure data and optionally resumes the callback with explicit durable context
- - message(clientid, message): messages a client session
- - publish(kind: "box" | "blob" | "page" | "account", args): creates a public entity
- - request(request, callback, callbackContext): performs a durable structured request to a public HTTPS JSON API
+ - invoke(boxid, methodname, argument): returns a durable Task for another box invocation
+ - message(clientid, message): returns a message ID and schedules best-effort delivery after commit
+ - publish(kind: "box" | "blob" | "page" | "account", args): returns a durable Task for publication
+ - request(request): returns a durable Task for a structured public HTTPS JSON request
  - transfer(receiverPub, amount): atomically transfers fuel from `ctx.account`; private keys are never passed to box code
 
 ctx also exposes the account behind the invokation and the clientId
@@ -112,30 +113,117 @@ Clients may directly invoke boxes, publish entities, send messages, transfer
 their own fuel, and read immutable public entities or any public box storage.
 They authenticate these operations with their page account. Box methods and
 direct clients use the same operation handlers; only completion differs. A box
-resumes a durable callback, while a client receives an HTTP response or client
+composes durable Tasks, while a client receives an HTTP response or client
 message. Neither clients nor other boxes may directly read private storage or
 write any box storage.
 
-## Effects and callbacks
+## Durable Tasks
 
-An effect is declared synchronously during a turn but may finish later. When an
-effect is declared, the trusted runtime serializes its callback using the
-captured intrinsic `Function.prototype.toString.call(callback)`. It must not use
-a user-overridable `callback.toString` property.
+`ctx.invoke`, `ctx.publish`, and `ctx.request` declare effects synchronously and
+return frozen runtime-owned **Tasks**. A Task resembles a Promise but is not a
+native Promise and is not a pure BoxOS value. It cannot be stored, messaged, or
+passed as box input. Its identity, state, and continuation graph are persisted
+by the runtime rather than retained in a worker heap.
 
-The exact callback source is parsed and validated by the same safe-JavaScript
-parser used for box methods. Unsupported functions and callbacks containing
-free variables are rejected. A callback may refer only to its parameters,
-callback-local declarations, and fixed runtime bindings such as `ctx`, `JSON`,
-and approved deterministic helpers. Data needed from the initiating method must
-be supplied explicitly as pure callback context.
+A method or continuation may return a pure value for immediate completion or a
+Task for eventual completion. Returning a Task makes the current box invocation
+adopt that Task: its remote caller does not receive a successful result until
+the adopted Task settles. This allows boxes to expose composable asynchronous
+operations without preserving a JavaScript stack.
 
-The callback source, context, origin box, role, runtime version, and effect ID
-are persisted in the same transaction that declares the effect. Once the
-effect settles, its selected callback is queued on the origin box and runs as a
-fresh execution turn. No closure, stack, heap, or instruction pointer is
-preserved. Effect settlement and callback turns must be idempotent so duplicate
-delivery cannot run a callback twice.
+Tasks expose this restricted interface:
+
+```js
+task.then(successCallback, callbackContext)
+task.catch(failureCallback, callbackContext)
+```
+
+Both methods return a new durable Task. On success, `then` calls its callback
+with `(result, context)`; on failure, `catch` calls its callback with
+`(error, context)`. The optional context defaults to `null` and is copied as a
+pure BoxOS value when the continuation is registered. A skipped `then` passes a
+failure through, and a skipped `catch` passes a success through. A continuation
+may return a pure value or another Task. Returning a Task adopts its outcome.
+Throwing rejects the next Task. Task adoption cycles are rejected. There is no
+`.finally`, Promise constructor, Promise assimilation, microtask API, `async`,
+or `await`.
+
+A Task may have multiple continuations, creating independent durable branches.
+Sibling continuations have no ordering guarantee beyond the ordinary serial
+turn order of their origin box. Calling `.then` or `.catch` registers the
+continuation synchronously during the current turn; it does not execute a
+settled Task's callback inline.
+
+An effect is accepted only if the declaring turn commits, even if its Task is
+not returned or observed. Unobserved effects still run; their result remains
+persisted and no continuation is scheduled. This permits explicit
+fire-and-forget work without making effect dispatch part of the transaction.
+
+### Serializable continuations
+
+When `.then` or `.catch` is called, the trusted runtime serializes the callback
+using its captured intrinsic:
+
+```js
+Function.prototype.toString.call(callback)
+```
+
+It never uses a user-overridable `callback.toString` property. The exact source
+is parsed and validated by the same safe-JavaScript parser used for box methods.
+Native, bound, proxied, dynamically constructed, arrow, and otherwise
+unsupported functions are rejected.
+
+A durable continuation may refer only to its parameters, continuation-local
+declarations, and fixed runtime bindings such as `ctx`, `JSON`, and approved
+deterministic helpers. It cannot capture a method local because no lexical
+environment is persisted. Required data is copied explicitly into the optional
+pure callback context:
+
+```js
+return ctx.invoke(input.target, "read", input.query).then(
+  function completed(result, saved) {
+    ctx.storage.private.set(saved.key, result);
+    return result;
+  },
+  { key: input.key }
+);
+```
+
+This is invalid because `key` is a free variable:
+
+```js
+let key = input.key;
+return ctx.invoke(input.target, "read", null).then(
+  function completed(result) {
+    ctx.storage.private.set(key, result);
+    return result;
+  }
+);
+```
+
+The continuation source, context, origin box, role, runtime version, source Task,
+and resulting Task are persisted in the same transaction that registers the
+continuation. Once the source Task settles, the selected continuation is queued
+on its origin box and runs as a fresh atomic execution turn with a fresh heap.
+No closure, stack, heap, native Promise, or instruction pointer is preserved.
+
+Task settlement, adoption, and continuation scheduling are idempotent. A Task
+settles exactly once, and duplicate delivery cannot execute a continuation more
+than once. Worker or server failure may delay progress but cannot erase a
+committed Task graph. The originating account and client identity flow through
+the graph, and all subsequent fuel usage is charged to that account.
+
+### Invocation completion
+
+Every box invocation has durable completion state. A pure method result settles
+it immediately. A returned Task links it to that Task's eventual outcome. A
+`ctx.invoke` Task therefore settles only after the target method's complete
+returned Task chain, not merely after its first synchronous turn.
+
+For an external HTTP caller, losing the connection does not cancel the durable
+invocation. Retrying the exact same signed request reattaches to the same
+idempotent invocation and observes its existing or eventual outcome rather than
+starting another operation.
 
 Outbound requests are structurally narrower than browser `fetch`. A request
 contains a public DNS host, absolute path, `GET` or `POST` method, end-to-end
@@ -165,10 +253,14 @@ and small component classes.
 Clients receive messages over Server-Sent Events rather than WebSockets. A page
 opens a signed `POST /v1/events` stream for its own client ID, which is currently
 its page-account public key. `ctx.message` notifications are collected during a
-turn and broadcast from memory only after that turn commits. They are not stored
-in SQLite and may be lost when the recipient is offline or the server fails
-after commit. Applications must store durable data in box storage; reconnecting
-clients reload that state. The reference client exposes SSE as `boxos.events`.
+turn and broadcast from memory only after that turn commits. A missing client or
+failed event stream therefore cannot roll back box state. The message ID returned
+by `ctx.message` can be correlated with post-turn delivery metadata; `delivered`
+means that at least one live stream accepted the event, not that it was read.
+Notifications are not stored in SQLite and may be lost when the recipient is
+offline or the server fails after commit. Applications must store durable data
+in box storage; reconnecting clients reload that state. The reference client
+exposes SSE as `boxos.events`.
 
 
 ## Userspace implementations
@@ -176,7 +268,12 @@ clients reload that state. The reference client exposes SSE as `boxos.events`.
 Boxos hosts a reference client.js that can be requested under URL.client.js. Pages should use that client.
 it will expose methods to communicate with the server and receive messages. it will store its clientId keys securely in the browser. A client Id should be persistent through page visits.
 
-Boxos also hosts a CLI.js based on the client logic for easy integration with terminal agents.
+BoxOS also hosts a dependency-free standalone CLI at `/boxos-cli.js` (and the
+short alias `/boxos`) for developers, automation, and terminal agents. It runs
+on Node.js 20+ or Bun, manages a local Ed25519 account file, signs mutations,
+and emits machine-readable JSON. It supports publishing boxes, blobs, and pages;
+invoking boxes; transferring and messaging; and reading public entities and
+startup deployments.
 
 A Boxos app is a page that uses specific Boxes. pages do share functionality by reusing boxes, therefore apps are natively interoperable.
 

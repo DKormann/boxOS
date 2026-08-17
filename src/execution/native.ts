@@ -11,7 +11,7 @@ export type RuntimeContext = Readonly<{
     callback: Function,
     context?: unknown,
   ): void
-  message(clientId: string, message: unknown): void
+  message(clientId: string, message: unknown): string
   publish(
     kind: "account" | "blob" | "box" | "page",
     argumentsValue: unknown,
