@@ -49,6 +49,13 @@ function methodTurn(id: string, source: string): WorkerTurn {
   }
 }
 
+test("the landing page uses the BoxOS design and guides agents", async () => {
+  const source = await Bun.file(new URL("../public/index.html", import.meta.url)).text()
+  expect(source.includes('/v1/blobs/{{DEFAULT_CSS}}')).toBe(true)
+  expect(source.includes("Try BoxOS")).toBe(true)
+  expect(source.includes("agents: read /AGENTS.md")).toBe(true)
+})
+
 test("canonical BOXOS values are independent of object insertion order", () => {
   expect(stringifyBoxValue({ z: 1, a: { y: true, x: null } })).toBe(
     stringifyBoxValue({ a: { x: null, y: true }, z: 1 }),
