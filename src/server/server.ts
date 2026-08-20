@@ -63,9 +63,9 @@ export async function startBoxOSServer(options: {
   }
   const eventConnections = new Map<string, Set<EventConnection>>()
 
-  function broadcastClientNotification(notification: ClientNotification): void {
+  function broadcastClientNotification(notification: ClientNotification): boolean {
     const connections = eventConnections.get(notification.clientId)
-    if (!connections?.size) return
+    if (!connections?.size) return false
     const data = stringifyBoxValue({
       id: notification.id,
       sender: notification.sender,
@@ -74,14 +74,17 @@ export async function startBoxOSServer(options: {
     const bytes = new TextEncoder().encode(
       `id: ${notification.id}\nevent: message\ndata: ${data}\n\n`,
     )
+    let delivered = false
     for (const connection of [...connections]) {
       try {
         connection.controller.enqueue(bytes)
         connection.lastWrite = Date.now()
+        delivered = true
       } catch {
         connection.close()
       }
     }
+    return delivered
   }
 
   function keepEventStreamsAlive(): void {
@@ -160,15 +163,7 @@ export async function startBoxOSServer(options: {
           if (!ids["default.css"] || !ids["app-explorer.page"]) {
             throw new Error("Landing page deployments are unavailable")
           }
-          const explorerUrl = new URL(request.url)
-          if (request.headers.get("x-forwarded-proto") == "https") explorerUrl.protocol = "https:"
-          const hostLabels = explorerUrl.hostname.split(".")
-          explorerUrl.hostname = explorerUrl.hostname == "127.0.0.1" || explorerUrl.hostname == "localhost"
-            ? `${ids["app-explorer.page"]}.localhost`
-            : [ids["app-explorer.page"], ...hostLabels.slice(hostLabels.length > 2 ? 1 : 0)].join(".")
-          explorerUrl.pathname = "/"
-          explorerUrl.search = ""
-          explorerUrl.hash = ""
+          const explorerUrl = new URL(`https://${ids["app-explorer.page"]}.boxos.org/`)
           const source = (await Bun.file(new URL("../../public/index.html", import.meta.url)).text())
             .replaceAll("{{DEFAULT_CSS}}", ids["default.css"])
             .replaceAll("{{EXPLORER_URL}}", explorerUrl.href)
@@ -177,6 +172,33 @@ export async function startBoxOSServer(options: {
               "content-type": "text/html; charset=utf-8",
               "cache-control": "public, max-age=300",
               "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            },
+          })
+        }
+        if (
+          (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/docs" || url.pathname == "/docs/")
+        ) {
+          return new Response(null, {
+            status: 308,
+            headers: { location: "/developers" },
+          })
+        }
+        if (
+          (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/developers" || url.pathname == "/developers/")
+        ) {
+          const deployment = database.query<{ id: string }>(
+            "SELECT id FROM startup_deployments WHERE name = 'default.css'",
+          ).get()
+          if (!deployment) throw new Error("Developer documentation stylesheet is unavailable")
+          const source = (await Bun.file(new URL("../../public/developers.html", import.meta.url)).text())
+            .replaceAll("{{DEFAULT_CSS}}", deployment.id)
+          return new Response(request.method == "HEAD" ? null : source, {
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "public, max-age=300",
+              "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             },
           })
         }
@@ -200,6 +222,19 @@ export async function startBoxOSServer(options: {
               row.name,
               { kind: row.kind, id: row.id },
             ])),
+          })
+        }
+        if (
+          (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/boxos-cli.js" || url.pathname == "/boxos")
+        ) {
+          const source = await Bun.file(new URL("../../public/boxos-cli.js", import.meta.url)).text()
+          return new Response(request.method == "HEAD" ? null : source, {
+            headers: {
+              "content-type": "text/javascript; charset=utf-8",
+              "content-disposition": "attachment; filename=\"boxos\"",
+              "cache-control": "public, max-age=300",
+            },
           })
         }
         if (request.method == "GET" && url.pathname == "/client.js") {
@@ -299,7 +334,7 @@ export async function startBoxOSServer(options: {
         return json({ error: "Not found" }, 404)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        const status = error instanceof TypeError
+        const status = error instanceof TypeError || error instanceof SyntaxError
           ? 400
           : /signature|account/i.test(message)
             ? 401

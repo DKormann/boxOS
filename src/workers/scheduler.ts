@@ -5,9 +5,11 @@ export type WorkerTurn = {
   boxId: string
   account: string
   clientId: string | null
+  completionTaskId?: string
+  rootTaskId?: string
   procedure:
     | { kind: "method"; source: string; input: BoxValue }
-    | { kind: "callback"; source: string; result: BoxValue; context: BoxValue }
+    | { kind: "continuation"; source: string; value: BoxValue; context: BoxValue }
 }
 
 export type ClientNotification = {
@@ -17,8 +19,19 @@ export type ClientNotification = {
   message: BoxValue
 }
 
+export type ClientDelivery = {
+  id: string
+  clientId: string
+  delivered: boolean
+}
+
 export type WorkerTurnResult =
-  | { ok: true; value: BoxValue; notifications?: ClientNotification[] }
+  | {
+    ok: true
+    value?: BoxValue
+    notifications?: ClientNotification[]
+    deliveries?: ClientDelivery[]
+  }
   | { ok: false; error: string }
 
 export interface BoxWorker {
@@ -34,9 +47,9 @@ export class BoxScheduler {
   private readonly workers = new Map<string, BoxWorker>()
   private readonly owners = new Map<string, string>()
   private readonly tails = new Map<string, Promise<void>>()
-  private notificationHandler: (notification: ClientNotification) => void = () => {}
+  private notificationHandler: (notification: ClientNotification) => boolean = () => false
 
-  setNotificationHandler(handler: (notification: ClientNotification) => void): void {
+  setNotificationHandler(handler: (notification: ClientNotification) => boolean): void {
     this.notificationHandler = handler
   }
 
@@ -80,14 +93,21 @@ export class BoxScheduler {
 
     const result = await worker.execute(turn)
     if (!result.ok) return result
+    const deliveries: ClientDelivery[] = []
     for (const notification of result.notifications ?? []) {
+      let delivered = false
       try {
-        this.notificationHandler(notification)
+        delivered = this.notificationHandler(notification)
       } catch {
         // Notifications are best-effort and cannot change a committed turn.
       }
+      deliveries.push({ id: notification.id, clientId: notification.clientId, delivered })
     }
-    return { ok: true, value: result.value }
+    return {
+      ok: true,
+      ...(result.value === undefined ? {} : { value: result.value }),
+      ...(deliveries.length ? { deliveries } : {}),
+    }
   }
 
   private leastLoadedWorker(): BoxWorker | undefined {

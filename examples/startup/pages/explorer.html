@@ -93,16 +93,10 @@
     let editing = null;
 
     function accountsUrl() {
-      const url = new URL(location.href); const labels = url.hostname.split(".");
-      url.hostname = url.hostname === "127.0.0.1" || url.hostname === "localhost"
-        ? accountsPage + ".localhost" : [accountsPage, ...labels.slice(1)].join(".");
-      url.pathname = "/"; url.search = ""; url.hash = ""; return url;
+      return new URL("https://" + accountsPage + ".boxos.org/");
     }
     function pageUrl(pageId) {
-      const url = new URL(location.href); const labels = url.hostname.split(".");
-      url.hostname = url.hostname === "127.0.0.1" || url.hostname === "localhost"
-        ? pageId + ".localhost" : [pageId, ...labels.slice(1)].join(".");
-      url.pathname = "/"; url.search = ""; url.hash = ""; return url.href;
+      return "https://" + pageId + ".boxos.org/";
     }
     function pageId(value) {
       const raw = value.trim().toLowerCase();
@@ -134,18 +128,8 @@
         const app = await boxos.readPublic(appsBox, "app|" + id); return app.found ? app.value : null;
       }))).filter(Boolean);
     }
-    async function wait(requestId) {
-      for (let attempt = 0; attempt < 50; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        const result = await boxos.readPublic(appsBox, "status|" + requestId);
-        if (result.found) { if (!result.value.ok) throw new Error(result.value.error); return result.value; }
-      }
-      throw new Error("The operation timed out.");
-    }
     async function mutate(method, input) {
-      const requestId = crypto.randomUUID();
-      await boxos.invoke(appsBox, method, { ...input, owner: account, requestId });
-      return wait(requestId);
+      return boxos.invoke(appsBox, method, { ...input, owner: account, requestId: crypto.randomUUID() });
     }
     function installedItem(appId) { return installed.find(item => item.appId === appId); }
     function button(text, kind, action) {
@@ -185,11 +169,10 @@
       el["form-description"].textContent = app ? "Point this listing at a newly published immutable page." : "Add a BoxOS page to the public catalog.";
       el.name.value = app?.name || ""; el["page-url"].value = app ? pageUrl(app.pageId) : ""; el.save.textContent = app ? "Update" : "Publish"; el["publish-dialog"].showModal();
     }
-    async function requestInstalled() { await boxos.invoke(appsBox, "loadInstalled", { owner: account, requestId: crypto.randomUUID() }); }
-    function receive(event) {
-      const payload = event.message; if (!payload || typeof payload !== "object") return;
-      if (payload.type === "apps.error") el.status.textContent = payload.error;
-      if (payload.type === "apps.installed") { installed = payload.installed; render(); }
+    async function requestInstalled() {
+      const result = await boxos.invoke(appsBox, "loadInstalled", { owner: account, requestId: crypto.randomUUID() });
+      installed = result.value;
+      render();
     }
 
     const result = new URLSearchParams(location.hash.slice(1));
@@ -219,8 +202,7 @@
     if (account && await hasGrant()) {
       el.identity.hidden = false; el["sign-out"].hidden = false; el["sign-in"].hidden = true; el.publish.hidden = false;
       el.avatar.textContent = account[0].toUpperCase(); el.avatar.title = "Signed in as " + short(account);
-      void boxos.events(receive).catch(error => { el.status.textContent = error.message; });
-      await new Promise(resolve => setTimeout(resolve, 100)); await requestInstalled();
+      await requestInstalled();
     } else if (account) { account = null; localStorage.removeItem("apps-account"); }
     render();
   </script>

@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Build and publish applications on BoxOS.">
+  <title>Developer docs · BoxOS</title>
+  <!-- AI and coding agents: the complete machine-readable guide is at /AGENTS.md. -->
+  <link rel="stylesheet" href="/v1/blobs/{{DEFAULT_CSS}}">
+  <style>
+    .shell { width: min(1080px, calc(100% - 32px)); margin: 0 auto; }
+    header { min-height: 76px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--bo-border); }
+    .brand { display: flex; align-items: center; gap: 11px; color: var(--bo-text); font-size: 17px; font-weight: 750; text-decoration: none; }
+    .logo { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; color: white; background: var(--bo-accent); }
+    nav { display: flex; gap: 8px; }
+    nav a { display: inline-flex; text-decoration: none; }
+    .hero { padding: 72px 0 48px; border-bottom: 1px solid var(--bo-border); }
+    .eyebrow { margin: 0 0 12px; color: var(--bo-accent-hover); font-weight: 700; }
+    h1 { max-width: 760px; margin: 0; font-size: clamp(40px, 7vw, 64px); line-height: 1.04; letter-spacing: -.045em; }
+    .lede { max-width: 700px; margin: 20px 0 0; color: var(--bo-text-muted); font-size: 18px; line-height: 1.65; }
+    .layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 54px; padding: 54px 0 90px; }
+    aside { position: sticky; top: 24px; align-self: start; display: grid; gap: 5px; }
+    aside a { padding: 7px 10px; border-radius: 8px; color: var(--bo-text-muted); text-decoration: none; }
+    aside a:hover { color: var(--bo-text); background: var(--bo-surface-raised); }
+    article { min-width: 0; }
+    section { scroll-margin-top: 24px; margin-bottom: 58px; }
+    h2 { margin: 0 0 14px; font-size: 28px; letter-spacing: -.02em; }
+    h3 { margin: 28px 0 10px; font-size: 18px; }
+    p, li { line-height: 1.7; }
+    p { color: var(--bo-text-muted); }
+    ul, ol { padding-left: 22px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+    pre { overflow-x: auto; margin: 14px 0; padding: 18px; border: 1px solid var(--bo-border); border-radius: 12px; background: var(--bo-surface-raised); line-height: 1.55; }
+    pre code { font-size: 13px; }
+    .note { padding: 18px 20px; border-left: 3px solid var(--bo-accent); border-radius: 8px; background: var(--bo-surface-raised); color: var(--bo-text-muted); }
+    .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+    .links a { display: inline-flex; text-decoration: none; }
+    footer { min-height: 86px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--bo-border); color: var(--bo-text-muted); font-size: 13px; }
+    @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } aside { position: static; grid-template-columns: repeat(2, 1fr); } nav .agent-guide { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <a class="brand" href="/"><span class="logo">B</span>BoxOS</a>
+      <nav><a class="bo-button bo-button--quiet agent-guide" href="/AGENTS.md">Agent guide</a><a class="bo-button bo-button--primary" href="/boxos-cli.js" download="boxos">Download CLI</a></nav>
+    </header>
+
+    <main>
+      <div class="hero">
+        <p class="eyebrow">Developer documentation</p>
+        <h1>Build small, durable BoxOS apps.</h1>
+        <p class="lede">Publish immutable pages, put state and authority in boxes, and compose asynchronous work with durable Tasks.</p>
+      </div>
+
+      <div class="layout">
+        <aside aria-label="Documentation navigation">
+          <a href="#quickstart">Quickstart</a>
+          <a href="#model">Core model</a>
+          <a href="#pages">Pages</a>
+          <a href="#boxes">Boxes</a>
+          <a href="#tasks">Tasks</a>
+          <a href="#cli">CLI</a>
+          <a href="#api">HTTP API</a>
+        </aside>
+
+        <article>
+          <section id="quickstart">
+            <h2>Quickstart</h2>
+            <p>Download the dependency-free CLI, create an Ed25519 account, and publish an HTML page.</p>
+            <pre><code>curl -fsSL https://boxos.org/boxos-cli.js -o boxos
+chmod +x boxos
+./boxos account create
+./boxos page publish ./index.html</code></pre>
+            <p>Each command writes one JSON value to stdout. The page command returns its immutable ID and public <code>https://&lt;page-id&gt;.boxos.org/</code> URL.</p>
+          </section>
+
+          <section id="model">
+            <h2>Core model</h2>
+            <ul>
+              <li><strong>Accounts</strong> are Ed25519 public keys. Private keys remain with clients.</li>
+              <li><strong>Blobs</strong> are immutable text addressed by SHA-256.</li>
+              <li><strong>Pages</strong> are immutable HTML blobs with short public IDs.</li>
+              <li><strong>Boxes</strong> contain validated methods and their own public and private storage.</li>
+            </ul>
+            <p>A box method is one atomic SQLite turn. Its storage writes, transfers, Task declarations, and effects either commit together or roll back together.</p>
+          </section>
+
+          <section id="pages">
+            <h2>Pages</h2>
+            <p>Pages are ordinary HTML modules. Import the reference browser client from <code>/client.js</code>.</p>
+            <pre><code>&lt;!doctype html&gt;
+&lt;button id="run"&gt;Run&lt;/button&gt;
+&lt;script type="module"&gt;
+  import { boxos } from "/client.js";
+
+  document.querySelector("#run").onclick = async () =&gt; {
+    const result = await boxos.invoke("BOX_ID", "increment", { amount: 1 });
+    console.log(result.value);
+  };
+&lt;/script&gt;</code></pre>
+            <p>Every page subdomain has a separate browser origin and an origin-scoped page account stored in IndexedDB.</p>
+          </section>
+
+          <section id="boxes">
+            <h2>Boxes</h2>
+            <p>A box definition is JSON containing JavaScript method bodies. Methods receive <code>ctx</code> and <code>input</code> and run in a deliberately small, validated JavaScript subset.</p>
+            <pre><code>{
+  "methods": {
+    "increment": "let n = ctx.storage.public.get(\"count\") || 0; n = n + input.amount; ctx.storage.public.set(\"count\", n); return n;"
+  }
+}</code></pre>
+            <p>Add an optional 16-to-128-character <code>nonce</code> to create a box with independent storage while reusing identical methods. The nonce participates in the content hash but is not tied to an account and grants no ownership.</p>
+            <pre><code>{
+  "nonce": "550e8400-e29b-41d4-a716-446655440000",
+  "methods": { "run": "return input;" }
+}</code></pre>
+            <h3>Method context</h3>
+            <pre><code>ctx.account
+ctx.clientId
+ctx.storage.public.get(key)
+ctx.storage.public.set(key, value)
+ctx.storage.private.get(key)
+ctx.storage.private.set(key, value)
+ctx.transfer(receiver, amount)
+ctx.message(clientId, value)
+ctx.invoke(boxId, method, input)
+ctx.publish(kind, arguments)
+ctx.request(request)</code></pre>
+            <p>Box values are JSON-like: null, booleans, finite numbers, strings, arrays, and plain objects. Functions, Tasks, binary data, cycles, and <code>undefined</code> are not values.</p>
+          </section>
+
+          <section id="tasks">
+            <h2>Durable Tasks</h2>
+            <p><code>ctx.invoke</code>, <code>ctx.publish</code>, and <code>ctx.request</code> return runtime-owned Tasks. Returning a Task makes the caller wait for its complete chain.</p>
+            <pre><code>return ctx.invoke(input.target, "read", input.query).then(
+  function completed(result, saved) {
+    ctx.storage.private.set(saved.key, result);
+    return result;
+  },
+  { key: input.key }
+);</code></pre>
+            <p>Continuations execute later as fresh atomic turns. They cannot capture method locals; durable data must be supplied through the explicit callback context.</p>
+            <div class="note">Tasks resemble Promises but are not native Promises. Box methods do not use <code>async</code>, <code>await</code>, or <code>Promise</code>.</div>
+          </section>
+
+          <section id="cli">
+            <h2>CLI</h2>
+            <pre><code>./boxos box publish ./box.json
+./boxos page publish ./index.html
+./boxos invoke &lt;box-id&gt; increment '{"amount":1}'
+./boxos blob publish ./data.txt
+./boxos storage get &lt;box-id&gt; count
+./boxos startup
+./boxos health</code></pre>
+            <h3>Link local boxes</h3>
+            <p>Pages and boxes can reference a box definition by a path relative to the file containing the reference:</p>
+            <pre><code>const counterBox = "{{BOXOS_BOX:./counter.box.json}}";</code></pre>
+            <p>Publishing resolves the complete graph, calculates its content IDs, and validates every linked box locally with the same parser used by the server. Only after the whole graph passes does the CLI publish boxes in dependency order and replace each marker with its immutable ID. Repeated paths are deduplicated and circular dependencies are rejected.</p>
+            <p>A parser rejection exits non-zero, reports the local box path, method, and source location, and publishes nothing. The server validates every box again as the security boundary.</p>
+            <p>Use <code>--key</code>, <code>--url</code>, <code>BOXOS_KEY</code>, and <code>BOXOS_URL</code> to override configuration. Run <code>./boxos --help</code> for every command.</p>
+          </section>
+
+          <section id="api">
+            <h2>HTTP API</h2>
+            <p>Public reads require no authentication. Mutations use canonical JSON and Ed25519 signatures.</p>
+            <pre><code>GET  /health
+GET  /v1/startup
+GET  /v1/boxes/&lt;box-id&gt;
+GET  /v1/boxes/&lt;box-id&gt;/storage/public?key=&lt;key&gt;
+GET  /v1/blobs/&lt;blob-id&gt;
+GET  /v1/pages/&lt;page-id&gt;
+POST /v1/boxes
+POST /v1/invoke
+POST /v1/operations
+POST /v1/events</code></pre>
+            <p>An invocation response is sent only after its returned durable Task settles. Exact signed-request replay is idempotent.</p>
+            <div class="links"><a class="bo-button bo-button--primary" href="/AGENTS.md">Complete protocol guide</a><a class="bo-button bo-button--quiet" href="/v1/startup">Startup deployments</a></div>
+          </section>
+        </article>
+      </div>
+    </main>
+
+    <footer><span>BoxOS developer docs</span><a href="/health">System status</a></footer>
+  </div>
+</body>
+</html>

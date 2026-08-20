@@ -3,13 +3,44 @@
 This document is the terminal-agent reference for the BoxOS 0.3.2 server in this
 repository. The server has no package dependencies and runs with Bun.
 
-## Start and inspect the server
+## Inspect BoxOS
 
 ```sh
-bun src/main.ts
-curl http://127.0.0.1:3000/health
-curl http://127.0.0.1:3000/v1/startup
+curl https://boxos.org/health
+curl https://boxos.org/v1/startup
 ```
+
+BoxOS hosts a dependency-free Node.js/Bun CLI for developers and agents:
+
+```sh
+curl -fsSL https://boxos.org/boxos-cli.js -o boxos
+chmod +x boxos
+./boxos account create
+./boxos page publish ./index.html
+```
+
+The CLI source is `src/cli/main.ts`; `bun scripts/build_cli.ts` generates the
+committed `public/boxos-cli.js` artifact. The CLI emits one JSON value on stdout,
+writes errors to stderr, and stores its Ed25519 key at
+`~/.boxos/account.json` by default. Use `--key`, `--url`,
+`BOXOS_KEY`, and `BOXOS_URL` to override those defaults. Run `./boxos --help`
+for publishing, invocation, transfer, messaging, and public-read commands.
+
+`box publish` and `page publish` resolve explicit local box links before
+publishing. Use a path relative to the file containing the link:
+
+```text
+{{BOXOS_BOX:./counter.box.json}}
+```
+
+Links may appear in page HTML or inside a box definition's method strings. The
+CLI resolves the complete graph, calculates its content IDs, and validates every
+linked definition locally with the same parser used by the server before it
+sends any publication. It then publishes boxes in dependency order and
+substitutes their immutable IDs. Repeated paths are deduplicated and dependency
+cycles are rejected. A parser rejection is reported on stderr with the local box
+path, method, and source location; a failed preflight publishes nothing. The
+server validates every definition again as the security boundary.
 
 The examples in `examples/startup/` are deployed idempotently at startup. The
 startup endpoint returns their current content-addressed IDs. Never hard-code an
@@ -22,6 +53,9 @@ examples/startup/              Example definitions deployed at startup
 examples/startup/pages/*.html  Ordinary immutable HTML page sources
 examples/startup/boxes/*.ts    Box method definitions
 public/client.js               Reference browser client
+public/boxos-cli.js            Generated standalone CLI
+public/developers.html         Human-facing developer documentation
+src/cli/main.ts                TypeScript CLI source
 src/server/server.ts           HTTP API
 src/server/service.ts          Signing protocol
 src/execution/native.ts        ctx API
@@ -75,9 +109,8 @@ Pages should be `.html` files. A minimal page is:
 Pages are available at:
 
 ```text
-http://<page-id>.localhost:3000/
-http://127.0.0.1:3000/v1/pages/<page-id>
 https://<page-id>.boxos.org/
+https://boxos.org/v1/pages/<page-id>
 ```
 
 Each page subdomain is a separate browser origin and receives a separate page
@@ -97,6 +130,21 @@ whole function declarations:
 }
 ```
 
+A definition may include an optional 16-to-128-character nonce:
+
+```json
+{
+  "nonce": "550e8400-e29b-41d4-a716-446655440000",
+  "methods": { "run": "return input;" }
+}
+```
+
+The box ID hashes the complete canonical definition. The same methods and nonce
+always identify the same box and storage; changing the nonce creates independent
+storage without changing the methods. The nonce is not tied to an account and
+does not grant ownership. Generate it client-side when distinct storage is
+needed, and retain it when retrying the same publication.
+
 Each method receives fixed bindings:
 
 ```text
@@ -104,15 +152,15 @@ ctx, input, JSON, Math, String, Number
 ```
 
 Methods run synchronously as validated native JavaScript in a worker. One method
-or resumed callback is one atomic SQLite turn. If it throws, times out, returns
-an invalid value, or its worker fails, its storage writes and declared effects
-roll back.
+or resumed Task continuation is one atomic SQLite turn. If it throws, times out,
+returns neither a pure value nor a durable Task, or its worker fails, its storage
+writes and declared effects roll back.
 
 The safe subset rejects ambient globals, `this`, classes, prototypes,
-`constructor`, dynamic evaluation, imports, `new`, arrow functions, async/await,
-and reflective escapes. `Math.random` is unavailable. Use ordinary named or
-anonymous `function` expressions for callbacks. Computed indexing has the
-restricted form `value[Number(expression)]`.
+`constructor`, dynamic evaluation, imports, `new`, arrow functions, native
+Promises, async/await, and reflective escapes. `Math.random` is unavailable. Use
+ordinary named or anonymous `function` expressions for Task continuations.
+Computed indexing has the restricted form `value[Number(expression)]`.
 
 ### Method context
 
@@ -127,44 +175,118 @@ ctx.storage.private.set(key, value)
 ctx.storage.private.delete(key)
 ctx.transfer(receiverAccount, amount)
 ctx.message(clientId, value)
-ctx.invoke(boxId, method, input, callback, callbackContext)
-ctx.publish(kind, arguments, callback, callbackContext)
+ctx.invoke(boxId, method, input)       // durable Task
+ctx.publish(kind, arguments)           // durable Task
+ctx.request(request)                    // durable Task
 ```
 
-`transfer` and `message` commit in the current turn. `invoke` and `publish` are
-durable effects. Their callbacks run later as fresh atomic turns on the origin
-box.
+`transfer` commits in the current turn. `message` returns a message ID and is
+accepted in the current turn, but delivery happens only after that turn commits.
+An unavailable or broken client never rolls back the turn. An HTTP invocation
+that emitted messages includes `deliveries: [{ id, clientId, delivered }]` in
+its result; `delivered` means at least one live event stream accepted the
+message, not that a human read it.
 
-Callback source is captured with the trusted
-`Function.prototype.toString.call(callback)`, parsed with the method parser, and
-persisted. A callback cannot capture method locals. Put everything it needs in
-explicit callback context:
+`invoke`, `publish`, and `request` return frozen runtime-owned durable Tasks, not
+native Promises. A method or continuation may return a pure value for immediate
+completion or a Task for eventual completion. Returning a Task makes the current
+invocation adopt its outcome. Tasks support:
 
 ```js
-ctx.invoke(target, "read", input, function completed(result, saved) {
-  ctx.storage.private.set(saved.key, result);
-}, { key: input.key });
+task.then(successCallback, callbackContext)
+task.catch(failureCallback, callbackContext)
+```
+
+Both return another Task. Continuations run later as fresh atomic turns on their
+origin box. They may return a pure value or another Task; throwing rejects the
+next Task. Tasks cannot be stored, messaged, or passed as box input. There is no
+`.finally`, native Promise, `async`, or `await`.
+
+Continuation source is captured with the trusted
+`Function.prototype.toString.call(callback)`, parsed with the method parser, and
+persisted. A continuation cannot capture method locals. Put everything it needs
+in explicit callback context:
+
+```js
+return ctx.invoke(input.target, "read", input.query).then(
+  function completed(result, saved) {
+    ctx.storage.private.set(saved.key, result);
+    return result;
+  },
+  { key: input.key }
+);
 ```
 
 This is invalid because `key` is a free variable:
 
 ```js
 let key = input.key;
-ctx.invoke(target, "read", null, function completed(result) {
-  ctx.storage.private.set(key, result);
-});
+return ctx.invoke(input.target, "read", null).then(
+  function completed(result) {
+    ctx.storage.private.set(key, result);
+    return result;
+  }
+);
 ```
 
 ### Publishing from a box
 
 ```js
-ctx.publish("blob", { text: "...", contentType: "text/plain" }, callback, context);
-ctx.publish("page", { blobId: "..." }, callback, context);
-ctx.publish("box", { methods: { run: "return input;" } }, callback, context);
-ctx.publish("account", { pubkey: "..." }, callback, context);
+return ctx.publish("blob", {
+  text: "...",
+  contentType: "text/plain"
+}).then(function published(result) {
+  return result.id;
+});
+
+ctx.publish("page", { blobId: "..." });
+ctx.publish("box", { methods: { run: "return input;" } });
+ctx.publish("account", { pubkey: "..." });
 ```
 
-A successful publication callback receives `{ id }`.
+A successful publication Task settles with `{ id }`. An effect is still durable
+when its Task is not returned or observed, allowing explicit fire-and-forget
+publication.
+
+### Public HTTPS requests from a box
+
+`ctx.request` declares a durable, non-streaming HTTPS request. It is deliberately
+not raw `fetch`: the structure admits only public HTTPS JSON API requests.
+
+```js
+return ctx.request({
+  host: "api.example.com",
+  path: "/v1/messages?format=json",
+  method: "POST",
+  headers: { Authorization: "Bearer " + input.token },
+  body: { message: input.message }
+}).then(function completed(response, saved) {
+  if (response.ok) ctx.storage.private.set(saved.key, response.body);
+  else ctx.message(saved.clientId, { error: response.error || response.body });
+  return response;
+}, { key: "last-response", clientId: ctx.clientId });
+```
+
+The API accepts only:
+
+- a multi-label public DNS `host`, without a scheme, port, user info, or IP literal;
+- an absolute `path` of at most 4096 characters;
+- `GET` without a body or `POST` with an optional pure-value JSON body;
+- ordinary end-to-end string headers. Transport headers such as `Host`,
+  `Content-Length`, and `Transfer-Encoding` are runtime-owned.
+
+Requests always use HTTPS on port 443, pin a publicly routable DNS result for
+the TLS connection, validate the certificate for `host`, and never follow
+redirects. Private, loopback, link-local, mixed public/private DNS, and other
+non-public destinations are rejected. Request and response bodies are limited
+to 256 KiB, and requests time out after 30 seconds.
+
+The request Task settles with
+`{ ok, requestId, status, contentType, body }` for an HTTP response or
+`{ ok: false, requestId, error }` for a transport failure. JSON responses become
+pure BoxOS values; other response bodies are strings. As with all external POST
+requests, a crash after remote acceptance but before durable settlement can
+cause a retry. Use an upstream idempotency key when available.
 
 ## Signing terminal requests
 
@@ -216,7 +338,10 @@ All request and response bodies below are JSON unless stated otherwise.
 ```text
 GET /health
 GET /AGENTS.md
+GET /developers
 GET /client.js
+GET /boxos-cli.js
+GET /boxos
 GET /v1/startup
 GET /v1/boxes/<64-char-box-id>
 GET /v1/boxes/<box-id>/storage/public?key=<encoded-key>
@@ -308,6 +433,11 @@ or:
 { "ok": false, "error": "..." }
 ```
 
+If the method returns a durable Task, this is the outcome of the complete Task
+chain rather than only the initial synchronous turn. Disconnecting does not
+cancel it. Retrying the exact signed request observes the same idempotent
+invocation instead of starting another one.
+
 Signatures cover only the nested `request`, not the outer envelope.
 
 ### Direct operations
@@ -338,18 +468,21 @@ Supported operations:
 { "type": "publishPage", "blobId": "<blob-id>" }
 ```
 
-Publishing an app is normally:
+A direct `message` operation returns `{ id, delivered }`. It commits acceptance
+before attempting best-effort delivery, so `delivered: false` is a successful
+operation when the client is offline.
 
-1. publish its boxes;
-2. substitute returned box IDs into the `.html` source;
-3. publish the HTML with `publishBlob` and `text/html; charset=utf-8`;
-4. publish the returned blob with `publishPage`;
-5. print the page subdomain URL.
+The CLI performs this sequence for `page publish`: it transitively publishes
+`BOXOS_BOX` dependencies, substitutes their IDs, publishes the linked HTML blob,
+publishes the page, and prints its subdomain URL. A client using direct HTTP
+operations performs those same steps explicitly.
 
 ### Client events
 
-Messages are delivered with authenticated Server-Sent Events over a streaming
-POST, not a WebSocket and not the browser `EventSource` constructor.
+Messages use authenticated Server-Sent Events over a streaming POST, not a
+WebSocket and not the browser `EventSource` constructor. Delivery is transient
+and best effort: messages are not queued for offline clients, and delivery
+failure cannot abort the committed box turn or direct operation.
 
 Sign with purpose `boxos.events.v1`:
 
@@ -394,59 +527,79 @@ The client creates one non-extractable page-account key in origin-scoped
 IndexedDB. Human identity accounts managed by the Accounts example are distinct
 from this automatic page account.
 
-## Requesting account capabilities
+## Authentication and the reference Accounts flow
 
-Read `/v1/startup` to find `accounts.page`, `accounts.grants`, and
-`accounts.profiles`. Redirect the browser to the Accounts page with:
+BoxOS itself authenticates **accounts**, not people: an account is controlled by
+an Ed25519 private key, and every mutating request is authorized by its
+signature. A page automatically receives its own origin-scoped page account
+from `/client.js`; this is often enough for an app that only needs to identify
+its installation or authorize its own boxes.
 
-```text
-app_name=<displayed app name>
-app_account=<requesting page account>
-permissions=<comma-separated capabilities>
-redirect_uri=<HTTP(S) return URL>
-state=<unguessable state>
-```
+The startup Accounts app provides one useful, optional convention for apps that
+need authority from a human account. It is a reference implementation, not an
+enforced application structure. An app may instead use its own account picker,
+its own box-defined login flow, terminal keys, guest access, or another
+application-specific identity model. The protocol only requires signed
+accounts; authorization policy belongs in the target box.
 
-The Accounts page returns a URL fragment containing:
+### Optional human-account capability flow
 
-```text
-account=<selected human account>
-state=<original state>
-grants_box=<box ID>
-profiles_box=<box ID>
-```
+Use this flow when an app wants a human to approve named capabilities:
 
-or `error=access_denied`. Always verify `state`.
+1. Read `/v1/startup` and discover `accounts.page`, `accounts.grants`, and any
+   other startup dependencies. Do not hard-code their IDs.
+2. Redirect the browser to the discovered Accounts page with:
 
-A grant is public storage in the grants box under:
+   ```text
+   app_name=<displayed app name>
+   app_account=<requesting page account>
+   permissions=<comma-separated capabilities>
+   redirect_uri=<HTTP(S) return URL>
+   state=<unguessable state>
+   ```
+3. On return, validate the URL fragment and verify that `state` exactly matches
+   the value issued by the app. The fragment contains either
+   `error=access_denied`, or:
+
+   ```text
+   account=<selected human account>
+   state=<original state>
+   grants_box=<box ID>
+   profiles_box=<box ID>
+   ```
+4. Treat the returned human account as the account whose authority was
+   delegated; the app still signs requests with its page account. Pass the
+   selected account and the relevant capability to a box method, which must
+   perform the durable grant check.
+
+In the startup reference implementation, a grant is public storage in the
+grants box under:
 
 ```text
 <owner-account>|<grantee-page-account>|<permission>
 ```
 
-The startup App Explorer requests `manage apps`. Its catalog records and page
-version histories are public, while each human account's installed-app list is
-private box storage. Publishing a new immutable page version updates the stable
-catalog entry; installations can then explicitly move to that version.
+That key format, the grants box, and the permission names are conventions of
+the example—not BoxOS-wide requirements. Do not assume that a page has a human
+account, that a grant exists, or that a particular capability is available;
+handle denial and unavailable startup deployments explicitly.
 
-The Profiles box stores only public profile names. An app granted
-`manage account` can call:
+The startup Profiles box stores only public profile names. In that example, an
+app granted `manage account` can call:
 
 ```json
 {
   "method": "setName",
   "input": {
     "account": "<human-account>",
-    "name": "New name",
-    "requestId": "<uuid>"
+    "name": "New name"
   }
 }
 ```
 
-The call returns pending because the Profiles box checks the grant durably. Poll
-its public key `status|<requestId>`. Read the current name from
-`name|<human-account>`. The Accounts app sets the initial name during creation
-but does not expose profile renaming.
+The box durably checks the grant and returns `{ "name": "New name" }`. Read the
+current name from `name|<human-account>`. The Accounts app sets the initial name
+during creation but does not expose profile renaming.
 
 ## Repository startup examples
 

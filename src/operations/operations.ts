@@ -1,32 +1,14 @@
 import type { Database } from "bun:sqlite"
+import { validateBoxDefinition } from "../core/box-definition.ts"
 import { sha256Hex } from "../core/crypto.ts"
 import { copyBoxValue, stringifyBoxValue, type BoxValue } from "../core/values.ts"
-import { validateMethodCode } from "../language/parser.ts"
 
 const PUBLIC_KEY = /^[a-f0-9]{64}$/
 
 export async function publishBox(database: Database, value: unknown): Promise<string> {
-  const copied = copyBoxValue(value)
-  if (copied === null || Array.isArray(copied) || typeof copied != "object") {
-    throw new TypeError("Box definition must be an object")
-  }
-  const methodsValue = copied["methods"]
-  if (methodsValue === null || Array.isArray(methodsValue) || typeof methodsValue != "object") {
-    throw new TypeError("Box methods must be an object")
-  }
-
-  const methods: Record<string, string> = Object.create(null)
-  for (const [name, source] of Object.entries(methodsValue)) {
-    if (!/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(name)) {
-      throw new TypeError(`Invalid method name ${JSON.stringify(name)}`)
-    }
-    if (typeof source != "string") throw new TypeError(`Method ${name} source must be a string`)
-    validateMethodCode(source)
-    methods[name] = source
-  }
-  if (Object.keys(methods).length == 0) throw new TypeError("A box must define at least one method")
-
-  const definition = stringifyBoxValue({ methods })
+  const validated = validateBoxDefinition(value)
+  const methods = validated.methods
+  const definition = stringifyBoxValue(validated)
   const boxId = await sha256Hex(definition)
   database.transaction(() => {
     database.query(

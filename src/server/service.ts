@@ -20,7 +20,7 @@ import type {
   WorkerTurnResult,
 } from "../workers/scheduler.ts"
 
-export type BoxDefinition = { methods: Record<string, string> }
+export type { BoxDefinition } from "../core/box-definition.ts"
 
 export type BoxPublicationRequest = {
   nonce: string
@@ -82,10 +82,10 @@ export function invocationSigningMessage(request: InvocationRequest): string {
 
 export class BoxOSService {
   private readonly dispatcher: EffectDispatcher
-  private draining = false
-  private notificationHandler: (notification: ClientNotification) => void = () => {}
+  private drainTail = Promise.resolve()
+  private notificationHandler: (notification: ClientNotification) => boolean = () => false
 
-  setNotificationHandler(handler: (notification: ClientNotification) => void): void {
+  setNotificationHandler(handler: (notification: ClientNotification) => boolean): void {
     this.notificationHandler = handler
   }
 
@@ -187,17 +187,25 @@ export class BoxOSService {
       })()
     }
     if (operation.type == "message") {
-      const result = save({ id: operationId })
+      // Persist acceptance before attempting transient delivery. A missing or
+      // broken client can never invalidate the signed operation.
+      save({ id: operationId, delivered: false })
+      let delivered = false
       try {
-        this.notificationHandler({
+        delivered = this.notificationHandler({
           id: operationId,
           sender: account,
           clientId: operation.clientId,
           message: operation.message,
         })
       } catch {
-        // Transient delivery cannot invalidate the committed operation.
+        // Best-effort delivery failed after the operation committed.
       }
+      const result: BoxValue = { id: operationId, delivered }
+      this.database.query("UPDATE client_operations SET result = ? WHERE id = ?").run(
+        stringifyBoxValue(result),
+        operationId,
+      )
       return result
     }
     if (operation.type == "publishBlob") {
@@ -224,24 +232,64 @@ export class BoxOSService {
     if (!method) throw new Error(`Unknown method ${request.boxId}.${request.method}`)
 
     const turnId = await sha256Hex(`boxos.invoke.turn.v1\n${account}\n${stringifyBoxValue(request)}`)
-    const result = await this.scheduler.run({
-      id: turnId,
-      boxId: request.boxId,
-      account,
-      clientId: request.clientId,
-      procedure: { kind: "method", source: method.source, input: request.input },
-    })
-    void this.drainEffects()
-    return result
+    const completionTaskId = `${turnId}:completion`
+    this.dispatcher.trackDeliveries(completionTaskId)
+    let initial: WorkerTurnResult
+    try {
+      initial = await this.scheduler.run({
+        id: turnId,
+        boxId: request.boxId,
+        account,
+        clientId: request.clientId,
+        completionTaskId,
+        rootTaskId: completionTaskId,
+        procedure: { kind: "method", source: method.source, input: request.input },
+      })
+    } catch (error) {
+      this.dispatcher.takeDeliveries(completionTaskId)
+      throw error
+    }
+
+    let completion = this.database.query<{
+      status: "pending" | "fulfilled" | "rejected"
+      result: string | null
+      error: string | null
+    }>("SELECT status, result, error FROM tasks WHERE id = ?").get(completionTaskId)
+    if (completion?.status == "pending") {
+      await this.drainEffects()
+      completion = this.database.query<{
+        status: "pending" | "fulfilled" | "rejected"
+        result: string | null
+        error: string | null
+      }>("SELECT status, result, error FROM tasks WHERE id = ?").get(completionTaskId)
+    } else {
+      void this.drainEffects()
+    }
+    if (!completion || completion.status == "pending") {
+      this.dispatcher.takeDeliveries(completionTaskId)
+      return { ok: false, error: "Invocation Task could not make progress" }
+    }
+    if (completion.status == "rejected") {
+      this.dispatcher.takeDeliveries(completionTaskId)
+      return { ok: false, error: completion.error ?? "Invocation failed" }
+    }
+    const deliveries = [
+      ...(initial.ok ? initial.deliveries ?? [] : []),
+      ...this.dispatcher.takeDeliveries(completionTaskId),
+    ]
+    return {
+      ok: true,
+      value: parseBoxValue(completion.result!),
+      ...(deliveries.length ? { deliveries } : {}),
+    }
   }
 
-  async drainEffects(): Promise<void> {
-    if (this.draining) return
-    this.draining = true
-    try {
-      while (await this.dispatcher.dispatchNext()) { /* drain durable outbox */ }
-    } finally {
-      this.draining = false
+  drainEffects(): Promise<void> {
+    const drain = async () => {
+      while (await this.dispatcher.dispatchNext()) { /* drain durable work */ }
     }
+    const result = this.drainTail.then(drain, drain)
+    this.drainTail = result.then(() => undefined, () => undefined)
+    return result
   }
 }

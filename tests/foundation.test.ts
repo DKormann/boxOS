@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test"
-import { rm } from "node:fs/promises"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import { touchAccount } from "../src/accounts/accounts.ts"
-import { bytesToHex } from "../src/core/crypto.ts"
+import { validateBoxDefinition } from "../src/core/box-definition.ts"
+import { bytesToHex, sha256Hex } from "../src/core/crypto.ts"
 import { stringifyBoxValue, type BoxValue } from "../src/core/values.ts"
 import { deployStartupExamples } from "../examples/startup/deploy.ts"
+import { buildCli } from "../scripts/build_cli.ts"
 import { EffectDispatcher } from "../src/effects/dispatcher.ts"
+import { isPublicNetworkAddress, parseStructuredRequest } from "../src/effects/request.ts"
 import { executeTurn } from "../src/execution/turn.ts"
+import { publishBox } from "../src/operations/operations.ts"
 import {
   isValidCallbackCode,
   isValidMethodCode,
@@ -39,6 +43,10 @@ function installBox(database: ReturnType<typeof openDatabase>): void {
   )
 }
 
+async function drain(dispatcher: EffectDispatcher): Promise<void> {
+  while (await dispatcher.dispatchNext()) { /* drain durable work */ }
+}
+
 function methodTurn(id: string, source: string): WorkerTurn {
   return {
     id,
@@ -49,10 +57,198 @@ function methodTurn(id: string, source: string): WorkerTurn {
   }
 }
 
+test("the landing page uses the BoxOS design and guides agents", async () => {
+  const source = await Bun.file(new URL("../public/index.html", import.meta.url)).text()
+  expect(source.includes('/v1/blobs/{{DEFAULT_CSS}}')).toBe(true)
+  expect(source.includes("Try BoxOS")).toBe(true)
+  expect(source.includes('href="/boxos-cli.js"')).toBe(true)
+  expect(source.includes('href="/developers"')).toBe(true)
+  expect(source.includes("agents: read /AGENTS.md")).toBe(true)
+
+  const docs = await Bun.file(new URL("../public/developers.html", import.meta.url)).text()
+  expect(docs.includes('/v1/blobs/{{DEFAULT_CSS}}')).toBe(true)
+  expect(docs.includes("Durable Tasks")).toBe(true)
+  expect(docs.includes("https://boxos.org/boxos-cli.js")).toBe(true)
+})
+
+test("the standalone CLI is generated and runs with Bun and Node", async () => {
+  const directory = `/tmp/boxos-cli-${crypto.randomUUID()}`
+  const key = `${directory}/account.json`
+  const cli = decodeURIComponent(new URL("../public/boxos-cli.js", import.meta.url).pathname)
+  const bun = Bun.which("bun")!
+  try {
+    expect(await Bun.file(cli).text()).toBe(await buildCli())
+    const node = Bun.which("node")
+    if (node) {
+      expect(Bun.spawnSync({
+        cmd: [node, cli, "--version"],
+        stdout: "pipe",
+        stderr: "pipe",
+      }).exitCode).toBe(0)
+    }
+    const created = Bun.spawnSync({
+      cmd: [bun, cli, "--key", key, "account", "create"],
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(created.exitCode).toBe(0)
+    const account = JSON.parse(new TextDecoder().decode(created.stdout!)).account
+    expect(typeof account == "string" && account.length == 64).toBe(true)
+    if (node) {
+      expect(Bun.spawnSync({
+        cmd: [node, cli, "--key", key, "account", "show"],
+        stdout: "pipe",
+        stderr: "pipe",
+      }).exitCode).toBe(0)
+    }
+
+    const shown = Bun.spawnSync({
+      cmd: [bun, cli, "--key", key, "account", "show"],
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(shown.exitCode).toBe(0)
+    expect(JSON.parse(new TextDecoder().decode(shown.stdout!)).account).toBe(account)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("the CLI links and transitively publishes local box references", async () => {
+  const directory = `/tmp/boxos-cli-links-${crypto.randomUUID()}`
+  const key = `${directory}/account.json`
+  const cli = decodeURIComponent(new URL("../public/boxos-cli.js", import.meta.url).pathname)
+  const bun = Bun.which("bun")!
+  const runtime = Bun.which("node") ?? bun
+  const definitions: unknown[] = []
+  let pageSource = ""
+  const boxIds: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const body = await request.json() as {
+        request: { definition?: unknown; operation?: { type: string; text?: string } }
+      }
+      if (new URL(request.url).pathname == "/v1/boxes") {
+        definitions.push(body.request.definition)
+        const id = await sha256Hex(stringifyBoxValue(body.request.definition))
+        boxIds.push(id)
+        return Response.json({ id })
+      }
+      const operation = body.request.operation!
+      if (operation.type == "publishBlob") {
+        pageSource = operation.text!
+        return Response.json({ id: "b".repeat(64) })
+      }
+      if (operation.type == "publishPage") return Response.json({ id: "c".repeat(16) })
+      return Response.json({ error: "Unexpected operation" }, { status: 400 })
+    },
+  })
+  try {
+    await mkdir(directory, { recursive: true })
+    await writeFile(`${directory}/leaf.box.json`, JSON.stringify({
+      methods: { read: "return input;" },
+    }))
+    await writeFile(`${directory}/middle.box.json`, JSON.stringify({
+      methods: {
+        read: "return ctx.invoke(\"{{BOXOS_BOX:./leaf.box.json}}\", \"read\", input);",
+      },
+    }))
+    await writeFile(
+      `${directory}/index.html`,
+      `<script>const box = "{{BOXOS_BOX:./middle.box.json}}";</script>`,
+    )
+    expect(Bun.spawnSync({
+      cmd: [bun, cli, "--key", key, "account", "create"],
+      stdout: "pipe",
+      stderr: "pipe",
+    }).exitCode).toBe(0)
+
+    const process = Bun.spawn({
+      cmd: [runtime, cli, "--url", server.url.href, "--key", key, "page", "publish", `${directory}/index.html`],
+      stdout: "pipe",
+      stderr: "pipe",
+    }) as ReturnType<typeof Bun.spawn> & { exited: Promise<number> }
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout!).text(),
+      new Response(process.stderr!).text(),
+    ])
+    expect(stderr).toBe("")
+    expect(exitCode).toBe(0)
+    const result = JSON.parse(stdout)
+    expect(result.id).toBe("c".repeat(16))
+    expect(result.boxes.map((box: { id: string }) => box.id)).toEqual(boxIds)
+    expect(JSON.stringify(definitions[1]).includes(boxIds[0]!)).toBe(true)
+    expect(pageSource.includes(boxIds[1]!)).toBe(true)
+    expect(pageSource.includes("BOXOS_BOX")).toBe(false)
+
+    await writeFile(`${directory}/invalid.box.json`, JSON.stringify({
+      methods: { run: "return window.value;" },
+    }))
+    await writeFile(
+      `${directory}/invalid.html`,
+      `<script>const box = "{{BOXOS_BOX:./invalid.box.json}}";</script>`,
+    )
+    const invalid = Bun.spawn({
+      cmd: [runtime, cli, "--url", server.url.href, "--key", key, "page", "publish", `${directory}/invalid.html`],
+      stdout: "pipe",
+      stderr: "pipe",
+    }) as ReturnType<typeof Bun.spawn> & { exited: Promise<number> }
+    const [invalidExit, invalidError] = await Promise.all([
+      invalid.exited,
+      new Response(invalid.stderr!).text(),
+    ])
+    expect(invalidExit).toBe(1)
+    expect(invalidError.includes("invalid.box.json")).toBe(true)
+    expect(invalidError.includes("Unknown variable 'window'")).toBe(true)
+    expect(definitions.length).toBe(2)
+  } finally {
+    server.stop(true)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test("canonical BOXOS values are independent of object insertion order", () => {
   expect(stringifyBoxValue({ z: 1, a: { y: true, x: null } })).toBe(
     stringifyBoxValue({ a: { x: null, y: true }, z: 1 }),
   )
+})
+
+test("an optional nonce creates a distinct box without account-bound identity", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    const methods = { read: "return input;" }
+    const canonical = await publishBox(database, { methods })
+    expect(await publishBox(database, { methods })).toBe(canonical)
+
+    const first = await publishBox(database, {
+      nonce: "first-box-nonce-value",
+      methods,
+    })
+    expect(await publishBox(database, {
+      nonce: "first-box-nonce-value",
+      methods,
+    })).toBe(first)
+    const second = await publishBox(database, {
+      nonce: "second-box-nonce-value",
+      methods,
+    })
+
+    expect(first == canonical).toBe(false)
+    expect(second == first).toBe(false)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM boxes",
+    ).get()?.count).toBe(3)
+    expect(database.query<{ definition: string }>(
+      "SELECT definition FROM boxes WHERE id = ?",
+    ).get(first)?.definition).toBe(
+      stringifyBoxValue({ methods, nonce: "first-box-nonce-value" }),
+    )
+    expect(() => validateBoxDefinition({ nonce: "short", methods })).toThrow()
+  } finally {
+    database.close()
+  }
 })
 
 test("methods reject ambient authority and asynchronous code", () => {
@@ -70,6 +266,36 @@ test("serialized callbacks use the method parser and cannot capture locals", () 
 
   expect(isValidCallbackCode("function completed(result) { return missing + result; }")).toBe(false)
   expect(isValidCallbackCode("(result) => result")).toBe(false)
+})
+
+test("structured requests admit public HTTPS JSON APIs without raw transport access", () => {
+  expect(parseStructuredRequest({
+    host: "API.Example.com",
+    path: "/v1/chat?mode=fast",
+    method: "POST",
+    headers: { Authorization: "Bearer secret", "X-Api-Key": "key" },
+    body: { messages: [{ role: "user", content: "Hello" }] },
+  })).toEqual({
+    host: "api.example.com",
+    path: "/v1/chat?mode=fast",
+    method: "POST",
+    headers: { authorization: "Bearer secret", "x-api-key": "key" },
+    body: { messages: [{ role: "user", content: "Hello" }] },
+  })
+  expect(() => parseStructuredRequest({ host: "127.0.0.1", path: "/", method: "GET" })).toThrow()
+  expect(() => parseStructuredRequest({ host: "example.com", path: "//other", method: "GET" })).toThrow()
+  expect(() => parseStructuredRequest({
+    host: "example.com",
+    path: "/",
+    method: "POST",
+    headers: { Host: "internal" },
+  })).toThrow()
+  expect(isPublicNetworkAddress("93.184.216.34", 4)).toBe(true)
+  expect(isPublicNetworkAddress("10.0.0.1", 4)).toBe(false)
+  expect(isPublicNetworkAddress("127.0.0.1", 4)).toBe(false)
+  expect(isPublicNetworkAddress("2606:2800:220:1:248:1893:25c8:1946", 6)).toBe(true)
+  expect(isPublicNetworkAddress("fc00::1", 6)).toBe(false)
+  expect(isPublicNetworkAddress("::1", 6)).toBe(false)
 })
 
 test("accounts are created and lazily topped up on interaction", () => {
@@ -103,13 +329,13 @@ test("database initialization installs the first schema", () => {
       "box_methods",
       "box_state",
       "boxes",
-      "client_messages",
       "client_operations",
-      "effect_callbacks",
       "effects",
       "pages",
       "schema_meta",
       "startup_deployments",
+      "task_continuations",
+      "tasks",
       "turns",
     ])
   } finally {
@@ -226,13 +452,16 @@ test("startup examples deploy account grants and public profiles", async () => {
     }).ok).toBe(true)
     const scheduler = new BoxScheduler()
     const notifications: ClientNotification[] = []
-    scheduler.setNotificationHandler(notification => notifications.push(notification))
+    scheduler.setNotificationHandler(notification => {
+      notifications.push(notification)
+      return true
+    })
     scheduler.addWorker({
       id: "startup-worker",
       async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
     })
     const dispatcher = new EffectDispatcher(database, scheduler)
-    expect(await dispatcher.dispatchNext()).toBe(true)
+    await drain(dispatcher)
     expect(database.query<{ value: string }>(
       "SELECT value FROM box_state WHERE box_id = ? AND key = ?",
     ).get(deployment.profilesBoxId, `name|${identity}`)?.value).toBe('"Ada"')
@@ -248,7 +477,7 @@ test("startup examples deploy account grants and public profiles", async () => {
         input: { account: identity, name: "Augusta", requestId: "change" },
       },
     }).ok).toBe(true)
-    expect(await dispatcher.dispatchNext()).toBe(true)
+    await drain(dispatcher)
     expect(database.query<{ value: string }>(
       "SELECT value FROM box_state WHERE box_id = ? AND key = ?",
     ).get(deployment.profilesBoxId, `name|${identity}`)?.value).toBe('"Augusta"')
@@ -288,7 +517,7 @@ test("startup examples deploy account grants and public profiles", async () => {
           input: { owner },
         },
       }).ok).toBe(true)
-      expect(await dispatcher.dispatchNext()).toBe(true)
+      await drain(dispatcher)
     }
     expect(executeTurn(database, {
       id: "send-message",
@@ -301,7 +530,7 @@ test("startup examples deploy account grants and public profiles", async () => {
         input: { owner: identity, recipient, text: "Hello", messageId: "message-1" },
       },
     }).ok).toBe(true)
-    expect(await dispatcher.dispatchNext()).toBe(true)
+    await drain(dispatcher)
     const history = database.query<{ value: string }>(
       `SELECT value FROM box_state
        WHERE box_id = ? AND visibility = 'private' AND key = ?`,
@@ -312,9 +541,6 @@ test("startup examples deploy account grants and public profiles", async () => {
       && stringifyBoxValue(notification.message).includes("chat.message")
     )
     expect(delivered != null).toBe(true)
-    expect(database.query<{ count: number }>(
-      "SELECT count(*) AS count FROM client_messages",
-    ).get()?.count).toBe(0)
   } finally {
     database.close()
   }
@@ -358,7 +584,7 @@ test("the app catalog publishes versions and keeps installations private", async
         clientId: appAccount,
         procedure: { kind: "method", source: source(deployment.appsBoxId, method), input },
       }).ok).toBe(true)
-      expect(await dispatcher.dispatchNext()).toBe(true)
+      await drain(dispatcher)
     }
 
     await appsTurn("publish-app", "publish", {
@@ -422,9 +648,9 @@ test("the app catalog publishes versions and keeps installations private", async
       pageId: "aaaaaaaaaaaaaaaa",
       requestId: "takeover",
     })
-    expect(JSON.parse(database.query<{ value: string }>(
-      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = 'status|takeover'",
-    ).get(deployment.appsBoxId)!.value)).toEqual({ ok: false, error: "Only the publisher can update this app" })
+    expect(database.query<{ status: string; error: string }>(
+      "SELECT status, error FROM tasks WHERE id = 'reject-other-publisher:completion'",
+    ).get()).toEqual({ status: "rejected", error: "Only the publisher can update this app" })
 
     await appsTurn("install-update", "install", { owner, appId: "app-one", requestId: "install-two" })
     expect(JSON.parse(database.query<{ value: string }>(
@@ -478,9 +704,6 @@ test("box notifications are emitted only after a successful atomic turn", () => 
     expect(database.query<{ fuel: number }>(
       "SELECT fuel FROM accounts WHERE pubkey = ?",
     ).get(receiver)?.fuel).toBe(25)
-    expect(database.query<{ count: number }>(
-      "SELECT count(*) AS count FROM client_messages",
-    ).get()?.count).toBe(0)
 
     const failure = executeTurn(database, methodTurn(
       "rolled-back-operations",
@@ -494,159 +717,139 @@ test("box notifications are emitted only after a successful atomic turn", () => 
     expect(database.query<{ fuel: number }>(
       "SELECT fuel FROM accounts WHERE pubkey = ?",
     ).get(receiver)?.fuel).toBe(25)
-    expect(database.query<{ count: number }>(
-      "SELECT count(*) AS count FROM client_messages",
-    ).get()?.count).toBe(0)
   } finally {
     database.close()
   }
 })
 
-test("invoke persists validated callbacks atomically with the turn", () => {
+test("unavailable clients never abort a committed message turn", async () => {
   const database = openDatabase(":memory:")
   try {
     installBox(database)
-    const result = executeTurn(database, methodTurn(
-      "invoke-turn",
-      `
-        ctx.storage.public.set("started", true);
-        ctx.invoke(
-          "box-b",
-          "work",
-          { value: 1 },
-          function completed(result, context) {
-            ctx.storage.private.set(context.key, result);
-          },
-          { key: "result" }
-        );
-        return null;
-      `,
-    ))
-    expect(result).toEqual({ ok: true, value: null })
-    expect(database.query<{ status: string }>("SELECT status FROM effects").get()?.status).toBe("pending")
-    expect(database.query<{ context: string }>("SELECT context FROM effect_callbacks").get()?.context).toBe(
-      '{"key":"result"}',
-    )
-
-    const rejected = executeTurn(database, methodTurn(
-      "closure-turn",
-      `
-        let captured = "not durable";
-        ctx.storage.public.set("rolled-back", true);
-        ctx.invoke("box-b", "work", null, function completed(result) {
-          return captured + result;
-        });
-        return null;
-      `,
-    ))
-    expect(rejected.ok).toBe(false)
-    expect(database.query("SELECT value FROM box_state WHERE key = 'rolled-back'").get()).toBe(null)
-    expect(database.query<{ count: number }>("SELECT count(*) AS count FROM effects").get()?.count).toBe(1)
-  } finally {
-    database.close()
-  }
-})
-
-test("the effect dispatcher invokes a target box and resumes the origin callback", async () => {
-  const database = openDatabase(":memory:")
-  try {
-    installBox(database)
-    database.query("INSERT INTO boxes (id, definition, created_at) VALUES (?, ?, ?)").run(
-      "box-b",
-      "{}",
-      Date.now(),
-    )
-    database.query("INSERT INTO box_methods (box_id, name, source) VALUES (?, ?, ?)").run(
-      "box-b",
-      "work",
-      `
-        ctx.storage.public.set("called", input.value);
-        return { answer: input.value + 1 };
-      `,
-    )
-
-    const origin = executeTurn(database, methodTurn(
-      "dispatch-origin",
-      `
-        ctx.invoke(
-          "box-b",
-          "work",
-          { value: 41 },
-          function completed(result, context) {
-            ctx.storage.private.set(context.key, result.answer);
-          },
-          { key: "answer" }
-        );
-        return null;
-      `,
-    ))
-    expect(origin.ok).toBe(true)
-
     const scheduler = new BoxScheduler()
     scheduler.addWorker({
-      id: "inline-worker",
-      async execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
-        return executeTurn(database, turn)
-      },
+      id: "message-worker",
+      async execute(turn: WorkerTurn) { return executeTurn(database, turn) },
     })
-    const dispatcher = new EffectDispatcher(database, scheduler)
-    expect(await dispatcher.dispatchNext()).toBe(true)
-    expect(await dispatcher.dispatchNext()).toBe(false)
-
+    scheduler.setNotificationHandler(() => false)
+    const result = await scheduler.run(methodTurn(
+      "offline-message",
+      `
+        ctx.storage.public.set("committed", true);
+        let messageId = ctx.message("offline-client", { hello: true });
+        return { messageId: messageId };
+      `,
+    ))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.error)
+    const value = result.value as { messageId: string }
+    expect(typeof value.messageId).toBe("string")
+    expect(result.deliveries).toEqual([{
+      id: value.messageId,
+      clientId: "offline-client",
+      delivered: false,
+    }])
     expect(database.query<{ value: string }>(
-      "SELECT value FROM box_state WHERE box_id = 'box-b' AND visibility = 'public' AND key = 'called'",
-    ).get()?.value).toBe("41")
+      "SELECT value FROM box_state WHERE box_id = 'box-a' AND visibility = 'public' AND key = 'committed'",
+    ).get()?.value).toBe("true")
+  } finally {
+    database.close()
+  }
+})
+
+test("Tasks compose durable effects, continuations, adoption, and rejection", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    installBox(database)
+    database.query("INSERT INTO boxes (id, definition, created_at) VALUES (?, ?, ?)").run("box-b", "{}", Date.now())
+    database.query("INSERT INTO box_methods (box_id, name, source) VALUES (?, ?, ?)").run(
+      "box-b", "work", "return { answer: input.value + 1 };",
+    )
+    database.query("INSERT INTO box_methods (box_id, name, source) VALUES (?, ?, ?)").run(
+      "box-b", "fail", "throw 'nope';",
+    )
+    const started = executeTurn(database, methodTurn("task-origin", `
+      return ctx.invoke("box-b", "work", { value: 41 }).then(
+        function completed(result, saved) {
+          ctx.storage.private.set(saved.key, result.answer);
+          return result.answer;
+        },
+        { key: "answer" }
+      );
+    `))
+    expect(started.ok).toBe(true)
+    expect(database.query<{ count: number }>("SELECT count(*) AS count FROM tasks").get()?.count).toBe(3)
+
+    const scheduler = new BoxScheduler()
+    scheduler.addWorker({ id: "task-worker", async execute(turn) { return executeTurn(database, turn) } })
+    const dispatcher = new EffectDispatcher(database, scheduler)
+    await drain(dispatcher)
+
     expect(database.query<{ value: string }>(
       "SELECT value FROM box_state WHERE box_id = 'box-a' AND visibility = 'private' AND key = 'answer'",
     ).get()?.value).toBe("42")
-    expect(database.query<{ status: string }>("SELECT status FROM effects").get()?.status).toBe("succeeded")
-    expect(database.query<{ status: string }>(
-      "SELECT status FROM effect_callbacks",
-    ).get()?.status).toBe("completed")
+    expect(database.query<{ status: string; result: string }>(
+      "SELECT status, result FROM tasks WHERE id = 'task-origin:completion'",
+    ).get()).toEqual({ status: "fulfilled", result: "42" })
 
-    // Explicit redelivery reuses persisted target and callback turn results.
-    const effectId = database.query<{ id: string }>("SELECT id FROM effects").get()!.id
-    await dispatcher.dispatch(effectId)
-    expect(database.query<{ count: number }>(
-      "SELECT count(*) AS count FROM turns WHERE id LIKE '%:invoke' OR id LIKE '%:success'",
-    ).get()?.count).toBe(2)
+    expect(executeTurn(database, methodTurn("caught-invoke", `
+      return ctx.invoke("box-b", "fail", null)
+        .then(function unexpected() { return "wrong"; })
+        .catch(function recovered(error) { return "caught: " + error; });
+    `)).ok).toBe(true)
+    await drain(dispatcher)
+    expect(database.query<{ result: string }>(
+      "SELECT result FROM tasks WHERE id = 'caught-invoke:completion'",
+    ).get()?.result).toBe('"caught: nope"')
+
+    const recovered = executeTurn(database, methodTurn("caught-request", `
+      return ctx.request({ host: "localhost", path: "/", method: "GET" })
+        .catch(function failed(error) { return { recovered: error }; });
+    `))
+    expect(recovered.ok).toBe(false)
+    expect(database.query("SELECT id FROM effects WHERE origin_turn_id = 'caught-request'").get()).toBe(null)
+
+    const closure = executeTurn(database, methodTurn("closure-turn", `
+      let captured = "not durable";
+      return ctx.invoke("box-b", "work", null).then(function completed(result) {
+        return captured + result;
+      });
+    `))
+    expect(closure.ok).toBe(false)
   } finally {
     database.close()
   }
 })
 
-test("ctx.publish uses durable effects and resumes with the public ID", async () => {
+test("ctx.request and ctx.publish settle Tasks with effect results", async () => {
   const database = openDatabase(":memory:")
   try {
     installBox(database)
-    const origin = executeTurn(database, methodTurn(
-      "publish-origin",
-      `
-        ctx.publish(
-          "blob",
-          { text: "hello page" },
-          function published(result) {
-            ctx.storage.public.set("blob", result.id);
-          }
-        );
-        return null;
-      `,
-    ))
-    expect(origin.ok).toBe(true)
-
     const scheduler = new BoxScheduler()
-    scheduler.addWorker({
-      id: "publish-worker",
-      async execute(turn: WorkerTurn): Promise<WorkerTurnResult> {
-        return executeTurn(database, turn)
-      },
-    })
-    const dispatcher = new EffectDispatcher(database, scheduler)
-    expect(await dispatcher.dispatchNext()).toBe(true)
+    scheduler.addWorker({ id: "effect-worker", async execute(turn) { return executeTurn(database, turn) } })
+    const dispatcher = new EffectDispatcher(database, scheduler, async (_request, requestId) => ({
+      ok: true, requestId, status: 200, contentType: "application/json", body: { answer: 42 },
+    }))
+
+    expect(executeTurn(database, methodTurn("request-turn", `
+      return ctx.request({ host: "api.example.com", path: "/answer", method: "GET" }).then(
+        function completed(response) { return response.body.answer; }
+      );
+    `)).ok).toBe(true)
+    expect(executeTurn(database, methodTurn("publish-turn", `
+      return ctx.publish("blob", { text: "hello" }).then(
+        function published(result) { return result.id; }
+      );
+    `)).ok).toBe(true)
+    await drain(dispatcher)
+
+    expect(database.query<{ result: string }>(
+      "SELECT result FROM tasks WHERE id = 'request-turn:completion'",
+    ).get()?.result).toBe("42")
+    expect(database.query<{ status: string }>(
+      "SELECT status FROM tasks WHERE id = 'publish-turn:completion'",
+    ).get()?.status).toBe("fulfilled")
     expect(database.query<{ count: number }>("SELECT count(*) AS count FROM blobs").get()?.count).toBe(1)
-    expect(typeof database.query<{ value: string }>(
-      "SELECT value FROM box_state WHERE box_id = 'box-a' AND key = 'blob'",
-    ).get()?.value).toBe("string")
   } finally {
     database.close()
   }
@@ -723,6 +926,24 @@ test("the service publishes boxes and verifies signed invocations", async () => 
     expect(database.query<{ fuel: number }>(
       "SELECT fuel FROM accounts WHERE pubkey = ?",
     ).get(receiver)?.fuel).toBe(100)
+
+    service.setNotificationHandler(() => false)
+    const messageOperation: ClientOperationRequest = {
+      nonce: crypto.randomUUID(),
+      operation: { type: "message", clientId: receiver, message: { hello: true } },
+    }
+    const messageSignature = bytesToHex(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      keys.privateKey,
+      new TextEncoder().encode(clientOperationSigningMessage(messageOperation)),
+    ))
+    const messageResult = await service.operate(account, messageSignature, messageOperation)
+    expect(typeof (messageResult as { id: string }).id).toBe("string")
+    expect(messageResult).toEqual({
+      id: (messageResult as { id: string }).id,
+      delivered: false,
+    })
+    expect(await service.operate(account, messageSignature, messageOperation)).toEqual(messageResult)
   } finally {
     database.close()
   }
