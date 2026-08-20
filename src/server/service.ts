@@ -8,7 +8,6 @@ import { sha256Hex, verifyEd25519 } from "../core/crypto.ts"
 import { copyBoxValue, parseBoxValue, stringifyBoxValue, type BoxValue } from "../core/values.ts"
 import { EffectDispatcher } from "../effects/dispatcher.ts"
 import {
-  instantiateBox,
   parseClientOperation,
   publishBox as executePublishBox,
   publishPage,
@@ -214,10 +213,7 @@ export class BoxOSService {
         id: await publishTextBlob(this.database, operation.text, operation.contentType),
       })
     }
-    if (operation.type == "publishPage") {
-      return save({ id: await publishPage(this.database, operation.blobId) })
-    }
-    return save({ id: await instantiateBox(this.database, account, operation) })
+    return save({ id: await publishPage(this.database, operation.blobId) })
   }
 
   async invoke(account: string, signature: string, requestValue: unknown): Promise<WorkerTurnResult> {

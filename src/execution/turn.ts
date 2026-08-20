@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite"
 import { copyBoxValue, parseBoxValue, stringifyBoxValue, validateBoxKey, type BoxValue } from "../core/values.ts"
 import { parseStructuredRequest } from "../effects/request.ts"
 import { validateCallbackCode } from "../language/parser.ts"
-import { parseBoxInstantiation, transferFuel } from "../operations/operations.ts"
+import { transferFuel } from "../operations/operations.ts"
 import {
   compileCallback,
   compileMethod,
@@ -91,12 +91,6 @@ function completeTask(database: Database, id: string, value: unknown): void {
 }
 
 function context(database: Database, turn: WorkerTurn, notifications: ClientNotification[]): RuntimeContext {
-  const box = database.query<{
-    definition_id: string
-    creator_account: string | null
-  }>("SELECT definition_id, creator_account FROM boxes WHERE id = ?").get(turn.boxId)
-  if (!box) throw new Error(`Unknown box ${turn.boxId}`)
-
   const register: TaskRegistrar = (sourceTaskId, role, callback, callbackContext) => {
     if (typeof callback != "function") throw new TypeError("Task callback must be a function")
     const source = functionToString.call(callback)
@@ -133,11 +127,6 @@ function context(database: Database, turn: WorkerTurn, notifications: ClientNoti
   return Object.freeze({
     account: turn.account,
     clientId: turn.clientId,
-    box: Object.freeze({
-      id: turn.boxId,
-      definitionId: box.definition_id,
-      creator: box.creator_account,
-    }),
     invoke(targetBoxId: string, method: string, argument: unknown) {
       checkedName(targetBoxId, "Target box ID")
       checkedName(method, "Method name")
@@ -146,14 +135,6 @@ function context(database: Database, turn: WorkerTurn, notifications: ClientNoti
         method,
         argument: copyBoxValue(argument),
       })
-    },
-    instantiate(definitionId: string, options: unknown) {
-      const copied = copyBoxValue(options)
-      if (copied === null || Array.isArray(copied) || typeof copied != "object") {
-        throw new TypeError("Box instance options must be an object")
-      }
-      const argumentsValue = parseBoxInstantiation({ ...copied, definitionId })
-      return declareEffect("instantiate.box", argumentsValue)
     },
     message(clientId: string, message: unknown): string {
       if (typeof clientId != "string" || clientId.length == 0 || clientId.length > 256) {

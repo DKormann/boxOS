@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { touchAccount } from "../src/accounts/accounts.ts"
+import { validateBoxDefinition } from "../src/core/box-definition.ts"
 import { bytesToHex, sha256Hex } from "../src/core/crypto.ts"
 import { stringifyBoxValue, type BoxValue } from "../src/core/values.ts"
 import { deployStartupExamples } from "../examples/startup/deploy.ts"
@@ -8,7 +9,7 @@ import { buildCli } from "../scripts/build_cli.ts"
 import { EffectDispatcher } from "../src/effects/dispatcher.ts"
 import { isPublicNetworkAddress, parseStructuredRequest } from "../src/effects/request.ts"
 import { executeTurn } from "../src/execution/turn.ts"
-import { instantiateBox, publishBox } from "../src/operations/operations.ts"
+import { publishBox } from "../src/operations/operations.ts"
 import {
   isValidCallbackCode,
   isValidMethodCode,
@@ -35,13 +36,11 @@ import {
 
 function installBox(database: ReturnType<typeof openDatabase>): void {
   database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run("account-a", 1_000)
-  database.query(
-    "INSERT INTO box_definitions (id, definition, created_at) VALUES (?, ?, ?)",
-  ).run("box-a", "{}", Date.now())
-  database.query(
-    `INSERT INTO boxes (id, definition_id, creator_account, nonce, created_at)
-     VALUES (?, ?, NULL, NULL, ?)`,
-  ).run("box-a", "box-a", Date.now())
+  database.query("INSERT INTO boxes (id, definition, created_at) VALUES (?, ?, ?)").run(
+    "box-a",
+    "{}",
+    Date.now(),
+  )
 }
 
 async function drain(dispatcher: EffectDispatcher): Promise<void> {
@@ -216,6 +215,42 @@ test("canonical BOXOS values are independent of object insertion order", () => {
   )
 })
 
+test("an optional nonce creates a distinct box without account-bound identity", async () => {
+  const database = openDatabase(":memory:")
+  try {
+    const methods = { read: "return input;" }
+    const canonical = await publishBox(database, { methods })
+    expect(await publishBox(database, { methods })).toBe(canonical)
+
+    const first = await publishBox(database, {
+      nonce: "first-box-nonce-value",
+      methods,
+    })
+    expect(await publishBox(database, {
+      nonce: "first-box-nonce-value",
+      methods,
+    })).toBe(first)
+    const second = await publishBox(database, {
+      nonce: "second-box-nonce-value",
+      methods,
+    })
+
+    expect(first == canonical).toBe(false)
+    expect(second == first).toBe(false)
+    expect(database.query<{ count: number }>(
+      "SELECT count(*) AS count FROM boxes",
+    ).get()?.count).toBe(3)
+    expect(database.query<{ definition: string }>(
+      "SELECT definition FROM boxes WHERE id = ?",
+    ).get(first)?.definition).toBe(
+      stringifyBoxValue({ methods, nonce: "first-box-nonce-value" }),
+    )
+    expect(() => validateBoxDefinition({ nonce: "short", methods })).toThrow()
+  } finally {
+    database.close()
+  }
+})
+
 test("methods reject ambient authority and asynchronous code", () => {
   expect(isValidMethodCode("return input.value;")).toBe(true)
   expect(isValidMethodCode("return globalThis.process;")).toBe(false)
@@ -291,8 +326,7 @@ test("database initialization installs the first schema", () => {
     expect(tables).toEqual([
       "accounts",
       "blobs",
-      "box_definition_methods",
-      "box_definitions",
+      "box_methods",
       "box_state",
       "boxes",
       "client_operations",
@@ -304,91 +338,6 @@ test("database initialization installs the first schema", () => {
       "tasks",
       "turns",
     ])
-  } finally {
-    database.close()
-  }
-})
-
-test("box definitions keep a canonical box and create isolated instances", async () => {
-  const database = openDatabase(":memory:")
-  const creator = "a".repeat(64)
-  try {
-    database.query("INSERT INTO accounts (pubkey, fuel) VALUES (?, ?)").run(creator, 1_000)
-    const definitionId = await publishBox(database, {
-      methods: { describe: "return ctx.box;" },
-    })
-    expect(await publishBox(database, {
-      methods: { describe: "return ctx.box;" },
-    })).toBe(definitionId)
-    expect(database.query<{ definition_id: string }>(
-      "SELECT definition_id FROM boxes WHERE id = ?",
-    ).get(definitionId)?.definition_id).toBe(definitionId)
-
-    const first = await instantiateBox(database, creator, {
-      definitionId,
-      nonce: "first-instance-nonce",
-      initialPublic: { name: "first" },
-      initialPrivate: { secret: 1 },
-    })
-    const retried = await instantiateBox(database, creator, {
-      definitionId,
-      nonce: "first-instance-nonce",
-      initialPublic: { name: "ignored on retry" },
-    })
-    const second = await instantiateBox(database, creator, {
-      definitionId,
-      nonce: "second-instance-nonce",
-      initialPublic: { name: "second" },
-    })
-
-    expect(retried).toBe(first)
-    expect(second == first).toBe(false)
-    expect(database.query<{ value: string }>(
-      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = 'name'",
-    ).get(first)?.value).toBe('"first"')
-    expect(database.query<{ value: string }>(
-      "SELECT value FROM box_state WHERE box_id = ? AND visibility = 'public' AND key = 'name'",
-    ).get(second)?.value).toBe('"second"')
-    expect(database.query<{ source: string }>(
-      "SELECT source FROM box_methods WHERE box_id = ? AND name = 'describe'",
-    ).get(first)?.source).toBe("return ctx.box;")
-
-    const described = executeTurn(database, {
-      id: "describe-instance",
-      boxId: first,
-      account: creator,
-      clientId: null,
-      procedure: { kind: "method", source: "return ctx.box;", input: null },
-    })
-    expect(described.ok && described.value).toEqual({
-      id: first,
-      definitionId,
-      creator,
-    })
-
-    const durable = executeTurn(database, {
-      id: "instantiate-from-box",
-      boxId: definitionId,
-      account: creator,
-      clientId: null,
-      procedure: {
-        kind: "method",
-        source: `return ctx.instantiate("${definitionId}", { nonce: "durable-instance-nonce" });`,
-        input: null,
-      },
-    })
-    expect(durable.ok).toBe(true)
-    const scheduler = new BoxScheduler()
-    scheduler.addWorker({ id: "instance-worker", async execute(turn) { return executeTurn(database, turn) } })
-    await drain(new EffectDispatcher(database, scheduler))
-    const durableResult = database.query<{ result: string }>(
-      "SELECT result FROM tasks WHERE id = 'instantiate-from-box:completion'",
-    ).get()?.result
-    const durableId = durableResult == null ? null : JSON.parse(durableResult).id
-    expect(typeof durableId == "string").toBe(true)
-    expect(database.query<{ creator_account: string }>(
-      "SELECT creator_account FROM boxes WHERE id = ?",
-    ).get(durableId)?.creator_account).toBe(creator)
   } finally {
     database.close()
   }
@@ -812,19 +761,13 @@ test("Tasks compose durable effects, continuations, adoption, and rejection", as
   const database = openDatabase(":memory:")
   try {
     installBox(database)
-    database.query(
-      "INSERT INTO box_definitions (id, definition, created_at) VALUES (?, ?, ?)",
-    ).run("box-b", "{}", Date.now())
-    database.query(
-      `INSERT INTO boxes (id, definition_id, creator_account, nonce, created_at)
-       VALUES (?, ?, NULL, NULL, ?)`,
-    ).run("box-b", "box-b", Date.now())
-    database.query(
-      "INSERT INTO box_definition_methods (definition_id, name, source) VALUES (?, ?, ?)",
-    ).run("box-b", "work", "return { answer: input.value + 1 };")
-    database.query(
-      "INSERT INTO box_definition_methods (definition_id, name, source) VALUES (?, ?, ?)",
-    ).run("box-b", "fail", "throw 'nope';")
+    database.query("INSERT INTO boxes (id, definition, created_at) VALUES (?, ?, ?)").run("box-b", "{}", Date.now())
+    database.query("INSERT INTO box_methods (box_id, name, source) VALUES (?, ?, ?)").run(
+      "box-b", "work", "return { answer: input.value + 1 };",
+    )
+    database.query("INSERT INTO box_methods (box_id, name, source) VALUES (?, ?, ?)").run(
+      "box-b", "fail", "throw 'nope';",
+    )
     const started = executeTurn(database, methodTurn("task-origin", `
       return ctx.invoke("box-b", "work", { value: 41 }).then(
         function completed(result, saved) {

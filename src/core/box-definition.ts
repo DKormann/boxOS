@@ -1,7 +1,10 @@
 import { copyBoxValue } from "./values.ts"
 import { validateMethodCode } from "../language/parser.ts"
 
-export type BoxDefinition = Readonly<{ methods: Readonly<Record<string, string>> }>
+export type BoxDefinition = Readonly<{
+  methods: Readonly<Record<string, string>>
+  nonce?: string
+}>
 
 /** Validate and normalize a box definition without performing any I/O. */
 export function validateBoxDefinition(value: unknown): BoxDefinition {
@@ -9,6 +12,15 @@ export function validateBoxDefinition(value: unknown): BoxDefinition {
   if (copied === null || Array.isArray(copied) || typeof copied != "object") {
     throw new TypeError("Box definition must be an object")
   }
+  const nonce = copied["nonce"]
+  if (nonce !== undefined && (
+    typeof nonce != "string"
+    || nonce.length < 16
+    || nonce.length > 128
+  )) {
+    throw new TypeError("Box nonce must contain 16 to 128 characters")
+  }
+
   const methodsValue = copied["methods"]
   if (methodsValue === null || Array.isArray(methodsValue) || typeof methodsValue != "object") {
     throw new TypeError("Box methods must be an object")
@@ -29,5 +41,5 @@ export function validateBoxDefinition(value: unknown): BoxDefinition {
     methods[name] = source
   }
   if (Object.keys(methods).length == 0) throw new TypeError("A box must define at least one method")
-  return { methods }
+  return nonce === undefined ? { methods } : { methods, nonce }
 }

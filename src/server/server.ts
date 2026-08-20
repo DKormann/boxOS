@@ -177,6 +177,15 @@ export async function startBoxOSServer(options: {
         }
         if (
           (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/docs" || url.pathname == "/docs/")
+        ) {
+          return new Response(null, {
+            status: 308,
+            headers: { location: "/developers" },
+          })
+        }
+        if (
+          (request.method == "GET" || request.method == "HEAD")
           && (url.pathname == "/developers" || url.pathname == "/developers/")
         ) {
           const deployment = database.query<{ id: string }>(
@@ -264,27 +273,10 @@ export async function startBoxOSServer(options: {
         }
         if (request.method == "GET" && /^\/v1\/boxes\/[a-f0-9]{64}$/.test(url.pathname)) {
           const id = url.pathname.slice("/v1/boxes/".length)
-          const row = database.query<{
-            definition: string
-            definition_id: string
-            creator_account: string | null
-          }>(
-            `SELECT definitions.definition, boxes.definition_id, boxes.creator_account
-             FROM boxes JOIN box_definitions definitions
-               ON definitions.id = boxes.definition_id
-             WHERE boxes.id = ?`,
+          const row = database.query<{ definition: string }>(
+            "SELECT definition FROM boxes WHERE id = ?",
           ).get(id)
-          return row
-            ? json({
-              id,
-              definition: JSON.parse(row.definition),
-              instance: {
-                definitionId: row.definition_id,
-                creator: row.creator_account,
-                canonical: id == row.definition_id,
-              },
-            })
-            : json({ error: "Not found" }, 404)
+          return row ? json({ id, definition: JSON.parse(row.definition) }) : json({ error: "Not found" }, 404)
         }
         if (request.method == "POST" && url.pathname == "/v1/events") {
           const body = await requestBody(request)

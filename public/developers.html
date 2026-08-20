@@ -81,7 +81,7 @@ chmod +x boxos
               <li><strong>Accounts</strong> are Ed25519 public keys. Private keys remain with clients.</li>
               <li><strong>Blobs</strong> are immutable text addressed by SHA-256.</li>
               <li><strong>Pages</strong> are immutable HTML blobs with short public IDs.</li>
-              <li><strong>Box definitions</strong> are immutable, content-addressed methods. Each <strong>box instance</strong> has independent public and private storage.</li>
+              <li><strong>Boxes</strong> contain validated methods and their own public and private storage.</li>
             </ul>
             <p>A box method is one atomic SQLite turn. Its storage writes, transfers, Task declarations, and effects either commit together or roll back together.</p>
           </section>
@@ -104,18 +104,20 @@ chmod +x boxos
 
           <section id="boxes">
             <h2>Boxes</h2>
-            <p>A box definition is JSON containing JavaScript method bodies. Publishing it creates a backwards-compatible canonical instance with the same ID. Additional instances reuse the methods while receiving independent storage and creator metadata. Methods receive <code>ctx</code> and <code>input</code> and run in a deliberately small, validated JavaScript subset.</p>
+            <p>A box definition is JSON containing JavaScript method bodies. Methods receive <code>ctx</code> and <code>input</code> and run in a deliberately small, validated JavaScript subset.</p>
             <pre><code>{
   "methods": {
     "increment": "let n = ctx.storage.public.get(\"count\") || 0; n = n + input.amount; ctx.storage.public.set(\"count\", n); return n;"
   }
 }</code></pre>
+            <p>Add an optional 16-to-128-character <code>nonce</code> to create a box with independent storage while reusing identical methods. The nonce participates in the content hash but is not tied to an account and grants no ownership.</p>
+            <pre><code>{
+  "nonce": "550e8400-e29b-41d4-a716-446655440000",
+  "methods": { "run": "return input;" }
+}</code></pre>
             <h3>Method context</h3>
             <pre><code>ctx.account
 ctx.clientId
-ctx.box.id
-ctx.box.definitionId
-ctx.box.creator
 ctx.storage.public.get(key)
 ctx.storage.public.set(key, value)
 ctx.storage.private.get(key)
@@ -123,7 +125,6 @@ ctx.storage.private.set(key, value)
 ctx.transfer(receiver, amount)
 ctx.message(clientId, value)
 ctx.invoke(boxId, method, input)
-ctx.instantiate(definitionId, options)
 ctx.publish(kind, arguments)
 ctx.request(request)</code></pre>
             <p>Box values are JSON-like: null, booleans, finite numbers, strings, arrays, and plain objects. Functions, Tasks, binary data, cycles, and <code>undefined</code> are not values.</p>
@@ -131,7 +132,7 @@ ctx.request(request)</code></pre>
 
           <section id="tasks">
             <h2>Durable Tasks</h2>
-            <p><code>ctx.invoke</code>, <code>ctx.instantiate</code>, <code>ctx.publish</code>, and <code>ctx.request</code> return runtime-owned Tasks. Returning a Task makes the caller wait for its complete chain.</p>
+            <p><code>ctx.invoke</code>, <code>ctx.publish</code>, and <code>ctx.request</code> return runtime-owned Tasks. Returning a Task makes the caller wait for its complete chain.</p>
             <pre><code>return ctx.invoke(input.target, "read", input.query).then(
   function completed(result, saved) {
     ctx.storage.private.set(saved.key, result);
@@ -146,7 +147,6 @@ ctx.request(request)</code></pre>
           <section id="cli">
             <h2>CLI</h2>
             <pre><code>./boxos box publish ./box.json
-./boxos box instantiate &lt;definition-id&gt;
 ./boxos page publish ./index.html
 ./boxos invoke &lt;box-id&gt; increment '{"amount":1}'
 ./boxos blob publish ./data.txt

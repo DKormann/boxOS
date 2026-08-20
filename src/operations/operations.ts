@@ -1,12 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { validateBoxDefinition } from "../core/box-definition.ts"
 import { sha256Hex } from "../core/crypto.ts"
-import {
-  copyBoxValue,
-  stringifyBoxValue,
-  validateBoxKey,
-  type BoxValue,
-} from "../core/values.ts"
+import { copyBoxValue, stringifyBoxValue, type BoxValue } from "../core/values.ts"
 
 const PUBLIC_KEY = /^[a-f0-9]{64}$/
 
@@ -14,101 +9,18 @@ export async function publishBox(database: Database, value: unknown): Promise<st
   const validated = validateBoxDefinition(value)
   const methods = validated.methods
   const definition = stringifyBoxValue(validated)
-  const definitionId = await sha256Hex(definition)
+  const boxId = await sha256Hex(definition)
   database.transaction(() => {
     database.query(
-      "INSERT OR IGNORE INTO box_definitions (id, definition, created_at) VALUES (?, ?, ?)",
-    ).run(definitionId, definition, Date.now())
+      "INSERT OR IGNORE INTO boxes (id, definition, created_at) VALUES (?, ?, ?)",
+    ).run(boxId, definition, Date.now())
     for (const [name, source] of Object.entries(methods)) {
       database.query(
-        `INSERT OR IGNORE INTO box_definition_methods
-          (definition_id, name, source) VALUES (?, ?, ?)`,
-      ).run(definitionId, name, source)
-    }
-    // Backwards compatibility: publishing a definition also creates its
-    // canonical singleton box whose ID is the historical definition hash.
-    database.query(
-      `INSERT OR IGNORE INTO boxes
-        (id, definition_id, creator_account, nonce, created_at)
-       VALUES (?, ?, NULL, NULL, ?)`,
-    ).run(definitionId, definitionId, Date.now())
-  })()
-  return definitionId
-}
-
-type InitialState = Readonly<Record<string, BoxValue>>
-
-export type BoxInstantiation = Readonly<{
-  definitionId: string
-  nonce: string
-  initialPublic: InitialState
-  initialPrivate: InitialState
-}>
-
-function initialState(value: unknown, description: string): InitialState {
-  const copied = copyBoxValue(value ?? {})
-  if (copied === null || Array.isArray(copied) || typeof copied != "object") {
-    throw new TypeError(`${description} must be an object`)
-  }
-  for (const key of Object.keys(copied)) validateBoxKey(key, `${description} keys`)
-  return copied
-}
-
-export function parseBoxInstantiation(value: unknown): BoxInstantiation {
-  const copied = copyBoxValue(value)
-  if (copied === null || Array.isArray(copied) || typeof copied != "object") {
-    throw new TypeError("Box instantiation must be an object")
-  }
-  const definitionId = copied["definitionId"]
-  const nonce = copied["nonce"]
-  if (typeof definitionId != "string" || !/^[a-f0-9]{64}$/.test(definitionId)) {
-    throw new TypeError("Invalid box definition ID")
-  }
-  if (typeof nonce != "string" || nonce.length < 16 || nonce.length > 128) {
-    throw new TypeError("Box instance nonce must contain 16 to 128 characters")
-  }
-  return {
-    definitionId,
-    nonce,
-    initialPublic: initialState(copied["initialPublic"], "Initial public storage"),
-    initialPrivate: initialState(copied["initialPrivate"], "Initial private storage"),
-  }
-}
-
-export async function instantiateBox(
-  database: Database,
-  creatorAccount: string,
-  value: unknown,
-): Promise<string> {
-  if (!PUBLIC_KEY.test(creatorAccount)) throw new TypeError("Invalid creator account")
-  const instance = parseBoxInstantiation(value)
-  const id = await sha256Hex(`boxos.box-instance.v1\n${stringifyBoxValue({
-    definitionId: instance.definitionId,
-    creatorAccount,
-    nonce: instance.nonce,
-  })}`)
-
-  database.transaction(() => {
-    if (!database.query("SELECT 1 FROM box_definitions WHERE id = ?").get(instance.definitionId)) {
-      throw new Error(`Unknown box definition ${instance.definitionId}`)
-    }
-    const existing = database.query("SELECT 1 FROM boxes WHERE id = ?").get(id)
-    if (existing) return
-    database.query(
-      `INSERT INTO boxes (id, definition_id, creator_account, nonce, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(id, instance.definitionId, creatorAccount, instance.nonce, Date.now())
-    const insert = database.query(
-      "INSERT INTO box_state (box_id, visibility, key, value) VALUES (?, ?, ?, ?)",
-    )
-    for (const [key, stateValue] of Object.entries(instance.initialPublic)) {
-      insert.run(id, "public", key, stringifyBoxValue(stateValue))
-    }
-    for (const [key, stateValue] of Object.entries(instance.initialPrivate)) {
-      insert.run(id, "private", key, stringifyBoxValue(stateValue))
+        "INSERT OR IGNORE INTO box_methods (box_id, name, source) VALUES (?, ?, ?)",
+      ).run(boxId, name, source)
     }
   })()
-  return id
+  return boxId
 }
 
 export function publishAccount(database: Database, pubkey: string): string {
@@ -181,7 +93,6 @@ export type ClientOperation =
   | { type: "message"; clientId: string; message: BoxValue }
   | { type: "publishBlob"; text: string; contentType?: string }
   | { type: "publishPage"; blobId: string }
-  | ({ type: "instantiateBox" } & BoxInstantiation)
 
 export function parseClientOperation(value: unknown): ClientOperation {
   const operation = copyBoxValue(value)
@@ -212,9 +123,6 @@ export function parseClientOperation(value: unknown): ClientOperation {
     const blobId = operation["blobId"]
     if (typeof blobId != "string") throw new TypeError("Invalid page publication")
     return { type, blobId }
-  }
-  if (type == "instantiateBox") {
-    return { type, ...parseBoxInstantiation(operation) }
   }
   throw new TypeError("Unknown operation type")
 }

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 
-export const DATABASE_VERSION = 5
+export const DATABASE_VERSION = 4
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -25,36 +25,18 @@ CREATE TABLE blobs (
   content_type TEXT NOT NULL DEFAULT 'application/octet-stream'
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE box_definitions (
+CREATE TABLE boxes (
   id TEXT PRIMARY KEY,
   definition TEXT NOT NULL,
   created_at INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE box_definition_methods (
-  definition_id TEXT NOT NULL REFERENCES box_definitions(id),
+CREATE TABLE box_methods (
+  box_id TEXT NOT NULL REFERENCES boxes(id),
   name TEXT NOT NULL,
   source TEXT NOT NULL,
-  PRIMARY KEY (definition_id, name)
+  PRIMARY KEY (box_id, name)
 ) STRICT, WITHOUT ROWID;
-
-CREATE TABLE boxes (
-  id TEXT PRIMARY KEY,
-  definition_id TEXT NOT NULL REFERENCES box_definitions(id),
-  creator_account TEXT REFERENCES accounts(pubkey),
-  nonce TEXT,
-  created_at INTEGER NOT NULL,
-  CHECK (
-    (creator_account IS NULL AND nonce IS NULL AND id = definition_id)
-    OR (creator_account IS NOT NULL AND nonce IS NOT NULL)
-  )
-) STRICT, WITHOUT ROWID;
-
-CREATE VIEW box_methods AS
-  SELECT boxes.id AS box_id, methods.name, methods.source
-  FROM boxes
-  JOIN box_definition_methods methods
-    ON methods.definition_id = boxes.definition_id;
 
 CREATE TABLE box_state (
   box_id TEXT NOT NULL REFERENCES boxes(id),

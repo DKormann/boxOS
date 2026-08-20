@@ -1,12 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { parseBoxValue, stringifyBoxValue, type BoxValue } from "../core/values.ts"
-import {
-  instantiateBox,
-  publishAccount,
-  publishBox,
-  publishPage,
-  publishTextBlob,
-} from "../operations/operations.ts"
+import { publishAccount, publishBox, publishPage, publishTextBlob } from "../operations/operations.ts"
 import { BOXOS_RUNTIME_VERSION } from "../version.ts"
 import { executeStructuredRequest } from "./request.ts"
 import type { BoxScheduler, ClientDelivery, WorkerTurnResult } from "../workers/scheduler.ts"
@@ -169,8 +163,6 @@ export class EffectDispatcher {
         value = await this.requestExecutor(args, effect.id)
       } else if (effect.kind == "publish.box") {
         value = { id: await publishBox(this.database, args) }
-      } else if (effect.kind == "instantiate.box") {
-        value = { id: await instantiateBox(this.database, effect.account, args) }
       } else {
         if (args === null || Array.isArray(args) || typeof args != "object") {
           throw new TypeError("Publication arguments must be an object")

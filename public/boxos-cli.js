@@ -831,6 +831,10 @@ function validateBoxDefinition(value) {
   if (copied === null || Array.isArray(copied) || typeof copied != "object") {
     throw new TypeError("Box definition must be an object");
   }
+  const nonce = copied["nonce"];
+  if (nonce !== undefined && (typeof nonce != "string" || nonce.length < 16 || nonce.length > 128)) {
+    throw new TypeError("Box nonce must contain 16 to 128 characters");
+  }
   const methodsValue = copied["methods"];
   if (methodsValue === null || Array.isArray(methodsValue) || typeof methodsValue != "object") {
     throw new TypeError("Box methods must be an object");
@@ -852,7 +856,7 @@ function validateBoxDefinition(value) {
   }
   if (Object.keys(methods).length == 0)
     throw new TypeError("A box must define at least one method");
-  return { methods };
+  return nonce === undefined ? { methods } : { methods, nonce };
 }
 
 // src/cli/main.ts
@@ -874,8 +878,6 @@ Accounts:
 
 Publish and invoke:
   box publish <definition.json>        Link and publish a box dependency graph
-  box instantiate <definition-id> [JSON|@file|-]
-                                        Create a box with independent storage
   blob publish <file> [--content-type TYPE]
   page publish <html-file>             Link boxes and publish an HTML page
   invoke <box-id> <method> [JSON|@file|-]
@@ -1276,24 +1278,6 @@ async function main() {
   const identity = await loadIdentity(keyPath);
   if (first === "box" && second === "publish") {
     console.log(JSON.stringify(await publishBox(baseUrl, identity, rest[0])));
-    return;
-  }
-  if (first === "box" && second === "instantiate") {
-    const definitionId = rest[0];
-    if (!definitionId)
-      throw new Error("box instantiate requires a definition ID");
-    const options = await jsonArgument(rest[1], {});
-    if (options === null || Array.isArray(options) || typeof options != "object") {
-      throw new Error("box instance options must be a JSON object");
-    }
-    console.log(JSON.stringify(await operation(baseUrl, identity, {
-      ...options,
-      type: "instantiateBox",
-      definitionId,
-      nonce: typeof options["nonce"] == "string" ? options["nonce"] : crypto.randomUUID(),
-      initialPublic: options["initialPublic"] ?? {},
-      initialPrivate: options["initialPrivate"] ?? {}
-    })));
     return;
   }
   if (first === "blob" && second === "publish") {

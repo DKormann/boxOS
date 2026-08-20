@@ -33,9 +33,7 @@ export function runtimeTaskId(value: unknown): string | null {
 export type RuntimeContext = Readonly<{
   account: string
   clientId: string | null
-  box: Readonly<{ id: string; definitionId: string; creator: string | null }>
   invoke(boxId: string, method: string, argument: unknown): RuntimeTask
-  instantiate(definitionId: string, options: unknown): RuntimeTask
   message(clientId: string, message: unknown): string
   publish(kind: "account" | "blob" | "box" | "page", argumentsValue: unknown): RuntimeTask
   request(request: unknown): RuntimeTask
