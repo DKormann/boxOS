@@ -3,27 +3,45 @@
 This document is the terminal-agent reference for the BoxOS 0.3.2 server in this
 repository. The server has no package dependencies and runs with Bun.
 
-## Start and inspect the server
+## Inspect BoxOS
 
 ```sh
-bun src/main.ts
-curl http://127.0.0.1:3000/health
-curl http://127.0.0.1:3000/v1/startup
+curl https://boxos.org/health
+curl https://boxos.org/v1/startup
 ```
 
-The server hosts a dependency-free Node.js/Bun CLI for developers and agents:
+BoxOS hosts a dependency-free Node.js/Bun CLI for developers and agents:
 
 ```sh
-curl -fsSL http://127.0.0.1:3000/boxos-cli.js -o boxos
+curl -fsSL https://boxos.org/boxos-cli.js -o boxos
 chmod +x boxos
-./boxos --url http://127.0.0.1:3000 account create
-./boxos --url http://127.0.0.1:3000 deploy page ./index.html
+./boxos account create
+./boxos page publish ./index.html
+./boxos box instantiate <definition-id>
 ```
 
-The CLI emits one JSON value on stdout, writes errors to stderr, and stores its
-Ed25519 key at `~/.boxos/account.json` by default. Use `--key`, `--url`,
+The CLI source is `src/cli/main.ts`; `bun scripts/build_cli.ts` generates the
+committed `public/boxos-cli.js` artifact. The CLI emits one JSON value on stdout,
+writes errors to stderr, and stores its Ed25519 key at
+`~/.boxos/account.json` by default. Use `--key`, `--url`,
 `BOXOS_KEY`, and `BOXOS_URL` to override those defaults. Run `./boxos --help`
 for publishing, invocation, transfer, messaging, and public-read commands.
+
+`box publish` and `page publish` resolve explicit local box links before
+publishing. Use a path relative to the file containing the link:
+
+```text
+{{BOXOS_BOX:./counter.box.json}}
+```
+
+Links may appear in page HTML or inside a box definition's method strings. The
+CLI resolves the complete graph, calculates its content IDs, and validates every
+linked definition locally with the same parser used by the server before it
+sends any publication. It then publishes boxes in dependency order and
+substitutes their immutable IDs. Repeated paths are deduplicated and dependency
+cycles are rejected. A parser rejection is reported on stderr with the local box
+path, method, and source location; a failed preflight publishes nothing. The
+server validates every definition again as the security boundary.
 
 The examples in `examples/startup/` are deployed idempotently at startup. The
 startup endpoint returns their current content-addressed IDs. Never hard-code an
@@ -36,6 +54,9 @@ examples/startup/              Example definitions deployed at startup
 examples/startup/pages/*.html  Ordinary immutable HTML page sources
 examples/startup/boxes/*.ts    Box method definitions
 public/client.js               Reference browser client
+public/boxos-cli.js            Generated standalone CLI
+public/developers.html         Human-facing developer documentation
+src/cli/main.ts                TypeScript CLI source
 src/server/server.ts           HTTP API
 src/server/service.ts          Signing protocol
 src/execution/native.ts        ctx API
@@ -48,8 +69,11 @@ src/operations/operations.ts   Shared client/box operations
 - An **account** is a raw Ed25519 public key. Its lowercase hexadecimal encoding
   is the 64-character account ID. The private key stays with the client.
 - A **blob** is immutable text addressed by its SHA-256 hash.
-- A **box** is an immutable set of validated JavaScript method bodies plus its
-  own public and private key/value storage.
+- A **box definition** is an immutable, content-addressed set of validated
+  JavaScript method bodies.
+- A **box instance** uses one definition and has its own public/private storage,
+  immutable creator metadata, and worker ownership. Publishing a definition
+  also creates its backwards-compatible canonical instance with the same ID.
 - A **page** is an immutable HTML blob with a shortened 16-character ID.
 - A **client ID** is currently the page account ID.
 - Pure BoxOS values are `null`, booleans, finite numbers, strings, arrays, and
@@ -89,16 +113,15 @@ Pages should be `.html` files. A minimal page is:
 Pages are available at:
 
 ```text
-http://<page-id>.localhost:3000/
-http://127.0.0.1:3000/v1/pages/<page-id>
 https://<page-id>.boxos.org/
+https://boxos.org/v1/pages/<page-id>
 ```
 
 Each page subdomain is a separate browser origin and receives a separate page
 account in IndexedDB. Link the startup `default.css` blob for the standard
 system-aware, dark-first BoxOS design variables and components.
 
-## Defining boxes
+## Defining and instantiating boxes
 
 A box definition is pure JSON whose methods are JavaScript **method bodies**, not
 whole function declarations:
@@ -110,6 +133,20 @@ whole function declarations:
   }
 }
 ```
+
+`box publish` publishes this definition and creates its canonical singleton box.
+Repeated publication returns the same ID and storage. To create independent
+storage backed by the same methods, instantiate the published definition:
+
+```sh
+boxos box instantiate <definition-id>
+boxos box instantiate <definition-id> \
+  '{"initialPublic":{"name":"agent"},"initialPrivate":{"key":"secret"}}'
+```
+
+Instance IDs derive from the definition ID, creator account, and nonce. The CLI
+creates a nonce by default; supplying the same nonce makes retries idempotent and
+does not reapply initial state.
 
 Each method receives fixed bindings:
 
@@ -133,6 +170,9 @@ Computed indexing has the restricted form `value[Number(expression)]`.
 ```js
 ctx.account                         // authenticated originating account
 ctx.clientId                        // originating page account, or null
+ctx.box.id                          // current instance ID
+ctx.box.definitionId                // shared definition ID
+ctx.box.creator                     // creating account, or null for canonical boxes
 ctx.storage.public.get(key)
 ctx.storage.public.set(key, value)
 ctx.storage.public.delete(key)
@@ -142,6 +182,7 @@ ctx.storage.private.delete(key)
 ctx.transfer(receiverAccount, amount)
 ctx.message(clientId, value)
 ctx.invoke(boxId, method, input)       // durable Task
+ctx.instantiate(definitionId, options) // durable Task
 ctx.publish(kind, arguments)           // durable Task
 ctx.request(request)                    // durable Task
 ```
@@ -153,7 +194,7 @@ that emitted messages includes `deliveries: [{ id, clientId, delivered }]` in
 its result; `delivered` means at least one live event stream accepted the
 message, not that a human read it.
 
-`invoke`, `publish`, and `request` return frozen runtime-owned durable Tasks, not
+`invoke`, `instantiate`, `publish`, and `request` return frozen runtime-owned durable Tasks, not
 native Promises. A method or continuation may return a pure value for immediate
 completion or a Task for eventual completion. Returning a Task makes the current
 invocation adopt its outcome. Tasks support:
@@ -194,6 +235,22 @@ return ctx.invoke(input.target, "read", null).then(
   }
 );
 ```
+
+### Instantiating a box
+
+```js
+return ctx.instantiate(input.definitionId, {
+  nonce: input.nonce,
+  initialPublic: { owner: ctx.account },
+  initialPrivate: { configuration: input.configuration }
+}).then(function created(result) {
+  return result.id;
+});
+```
+
+The creator and definition are immutable metadata, available through `ctx.box`.
+Methods remain responsible for authorization; creator status does not
+implicitly prevent other accounts from invoking an instance.
 
 ### Publishing from a box
 
@@ -304,6 +361,7 @@ All request and response bodies below are JSON unless stated otherwise.
 ```text
 GET /health
 GET /AGENTS.md
+GET /developers
 GET /client.js
 GET /boxos-cli.js
 GET /boxos
@@ -431,19 +489,17 @@ Supported operations:
 { "type": "message", "clientId": "<account>", "message": { "hello": true } }
 { "type": "publishBlob", "text": "...", "contentType": "text/html; charset=utf-8" }
 { "type": "publishPage", "blobId": "<blob-id>" }
+{ "type": "instantiateBox", "definitionId": "<box-definition-id>", "nonce": "<unique nonce>", "initialPublic": {}, "initialPrivate": {} }
 ```
 
 A direct `message` operation returns `{ id, delivered }`. It commits acceptance
 before attempting best-effort delivery, so `delivered: false` is a successful
 operation when the client is offline.
 
-Publishing an app is normally:
-
-1. publish its boxes;
-2. substitute returned box IDs into the `.html` source;
-3. publish the HTML with `publishBlob` and `text/html; charset=utf-8`;
-4. publish the returned blob with `publishPage`;
-5. print the page subdomain URL.
+The CLI performs this sequence for `page publish`: it transitively publishes
+`BOXOS_BOX` dependencies, substitutes their IDs, publishes the linked HTML blob,
+publishes the page, and prints its subdomain URL. A client using direct HTTP
+operations performs those same steps explicitly.
 
 ### Client events
 
@@ -483,6 +539,7 @@ import { boxos } from "/client.js";
 await boxos.account();
 await boxos.invoke(boxId, method, input);
 await boxos.publishBox(definition);
+await boxos.instantiateBox(definitionId, { initialPublic, initialPrivate });
 await boxos.publishBlob(text, contentType);
 await boxos.publishPage(blobId);
 await boxos.transfer(receiver, amount);
@@ -495,59 +552,79 @@ The client creates one non-extractable page-account key in origin-scoped
 IndexedDB. Human identity accounts managed by the Accounts example are distinct
 from this automatic page account.
 
-## Requesting account capabilities
+## Authentication and the reference Accounts flow
 
-Read `/v1/startup` to find `accounts.page`, `accounts.grants`, and
-`accounts.profiles`. Redirect the browser to the Accounts page with:
+BoxOS itself authenticates **accounts**, not people: an account is controlled by
+an Ed25519 private key, and every mutating request is authorized by its
+signature. A page automatically receives its own origin-scoped page account
+from `/client.js`; this is often enough for an app that only needs to identify
+its installation or authorize its own boxes.
 
-```text
-app_name=<displayed app name>
-app_account=<requesting page account>
-permissions=<comma-separated capabilities>
-redirect_uri=<HTTP(S) return URL>
-state=<unguessable state>
-```
+The startup Accounts app provides one useful, optional convention for apps that
+need authority from a human account. It is a reference implementation, not an
+enforced application structure. An app may instead use its own account picker,
+its own box-defined login flow, terminal keys, guest access, or another
+application-specific identity model. The protocol only requires signed
+accounts; authorization policy belongs in the target box.
 
-The Accounts page returns a URL fragment containing:
+### Optional human-account capability flow
 
-```text
-account=<selected human account>
-state=<original state>
-grants_box=<box ID>
-profiles_box=<box ID>
-```
+Use this flow when an app wants a human to approve named capabilities:
 
-or `error=access_denied`. Always verify `state`.
+1. Read `/v1/startup` and discover `accounts.page`, `accounts.grants`, and any
+   other startup dependencies. Do not hard-code their IDs.
+2. Redirect the browser to the discovered Accounts page with:
 
-A grant is public storage in the grants box under:
+   ```text
+   app_name=<displayed app name>
+   app_account=<requesting page account>
+   permissions=<comma-separated capabilities>
+   redirect_uri=<HTTP(S) return URL>
+   state=<unguessable state>
+   ```
+3. On return, validate the URL fragment and verify that `state` exactly matches
+   the value issued by the app. The fragment contains either
+   `error=access_denied`, or:
+
+   ```text
+   account=<selected human account>
+   state=<original state>
+   grants_box=<box ID>
+   profiles_box=<box ID>
+   ```
+4. Treat the returned human account as the account whose authority was
+   delegated; the app still signs requests with its page account. Pass the
+   selected account and the relevant capability to a box method, which must
+   perform the durable grant check.
+
+In the startup reference implementation, a grant is public storage in the
+grants box under:
 
 ```text
 <owner-account>|<grantee-page-account>|<permission>
 ```
 
-The startup App Explorer requests `manage apps`. Its catalog records and page
-version histories are public, while each human account's installed-app list is
-private box storage. Publishing a new immutable page version updates the stable
-catalog entry; installations can then explicitly move to that version.
+That key format, the grants box, and the permission names are conventions of
+the example—not BoxOS-wide requirements. Do not assume that a page has a human
+account, that a grant exists, or that a particular capability is available;
+handle denial and unavailable startup deployments explicitly.
 
-The Profiles box stores only public profile names. An app granted
-`manage account` can call:
+The startup Profiles box stores only public profile names. In that example, an
+app granted `manage account` can call:
 
 ```json
 {
   "method": "setName",
   "input": {
     "account": "<human-account>",
-    "name": "New name",
-    "requestId": "<uuid>"
+    "name": "New name"
   }
 }
 ```
 
-The call returns pending because the Profiles box checks the grant durably. Poll
-its public key `status|<requestId>`. Read the current name from
-`name|<human-account>`. The Accounts app sets the initial name during creation
-but does not expose profile renaming.
+The box durably checks the grant and returns `{ "name": "New name" }`. Read the
+current name from `name|<human-account>`. The Accounts app sets the initial name
+during creation but does not expose profile renaming.
 
 ## Repository startup examples
 

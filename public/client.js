@@ -87,6 +87,15 @@ export const boxos = Object.freeze({
     const request = { nonce: crypto.randomUUID(), definition }
     return post("/v1/boxes", await envelope("boxos.publish-box.v1", request))
   },
+  instantiateBox(definitionId, options = {}) {
+    return operate({
+      type: "instantiateBox",
+      definitionId,
+      nonce: options.nonce ?? crypto.randomUUID(),
+      initialPublic: options.initialPublic ?? {},
+      initialPrivate: options.initialPrivate ?? {},
+    })
+  },
   transfer(receiver, amount) {
     return operate({ type: "transfer", receiver, amount })
   },

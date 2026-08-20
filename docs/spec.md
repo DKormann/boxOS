@@ -25,8 +25,15 @@ the server associates a fuel balance to an account which is used to run computat
 An immutable globally readable server file adressed by its hash.
 
 ### Box
-A box is an immutable set of functions and an owned storage space.
-Boxes are what defines and computation and storage.
+A box definition is an immutable, content-addressed set of methods. A box
+instance combines one definition with its own public and private storage. Many
+instances may reuse the same definition while remaining independent execution,
+authorization, and scheduling boundaries.
+
+Publishing a definition also creates a canonical box whose ID is the definition
+hash. This preserves the original API and its content-addressed singleton
+behavior. Explicit instantiation creates a distinct ID from the definition ID,
+creator account, and caller-provided nonce.
 
 ### Client
 a browser tab on a fixed page.
@@ -65,8 +72,8 @@ target. This simple policy may be tightened against abuse later.
 
 ## Box workers
 
-Boxes execute on workers. A server-side scheduler assigns each box to at most
-one live worker at a time and routes every method and resumed task continuation
+Box instances execute on workers. A server-side scheduler assigns each instance
+to at most one live worker at a time and routes every method and resumed task continuation
 for that box to its owner. A worker may own multiple boxes. If a worker exits, all of its
 ownership is released before queued work is reassigned. This gives each box a
 serial execution order without creating cross-box transactions.
@@ -74,10 +81,26 @@ serial execution order without creating cross-box transactions.
 Worker ownership may initially be process-local. It must be made durable or
 leased before multiple server processes can share one database.
 
-## Defining a Box
-A Box is defined by its methods and its individual storage space.
-The methods are just blobs of validated code. The box definition is publicly readable.
-The box storage is distinguished in public and private storage. Anyone may read
+## Defining and instantiating Boxes
+A box definition contains validated method bodies and is publicly readable. Its
+ID is the hash of its canonical definition. `publishBox` remains backwards
+compatible: it publishes the definition, creates the canonical singleton
+instance with the same ID, and returns that ID. Repeated publication returns the
+same canonical box and storage.
+
+An explicit instance has an ID derived from the domain-separated canonical
+encoding of `{ definitionId, creatorAccount, nonce }`. The creator chooses a
+fresh nonce for each new instance and reuses the complete same request only for
+idempotent retry. Initial public and private storage are installed atomically
+with the instance. Retrying the same creator, definition, and nonce returns the
+existing instance without reapplying initial state.
+
+Every instance records immutable `definitionId` and `creator` metadata, exposed
+to its methods as `ctx.box`. Creator metadata does not impose a universal access
+policy: methods decide whether to admit only the creator, selected accounts, or
+everyone.
+
+Instance storage is distinguished in public and private storage. Anyone may read
 any box's public storage directly. Private storage is available only while that
 box executes. The only way to write either kind of box storage is through
 invocation of the box's methods.
@@ -101,6 +124,7 @@ scope.
 Each box method gets `ctx` and `input`. The context offers:
  - storage: read and write to private and public storage of that box
  - invoke(boxid, methodname, argument): returns a durable Task for another box invocation
+ - instantiate(definitionId, options): returns a durable Task for a new box instance
  - message(clientid, message): returns a message ID and schedules best-effort delivery after commit
  - publish(kind: "box" | "blob" | "page" | "account", args): returns a durable Task for publication
  - request(request): returns a durable Task for a structured public HTTPS JSON request
@@ -108,6 +132,20 @@ Each box method gets `ctx` and `input`. The context offers:
 
 ctx also exposes the account behind the invokation and the clientId
 invoking a new box method will also inherit the same account and client. all subsequent fuel usage will be credited to the same account.
+
+A box may instantiate another definition durably:
+
+```js
+return ctx.instantiate(input.definitionId, {
+  nonce: input.nonce,
+  initialPublic: { owner: ctx.account },
+  initialPrivate: { configuration: input.configuration }
+});
+```
+
+A successful instantiation Task settles with `{ id }`. Direct clients use the
+same operation with type `instantiateBox`; browser and CLI clients generate a
+nonce by default.
 
 Clients may directly invoke boxes, publish entities, send messages, transfer
 their own fuel, and read immutable public entities or any public box storage.
@@ -235,12 +273,11 @@ private network and raw transport authority outside box code while allowing
 ordinary public JSON APIs.
 
 ## Pages
-each page is backed by a blob. it is reachable under a shortened hash. under the url <hash>.boxos.org or <hash>.localhost:port for development.
-pages are immutable client definitions. The current shortened page ID is the
-first 16 hexadecimal characters of its domain-separated hash. The server hosts
-a page at `https://<pageid>.boxos.org/` and, in development, at
-`http://<pageid>.localhost:<port>/`. Each page receives a separate browser
-origin and therefore a separate automatically managed page account.
+each page is backed by a blob. it is reachable under a shortened hash at
+`https://<hash>.boxos.org/`. Pages are immutable client definitions. The current
+shortened page ID is the first 16 hexadecimal characters of its domain-separated
+hash. Each page receives a separate browser origin and therefore a separate
+automatically managed page account.
 
 BoxOS deploys a content-addressed `default.css` blob for its default design
 language. It is dark-first, follows the system light/dark preference, uses a
@@ -269,11 +306,19 @@ Boxos hosts a reference client.js that can be requested under URL.client.js. Pag
 it will expose methods to communicate with the server and receive messages. it will store its clientId keys securely in the browser. A client Id should be persistent through page visits.
 
 BoxOS also hosts a dependency-free standalone CLI at `/boxos-cli.js` (and the
-short alias `/boxos`) for developers, automation, and terminal agents. It runs
-on Node.js 20+ or Bun, manages a local Ed25519 account file, signs mutations,
+short alias `/boxos`) for developers, automation, and terminal agents. It is
+built from the shared TypeScript codebase into a committed Node.js-compatible
+artifact. It runs on Node.js 20+ or Bun, manages a local Ed25519 account file,
+signs mutations,
 and emits machine-readable JSON. It supports publishing boxes, blobs, and pages;
 invoking boxes; transferring and messaging; and reading public entities and
-startup deployments.
+startup deployments. Box and page publication resolves explicit relative links
+of the form `{{BOXOS_BOX:./path.box.json}}`. Before publishing anything, the CLI
+resolves the complete graph, calculates content IDs, and validates every linked
+box locally with the same parser as the server. It then publishes dependencies
+in order and substitutes their immutable IDs. Repeated paths are deduplicated,
+circular dependencies are rejected, and the server validates every publication
+again.
 
 A Boxos app is a page that uses specific Boxes. pages do share functionality by reusing boxes, therefore apps are natively interoperable.
 

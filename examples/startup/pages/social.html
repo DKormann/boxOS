@@ -84,13 +84,7 @@
     let denied = false;
 
     function accountsUrl() {
-      const url = new URL(location.href);
-      const labels = url.hostname.split(".");
-      url.hostname = url.hostname === "127.0.0.1" || url.hostname === "localhost"
-        ? accountsPage + ".localhost"
-        : [accountsPage, ...labels.slice(1)].join(".");
-      url.pathname = "/"; url.search = ""; url.hash = "";
-      return url;
+      return new URL("https://" + accountsPage + ".boxos.org/");
     }
     async function grant(permission) {
       if (!account) return false;
@@ -160,11 +154,6 @@
     async function receive(event) {
       const payload = event.message;
       if (!payload || typeof payload !== "object") return;
-      if (payload.type === "chat.error") el.status.textContent = payload.error;
-      if (payload.type === "chat.snapshot") {
-        chats.clear(); for (const chat of payload.chats) chats.set(chat.peer, chat.messages);
-        await renderChats(); if (current) renderMessages();
-      }
       if (payload.type === "chat.message") {
         const message = payload.message; const peer = message.sender === account ? message.recipient : message.sender;
         const history = chats.get(peer) || [];
@@ -182,14 +171,8 @@
       }
     }
     async function changeProfile(name) {
-      const requestId = crypto.randomUUID();
-      await boxos.invoke(profiles, "setName", { account, name, requestId });
-      for (let attempt = 0; attempt < 40; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        const status = await boxos.readPublic(profiles, "status|" + requestId);
-        if (status.found) { if (!status.value.ok) throw new Error(status.value.error); names.set(account, name); await renderIdentity(); return; }
-      }
-      throw new Error("Profile update timed out");
+      await boxos.invoke(profiles, "setName", { account, name });
+      names.set(account, name); await renderIdentity();
     }
 
     const result = new URLSearchParams(location.hash.slice(1));
@@ -225,8 +208,11 @@
     el.composer.onsubmit = async event => {
       event.preventDefault(); const text = el.message.value.trim(); if (!text || !current) return;
       el.message.value = ""; el.status.textContent = "";
-      try { await boxos.invoke(messagesBox, "send", { owner: account, recipient: current, text, messageId: crypto.randomUUID() }); }
-      catch (error) { el.status.textContent = error.message; }
+      try {
+        const result = await boxos.invoke(messagesBox, "send", { owner: account, recipient: current, text, messageId: crypto.randomUUID() });
+        const message = result.value; const history = chats.get(current) || []; history.push(message); chats.set(current, history);
+        await renderChats(); renderMessages();
+      } catch (error) { el.status.textContent = error.message; }
     };
 
     if (!account && !denied) await signIn();
@@ -235,7 +221,9 @@
       el.login.hidden = true; el.app.hidden = false; await renderIdentity();
       void boxos.events(receive).catch(error => { el.status.textContent = error.message; });
       await boxos.invoke(messagesBox, "connect", { owner: account });
-      await boxos.invoke(messagesBox, "load", { owner: account });
+      const loaded = await boxos.invoke(messagesBox, "load", { owner: account });
+      chats.clear(); for (const chat of loaded.value) chats.set(chat.peer, chat.messages);
+      await renderChats();
     }
   </script>
 </body>

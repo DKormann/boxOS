@@ -163,15 +163,7 @@ export async function startBoxOSServer(options: {
           if (!ids["default.css"] || !ids["app-explorer.page"]) {
             throw new Error("Landing page deployments are unavailable")
           }
-          const explorerUrl = new URL(request.url)
-          if (request.headers.get("x-forwarded-proto") == "https") explorerUrl.protocol = "https:"
-          const hostLabels = explorerUrl.hostname.split(".")
-          explorerUrl.hostname = explorerUrl.hostname == "127.0.0.1" || explorerUrl.hostname == "localhost"
-            ? `${ids["app-explorer.page"]}.localhost`
-            : [ids["app-explorer.page"], ...hostLabels.slice(hostLabels.length > 2 ? 1 : 0)].join(".")
-          explorerUrl.pathname = "/"
-          explorerUrl.search = ""
-          explorerUrl.hash = ""
+          const explorerUrl = new URL(`https://${ids["app-explorer.page"]}.boxos.org/`)
           const source = (await Bun.file(new URL("../../public/index.html", import.meta.url)).text())
             .replaceAll("{{DEFAULT_CSS}}", ids["default.css"])
             .replaceAll("{{EXPLORER_URL}}", explorerUrl.href)
@@ -180,6 +172,24 @@ export async function startBoxOSServer(options: {
               "content-type": "text/html; charset=utf-8",
               "cache-control": "public, max-age=300",
               "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            },
+          })
+        }
+        if (
+          (request.method == "GET" || request.method == "HEAD")
+          && (url.pathname == "/developers" || url.pathname == "/developers/")
+        ) {
+          const deployment = database.query<{ id: string }>(
+            "SELECT id FROM startup_deployments WHERE name = 'default.css'",
+          ).get()
+          if (!deployment) throw new Error("Developer documentation stylesheet is unavailable")
+          const source = (await Bun.file(new URL("../../public/developers.html", import.meta.url)).text())
+            .replaceAll("{{DEFAULT_CSS}}", deployment.id)
+          return new Response(request.method == "HEAD" ? null : source, {
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "public, max-age=300",
+              "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             },
           })
         }
@@ -254,10 +264,27 @@ export async function startBoxOSServer(options: {
         }
         if (request.method == "GET" && /^\/v1\/boxes\/[a-f0-9]{64}$/.test(url.pathname)) {
           const id = url.pathname.slice("/v1/boxes/".length)
-          const row = database.query<{ definition: string }>(
-            "SELECT definition FROM boxes WHERE id = ?",
+          const row = database.query<{
+            definition: string
+            definition_id: string
+            creator_account: string | null
+          }>(
+            `SELECT definitions.definition, boxes.definition_id, boxes.creator_account
+             FROM boxes JOIN box_definitions definitions
+               ON definitions.id = boxes.definition_id
+             WHERE boxes.id = ?`,
           ).get(id)
-          return row ? json({ id, definition: JSON.parse(row.definition) }) : json({ error: "Not found" }, 404)
+          return row
+            ? json({
+              id,
+              definition: JSON.parse(row.definition),
+              instance: {
+                definitionId: row.definition_id,
+                creator: row.creator_account,
+                canonical: id == row.definition_id,
+              },
+            })
+            : json({ error: "Not found" }, 404)
         }
         if (request.method == "POST" && url.pathname == "/v1/events") {
           const body = await requestBody(request)
@@ -315,7 +342,7 @@ export async function startBoxOSServer(options: {
         return json({ error: "Not found" }, 404)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        const status = error instanceof TypeError
+        const status = error instanceof TypeError || error instanceof SyntaxError
           ? 400
           : /signature|account/i.test(message)
             ? 401

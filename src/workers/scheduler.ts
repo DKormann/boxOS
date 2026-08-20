@@ -5,9 +5,11 @@ export type WorkerTurn = {
   boxId: string
   account: string
   clientId: string | null
+  completionTaskId?: string
+  rootTaskId?: string
   procedure:
     | { kind: "method"; source: string; input: BoxValue }
-    | { kind: "callback"; source: string; result: BoxValue; context: BoxValue }
+    | { kind: "continuation"; source: string; value: BoxValue; context: BoxValue }
 }
 
 export type ClientNotification = {
@@ -26,7 +28,7 @@ export type ClientDelivery = {
 export type WorkerTurnResult =
   | {
     ok: true
-    value: BoxValue
+    value?: BoxValue
     notifications?: ClientNotification[]
     deliveries?: ClientDelivery[]
   }
@@ -101,9 +103,11 @@ export class BoxScheduler {
       }
       deliveries.push({ id: notification.id, clientId: notification.clientId, delivered })
     }
-    return deliveries.length
-      ? { ok: true, value: result.value, deliveries }
-      : { ok: true, value: result.value }
+    return {
+      ok: true,
+      ...(result.value === undefined ? {} : { value: result.value }),
+      ...(deliveries.length ? { deliveries } : {}),
+    }
   }
 
   private leastLoadedWorker(): BoxWorker | undefined {

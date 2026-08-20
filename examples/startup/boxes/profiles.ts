@@ -5,28 +5,19 @@ export function profilesBox(grantsBoxId: string): BoxDefinition {
   return {
     methods: {
       setName: `
-        if (typeof input.account !== "string" || typeof input.name !== "string" || typeof input.requestId !== "string") {
-          throw "An account, name, and request ID are required";
+        if (typeof input.account !== "string" || typeof input.name !== "string") {
+          throw "An account and name are required";
         }
-        let name = input.name;
-        if (name.length < 1 || name.length > 64) throw "Profile names must contain 1 to 64 characters";
-        ctx.invoke(
+        if (input.name.length < 1 || input.name.length > 64) throw "Profile names must contain 1 to 64 characters";
+        return ctx.invoke(
           "${grantsBoxId}",
           "check",
-          { owner: input.account, grantee: ctx.account, permission: "manage account" },
-          function checked(granted, request) {
-            let statusKey = "status|" + request.requestId;
-            if (granted !== true) {
-              ctx.storage.public.set(statusKey, { ok: false, error: "Manage account permission was not granted" });
-              return null;
-            }
-            ctx.storage.public.set("name|" + request.account, request.name);
-            ctx.storage.public.set(statusKey, { ok: true, name: request.name });
-            return null;
-          },
-          { account: input.account, name: name, requestId: input.requestId }
-        );
-        return { pending: true, requestId: input.requestId };
+          { owner: input.account, grantee: ctx.account, permission: "manage account" }
+        ).then(function checked(granted, request) {
+          if (granted !== true) throw "Manage account permission was not granted";
+          ctx.storage.public.set("name|" + request.account, request.name);
+          return { name: request.name };
+        }, { account: input.account, name: input.name });
       `,
       get: `
         if (typeof input.account !== "string") return null;

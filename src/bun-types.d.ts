@@ -12,6 +12,11 @@ type ProcessLike = {
   env: Record<string, string | undefined>;
   platform: "aix" | "darwin" | "freebsd" | "linux" | "openbsd" | "sunos" | "win32";
   exit(code?: number): never;
+  exitCode?: number;
+  cwd(): string;
+  stdin: AsyncIterable<string> & { setEncoding(encoding: string): void };
+  stdout: { write(value: string): void };
+  stderr: { write(value: string): void };
   title: string;
 };
 
@@ -26,6 +31,7 @@ interface ImportMetaEnv {
 
 interface ImportMeta {
   readonly env: ImportMetaEnv;
+  readonly main?: boolean;
 }
 
 declare const process: ProcessLike;
@@ -125,6 +131,7 @@ declare namespace Bun {
       build(options: {
         entrypoints: string[];
         target?: "browser" | "bun" | "node";
+        format?: "esm" | "cjs" | "iife";
         write?: boolean;
       }): Promise<{
         success: boolean;
@@ -191,7 +198,10 @@ declare module "node:fs" {
 }
 
 declare module "node:fs/promises" {
+  export function chmod(path: string | URL, mode: number): Promise<void>;
   export function readFile(path: string | URL, encoding: "utf8"): Promise<string>;
+  export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
+  export function writeFile(path: string | URL, data: string, options?: { mode?: number }): Promise<void>;
   export function readdir(path: string | URL): Promise<string[]>;
   export function mkdir(
     path: string | URL,
@@ -213,9 +223,25 @@ declare module "node:os" {
 
 declare module "node:path" {
   export function basename(path: string, suffix?: string): string;
+  export function dirname(path: string): string;
+  export function extname(path: string): string;
+  export function isAbsolute(path: string): boolean;
   export function join(...paths: string[]): string;
   export function relative(from: string, to: string): string;
   export function resolve(...paths: string[]): string;
+}
+
+declare module "node:buffer" {
+  export const Buffer: {
+    from(value: ArrayBuffer | ArrayBufferView | string, encoding?: string): {
+      toString(encoding?: string): string;
+    } & Uint8Array;
+  };
+}
+
+declare module "node:process" {
+  const process: ProcessLike;
+  export default process;
 }
 
 declare module "bun" {

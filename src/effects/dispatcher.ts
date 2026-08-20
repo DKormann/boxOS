@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { parseBoxValue, stringifyBoxValue, type BoxValue } from "../core/values.ts"
 import {
+  instantiateBox,
   publishAccount,
   publishBox,
   publishPage,
@@ -8,35 +9,44 @@ import {
 } from "../operations/operations.ts"
 import { BOXOS_RUNTIME_VERSION } from "../version.ts"
 import { executeStructuredRequest } from "./request.ts"
-import type { BoxScheduler, WorkerTurn, WorkerTurnResult } from "../workers/scheduler.ts"
+import type { BoxScheduler, ClientDelivery, WorkerTurnResult } from "../workers/scheduler.ts"
 
 type EffectRow = {
   id: string
   origin_box_id: string
   kind: string
-  status: "pending" | "dispatched" | "succeeded" | "failed"
   arguments: string
-  result: string | null
   account: string
   client_id: string | null
+  root_task_id: string
 }
 
-type CallbackRow = {
+type TaskRow = {
+  id: string
+  status: "pending" | "fulfilled" | "rejected"
+  result: string | null
+  error: string | null
+}
+
+type ContinuationRow = {
+  result_task_id: string
+  source_task_id: string
+  origin_box_id: string
+  role: "success" | "failure"
   source: string
   context: string
   runtime_version: string
-  status: "waiting" | "queued" | "completed" | "discarded"
+  account: string
+  client_id: string | null
+  source_status: "fulfilled" | "rejected"
+  source_result: string | null
+  source_error: string | null
+  root_task_id: string
 }
 
 export type RequestExecutor = (value: BoxValue, requestId: string) => Promise<BoxValue>
 
-type InvocationArguments = {
-  boxId: string
-  method: string
-  argument: BoxValue
-}
-
-function invocationArguments(encoded: string): InvocationArguments {
+function invocationArguments(encoded: string): { boxId: string; method: string; argument: BoxValue } {
   const value = parseBoxValue(encoded)
   if (value === null || Array.isArray(value) || typeof value != "object") {
     throw new TypeError("Invalid persisted invocation arguments")
@@ -49,9 +59,10 @@ function invocationArguments(encoded: string): InvocationArguments {
   return { boxId, method, argument: value["argument"]! }
 }
 
-/** Delivers durable invoke effects and resumes their callbacks idempotently. */
+/** Advances the durable effect and Task graph one idempotent step at a time. */
 export class EffectDispatcher {
-  private readonly active = new Set<string>()
+  private readonly deliveries = new Map<string, ClientDelivery[]>()
+  private readonly trackedRoots = new Set<string>()
 
   constructor(
     private readonly database: Database,
@@ -59,86 +70,112 @@ export class EffectDispatcher {
     private readonly requestExecutor: RequestExecutor = executeStructuredRequest,
   ) {}
 
-  /** Dispatch one available effect. Returns false when there is no work. */
+  trackDeliveries(rootTaskId: string): void {
+    this.trackedRoots.add(rootTaskId)
+  }
+
+  takeDeliveries(rootTaskId: string): ClientDelivery[] {
+    const deliveries = this.deliveries.get(rootTaskId) ?? []
+    this.deliveries.delete(rootTaskId)
+    this.trackedRoots.delete(rootTaskId)
+    return deliveries
+  }
+
   async dispatchNext(): Promise<boolean> {
-    const row = this.database.query<{ id: string }>(
-      `SELECT effects.id
-       FROM effects
-       LEFT JOIN effect_callbacks
-         ON effect_callbacks.effect_id = effects.id
-        AND effect_callbacks.role = 'success'
-       WHERE effects.status IN ('pending', 'dispatched')
-          OR (effects.status = 'succeeded' AND effect_callbacks.status = 'queued')
-       ORDER BY effects.created_at, effects.id
-       LIMIT 1`,
+    const effect = this.database.query<{ id: string }>(
+      `SELECT id FROM effects WHERE status IN ('pending', 'dispatched')
+       ORDER BY created_at, id LIMIT 1`,
     ).get()
-    if (!row || this.active.has(row.id)) return false
-    await this.dispatch(row.id)
-    return true
-  }
-
-  async dispatch(effectId: string): Promise<void> {
-    if (this.active.has(effectId)) return
-    this.active.add(effectId)
-    try {
-      let effect = this.readEffect(effectId)
-      if (!effect) throw new Error(`Unknown effect ${effectId}`)
-
-      if (effect.status == "pending" || effect.status == "dispatched") {
-        if (effect.status == "pending") {
-          this.database.query(
-            "UPDATE effects SET status = 'dispatched' WHERE id = ? AND status = 'pending'",
-          ).run(effectId)
-        }
-
-        const result = await this.executeEffect(effect)
-        this.settle(effect.id, result)
-        effect = this.readEffect(effectId)!
-      }
-
-      if (effect.status == "succeeded") await this.resumeSuccessCallback(effect)
-    } finally {
-      this.active.delete(effectId)
+    if (effect) {
+      await this.dispatchEffect(effect.id)
+      return true
     }
+
+    const adoption = this.database.query<{ id: string; adopted_task_id: string }>(
+      `SELECT child.id, child.adopted_task_id
+       FROM tasks child JOIN tasks parent ON parent.id = child.adopted_task_id
+       WHERE child.status = 'pending' AND parent.status != 'pending'
+       ORDER BY child.created_at, child.id LIMIT 1`,
+    ).get()
+    if (adoption) {
+      const parent = this.readTask(adoption.adopted_task_id)!
+      this.copySettlement(adoption.id, parent)
+      return true
+    }
+
+    const continuation = this.readReadyContinuation()
+    if (continuation) {
+      await this.resume(continuation)
+      return true
+    }
+    return false
   }
 
-  private async executeEffect(effect: EffectRow): Promise<WorkerTurnResult> {
+  private async dispatchEffect(effectId: string): Promise<void> {
+    const effect = this.database.query<EffectRow>(
+      `SELECT effects.id, turns.box_id AS origin_box_id, effects.kind,
+              effects.arguments, turns.account, turns.client_id, tasks.root_task_id
+       FROM effects JOIN turns ON turns.id = effects.origin_turn_id
+       JOIN tasks ON tasks.id = effects.id
+       WHERE effects.id = ?`,
+    ).get(effectId)
+    if (!effect) throw new Error(`Unknown effect ${effectId}`)
+    const task = this.readTask(effect.id)!
+    if (task.status != "pending") {
+      this.finishEffect(effect.id)
+      return
+    }
+    this.database.query(
+      "UPDATE effects SET status = 'dispatched' WHERE id = ? AND status = 'pending'",
+    ).run(effect.id)
+
     if (effect.kind == "invoke") {
-      let args: InvocationArguments
+      let args: ReturnType<typeof invocationArguments>
       try {
         args = invocationArguments(effect.arguments)
       } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+        this.reject(effect.id, error instanceof Error ? error.message : String(error))
+        this.finishEffect(effect.id)
+        return
       }
       const method = this.database.query<{ source: string }>(
         "SELECT source FROM box_methods WHERE box_id = ? AND name = ?",
       ).get(args.boxId, args.method)
-      if (!method) return { ok: false, error: `Unknown method ${args.boxId}.${args.method}` }
-      const turn: WorkerTurn = {
+      if (!method) {
+        this.reject(effect.id, `Unknown method ${args.boxId}.${args.method}`)
+        this.finishEffect(effect.id)
+        return
+      }
+      // Worker rejection is infrastructure failure: leave the dispatched
+      // effect retryable. A box-level failure is persisted on its Task.
+      const result = await this.scheduler.run({
         id: `${effect.id}:invoke`,
         boxId: args.boxId,
         account: effect.account,
         clientId: effect.client_id,
+        completionTaskId: effect.id,
+        rootTaskId: effect.root_task_id,
         procedure: { kind: "method", source: method.source, input: args.argument },
-      }
-      // Rejections represent infrastructure failure and leave the effect retryable.
-      return this.scheduler.run(turn)
-    }
-
-    if (effect.kind == "request") {
-      const args = parseBoxValue(effect.arguments)
-      return { ok: true, value: await this.requestExecutor(args, effect.id) }
+      })
+      this.captureDeliveries(effect.root_task_id, result)
+      this.finishEffect(effect.id)
+      return
     }
 
     try {
       const args = parseBoxValue(effect.arguments)
-      let id: string
-      if (effect.kind == "publish.box") {
-        id = await publishBox(this.database, args)
+      let value: BoxValue
+      if (effect.kind == "request") {
+        value = await this.requestExecutor(args, effect.id)
+      } else if (effect.kind == "publish.box") {
+        value = { id: await publishBox(this.database, args) }
+      } else if (effect.kind == "instantiate.box") {
+        value = { id: await instantiateBox(this.database, effect.account, args) }
       } else {
         if (args === null || Array.isArray(args) || typeof args != "object") {
           throw new TypeError("Publication arguments must be an object")
         }
+        let id: string
         if (effect.kind == "publish.blob") {
           const text = args["text"]
           const contentType = args["contentType"]
@@ -157,86 +194,116 @@ export class EffectDispatcher {
         } else {
           throw new TypeError(`Unknown effect kind ${effect.kind}`)
         }
+        value = { id }
       }
-      return { ok: true, value: { id } }
+      this.fulfill(effect.id, value)
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      this.reject(effect.id, error instanceof Error ? error.message : String(error))
     }
+    this.finishEffect(effect.id)
   }
 
-  private readEffect(effectId: string): EffectRow | null {
-    return this.database.query<EffectRow>(
-      `SELECT effects.id, effects.origin_box_id, effects.kind, effects.status, effects.arguments,
-              effects.result, turns.account, turns.client_id
-       FROM effects
-       JOIN turns ON turns.id = effects.origin_turn_id
-       WHERE effects.id = ?`,
-    ).get(effectId)
+  private readReadyContinuation(): ContinuationRow | null {
+    return this.database.query<ContinuationRow>(
+      `SELECT continuation.result_task_id, continuation.source_task_id,
+              result.origin_box_id, continuation.role, continuation.source,
+              continuation.context, continuation.runtime_version,
+              result.account, result.client_id, result.root_task_id,
+              source.status AS source_status, source.result AS source_result,
+              source.error AS source_error
+       FROM task_continuations continuation
+       JOIN tasks source ON source.id = continuation.source_task_id
+       JOIN tasks result ON result.id = continuation.result_task_id
+       WHERE continuation.status IN ('waiting', 'queued') AND source.status != 'pending'
+       ORDER BY continuation.created_at, continuation.result_task_id LIMIT 1`,
+    ).get()
   }
 
-  private settle(effectId: string, result: WorkerTurnResult): void {
-    this.database.transaction(() => {
-      if (result.ok) {
-        this.database.query(
-          `UPDATE effects
-           SET status = 'succeeded', result = ?, error = NULL, settled_at = ?
-           WHERE id = ?`,
-        ).run(stringifyBoxValue(result.value), Date.now(), effectId)
-        this.database.query(
-          `UPDATE effect_callbacks SET status = 'queued'
-           WHERE effect_id = ? AND role = 'success' AND status = 'waiting'`,
-        ).run(effectId)
-      } else {
-        this.database.query(
-          `UPDATE effects
-           SET status = 'failed', error = ?, result = NULL, settled_at = ?
-           WHERE id = ?`,
-        ).run(result.error, Date.now(), effectId)
-        this.database.query(
-          `UPDATE effect_callbacks SET status = 'discarded'
-           WHERE effect_id = ? AND status = 'waiting'`,
-        ).run(effectId)
-      }
-    })()
-  }
-
-  private async resumeSuccessCallback(effect: EffectRow): Promise<void> {
-    const callback = this.database.query<CallbackRow>(
-      `SELECT source, context, runtime_version, status FROM effect_callbacks
-       WHERE effect_id = ? AND role = 'success'`,
-    ).get(effect.id)
-    if (!callback || callback.status == "completed" || callback.status == "discarded") return
-    if (callback.runtime_version != BOXOS_RUNTIME_VERSION) {
-      throw new Error(
-        `Callback ${effect.id} requires runtime ${callback.runtime_version}; current runtime is ${BOXOS_RUNTIME_VERSION}`,
-      )
+  private async resume(row: ContinuationRow): Promise<void> {
+    const selected = (row.source_status == "fulfilled" && row.role == "success")
+      || (row.source_status == "rejected" && row.role == "failure")
+    if (!selected) {
+      this.copySettlement(row.result_task_id, {
+        id: row.source_task_id,
+        status: row.source_status,
+        result: row.source_result,
+        error: row.source_error,
+      })
+      this.completeContinuation(row.result_task_id, null)
+      return
     }
-    if (effect.result == null) throw new Error(`Successful effect ${effect.id} has no result`)
-
-    if (callback.status == "waiting") {
-      this.database.query(
-        `UPDATE effect_callbacks SET status = 'queued'
-         WHERE effect_id = ? AND role = 'success'`,
-      ).run(effect.id)
+    if (row.runtime_version != BOXOS_RUNTIME_VERSION) {
+      this.reject(row.result_task_id, `Continuation requires runtime ${row.runtime_version}`)
+      this.completeContinuation(row.result_task_id, null)
+      return
     }
 
-    const callbackTurnId = `${effect.id}:success`
-    await this.scheduler.run({
-      id: callbackTurnId,
-      boxId: effect.origin_box_id,
-      account: effect.account,
-      clientId: effect.client_id,
+    this.database.query(
+      "UPDATE task_continuations SET status = 'queued' WHERE result_task_id = ?",
+    ).run(row.result_task_id)
+    const turnId = `${row.result_task_id}:continuation`
+    const result = await this.scheduler.run({
+      id: turnId,
+      boxId: row.origin_box_id,
+      account: row.account,
+      clientId: row.client_id,
+      completionTaskId: row.result_task_id,
+      rootTaskId: row.root_task_id,
       procedure: {
-        kind: "callback",
-        source: callback.source,
-        result: parseBoxValue(effect.result),
-        context: parseBoxValue(callback.context),
+        kind: "continuation",
+        source: row.source,
+        value: row.source_status == "fulfilled"
+          ? parseBoxValue(row.source_result!)
+          : row.source_error ?? "Task rejected",
+        context: parseBoxValue(row.context),
       },
     })
+    this.captureDeliveries(row.root_task_id, result)
+    this.completeContinuation(row.result_task_id, turnId)
+  }
+
+  private captureDeliveries(rootTaskId: string, result: WorkerTurnResult): void {
+    if (!this.trackedRoots.has(rootTaskId) || !result.ok || !result.deliveries) return
+    const deliveries = this.deliveries.get(rootTaskId) ?? []
+    deliveries.push(...result.deliveries)
+    this.deliveries.set(rootTaskId, deliveries)
+  }
+
+  private readTask(id: string): TaskRow | null {
+    return this.database.query<TaskRow>(
+      "SELECT id, status, result, error FROM tasks WHERE id = ?",
+    ).get(id)
+  }
+
+  private fulfill(id: string, value: BoxValue): void {
     this.database.query(
-      `UPDATE effect_callbacks
-       SET status = 'completed', callback_turn_id = ?
-       WHERE effect_id = ? AND role = 'success'`,
-    ).run(callbackTurnId, effect.id)
+      `UPDATE tasks SET status = 'fulfilled', result = ?, settled_at = ?
+       WHERE id = ? AND status = 'pending'`,
+    ).run(stringifyBoxValue(value), Date.now(), id)
+  }
+
+  private reject(id: string, error: string): void {
+    this.database.query(
+      `UPDATE tasks SET status = 'rejected', error = ?, settled_at = ?
+       WHERE id = ? AND status = 'pending'`,
+    ).run(error, Date.now(), id)
+  }
+
+  private copySettlement(id: string, source: TaskRow): void {
+    if (source.status == "fulfilled") this.fulfill(id, parseBoxValue(source.result!))
+    else this.reject(id, source.error ?? "Task rejected")
+  }
+
+  private finishEffect(id: string): void {
+    this.database.query(
+      "UPDATE effects SET status = 'completed', completed_at = ? WHERE id = ?",
+    ).run(Date.now(), id)
+  }
+
+  private completeContinuation(resultTaskId: string, turnId: string | null): void {
+    this.database.query(
+      `UPDATE task_continuations SET status = 'completed', callback_turn_id = ?
+       WHERE result_task_id = ?`,
+    ).run(turnId, resultTaskId)
   }
 }

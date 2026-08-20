@@ -121,17 +121,7 @@
       return invokeAs(identity, grants, "grant", { grantee, permission });
     }
     async function setInitialName(account, name) {
-      const requestId = crypto.randomUUID();
-      await boxos.invoke(profiles, "setName", { account, name, requestId });
-      for (let attempt = 0; attempt < 40; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        const status = await boxos.readPublic(profiles, "status|" + requestId);
-        if (status.found) {
-          if (!status.value.ok) throw new Error(status.value.error);
-          return;
-        }
-      }
-      throw new Error("Profile setup timed out");
+      await boxos.invoke(profiles, "setName", { account, name });
     }
     function show(section) {
       for (const id of ["home", "form", "created"]) el[id].hidden = id !== section;
